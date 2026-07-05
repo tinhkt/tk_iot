@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
-import 'dart:ui';
 import 'package:image_picker/image_picker.dart';
 import '../../services/auth_service.dart';
 
