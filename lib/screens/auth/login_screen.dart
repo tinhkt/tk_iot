@@ -1,0 +1,350 @@
+import 'package:flutter/material.dart';
+import 'dart:ui'; 
+import '../../services/auth_service.dart';
+import '../dashboard_screen.dart';
+import 'register_screen.dart'; 
+
+// ============================================================================
+// WIDGET HỖ TRỢ: HIỆU ỨNG KÍNH MỜ
+// ============================================================================
+class GlassContainer extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry? padding;
+
+  const GlassContainer({super.key, required this.child, this.padding});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: Container(
+          padding: padding ?? const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.15), width: 1.5),
+            boxShadow: [
+              if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 24, offset: const Offset(0, 8))
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final AuthService _authService = AuthService();
+  bool _isLoading = false;
+
+  final Color tkGreen = const Color(0xFF00A651);
+
+  void _handleLogin() async {
+    setState(() => _isLoading = true);
+    
+    bool success = await _authService.login(
+      _emailController.text.trim(), 
+      _passwordController.text.trim()
+    );
+
+    setState(() => _isLoading = false);
+
+    if (success) {
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context, 
+        MaterialPageRoute(builder: (context) => const DashboardScreen()),
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sai tài khoản hoặc mật khẩu!'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  void _showForgotPasswordDialog() {
+    String step = 'email'; 
+    final emailCtrl = TextEditingController();
+    final otpCtrl = TextEditingController();
+    final newPassCtrl = TextEditingController();
+    bool isDialogLoading = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, 
+      barrierColor: Colors.black.withValues(alpha: 0.6), 
+      builder: (context) {
+        final bool isDark = Theme.of(context).brightness == Brightness.dark;
+        final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+        final Color textSub = isDark ? Colors.white70 : Colors.black54;
+        final Color inputBg = isDark ? Colors.black26 : Colors.grey.shade100;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Dialog(
+              backgroundColor: Colors.transparent, 
+              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: GlassContainer(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(step == 'email' ? Icons.mark_email_read_outlined : Icons.lock_reset, size: 48, color: tkGreen),
+                      const SizedBox(height: 16),
+                      Text(
+                        step == 'email' ? 'Quên mật khẩu' : 'Đặt lại mật khẩu', 
+                        style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold)
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      if (step == 'email') ...[
+                        Text(
+                          'Vui lòng nhập Email của bạn. Hệ thống sẽ gửi mã OTP gồm 6 chữ số để khôi phục tài khoản.', 
+                          style: TextStyle(fontSize: 13, color: textSub, height: 1.5), 
+                          textAlign: TextAlign.center
+                        ),
+                        const SizedBox(height: 20),
+                        TextField(
+                          controller: emailCtrl,
+                          style: TextStyle(color: textMain),
+                          decoration: InputDecoration(
+                            // Đã sửa thành hintText và thêm contentPadding
+                            hintText: 'Nhập email đã đăng ký', 
+                            hintStyle: TextStyle(color: textSub),
+                            filled: true,
+                            fillColor: inputBg,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
+                          ),
+                        ),
+                      ] else ...[
+                        Text(
+                          'Mã OTP đã được gửi đến:\n${emailCtrl.text}', 
+                          style: TextStyle(fontSize: 13, color: textSub, height: 1.5), 
+                          textAlign: TextAlign.center
+                        ),
+                        const SizedBox(height: 20),
+                        TextField(
+                          controller: otpCtrl,
+                          keyboardType: TextInputType.number,
+                          maxLength: 6,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: textMain, fontSize: 18, letterSpacing: 4.0),
+                          decoration: InputDecoration(
+                            hintText: 'Mã OTP (6 số)', 
+                            hintStyle: TextStyle(color: textSub, letterSpacing: 0),
+                            counterText: "",
+                            filled: true,
+                            fillColor: inputBg,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: newPassCtrl,
+                          obscureText: true,
+                          style: TextStyle(color: textMain),
+                          decoration: InputDecoration(
+                            hintText: 'Mật khẩu mới (Tối thiểu 6 ký tự)', 
+                            hintStyle: TextStyle(color: textSub),
+                            filled: true,
+                            fillColor: inputBg,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextButton(
+                              onPressed: isDialogLoading ? null : () => Navigator.pop(context),
+                              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                              child: Text('Hủy', style: TextStyle(color: textSub, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: tkGreen,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+                              ),
+                              onPressed: isDialogLoading ? null : () async {
+                                if (step == 'email') {
+                                  final email = emailCtrl.text.trim();
+                                  if (email.isEmpty) return;
+
+                                  setDialogState(() => isDialogLoading = true);
+                                  String? error = await _authService.forgotPassword(email);
+                                  setDialogState(() => isDialogLoading = false);
+
+                                  if (error == null) {
+                                    setDialogState(() => step = 'otp'); 
+                                  } else {
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent));
+                                  }
+                                } else {
+                                  final email = emailCtrl.text.trim();
+                                  final otp = otpCtrl.text.trim();
+                                  final newPass = newPassCtrl.text.trim();
+                                  
+                                  if (otp.isEmpty || newPass.isEmpty) return;
+
+                                  setDialogState(() => isDialogLoading = true);
+                                  String? error = await _authService.resetPassword(email, otp, newPass);
+                                  setDialogState(() => isDialogLoading = false);
+
+                                  if (error == null) {
+                                    if (!context.mounted) return;
+                                    Navigator.pop(context); 
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đổi mật khẩu thành công! Hãy đăng nhập lại.'), backgroundColor: Color(0xFF00A651)));
+                                  } else {
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent));
+                                  }
+                                }
+                              },
+                              child: isDialogLoading 
+                                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                                  : Text(step == 'email' ? 'Nhận mã OTP' : 'Xác nhận', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      }
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    final Color bgColor = isDark ? const Color(0xFF0B1120) : const Color(0xFFF4F7FC); 
+    final Color surfaceColor = isDark ? const Color(0xFF1E293B) : Colors.white;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white70 : Colors.black54;
+
+    return Scaffold(
+      backgroundColor: bgColor, 
+      body: Center(
+        child: SingleChildScrollView( 
+          child: SizedBox(
+            width: 350,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.lock_outline, size: 80, color: tkGreen),
+                const SizedBox(height: 20),
+                
+                Text("ĐĂNG NHẬP HỆ THỐNG", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: textMain)),
+                const SizedBox(height: 30),
+                
+                TextField(
+                  controller: _emailController,
+                  style: TextStyle(color: textMain), 
+                  decoration: InputDecoration(
+                    // Đã sửa thành hintText và thêm contentPadding
+                    hintText: 'Nhập email quản trị', 
+                    hintStyle: TextStyle(color: textSub),
+                    filled: true, 
+                    fillColor: surfaceColor, 
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none), 
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                TextField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  style: TextStyle(color: textMain), 
+                  decoration: InputDecoration(
+                    // Đã sửa thành hintText và thêm contentPadding
+                    hintText: 'Nhập mật khẩu', 
+                    hintStyle: TextStyle(color: textSub),
+                    filled: true, 
+                    fillColor: surfaceColor, 
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
+                
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: _showForgotPasswordDialog,
+                    child: Text('Quên mật khẩu?', style: TextStyle(color: tkGreen, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: tkGreen,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), 
+                      elevation: 4, 
+                      shadowColor: tkGreen.withValues(alpha: 0.5),
+                    ),
+                    onPressed: _isLoading ? null : _handleLogin,
+                    child: _isLoading 
+                      ? const CircularProgressIndicator(color: Colors.white) 
+                      : const Text("XÁC THỰC TRUY CẬP", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text('Chưa có tài khoản?', style: TextStyle(color: textSub)),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const RegisterScreen()),
+                        );
+                      },
+                      child: Text('Đăng ký ngay', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
