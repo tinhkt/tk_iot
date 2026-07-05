@@ -55,6 +55,71 @@ class GlassContainer extends StatelessWidget {
   }
 }
 
+// ============================================================================
+// WIDGET HỖ TRỢ: HIỆU ỨNG QUẠT QUAY
+// ============================================================================
+class SpinningWidget extends StatefulWidget {
+  final Widget child;
+  final bool isSpinning;
+  final int speedLevel;
+
+  const SpinningWidget({
+    super.key,
+    required this.child,
+    required this.isSpinning,
+    this.speedLevel = 1,
+  });
+
+  @override
+  State<SpinningWidget> createState() => _SpinningWidgetState();
+}
+
+class _SpinningWidgetState extends State<SpinningWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
+    if (widget.isSpinning) {
+      _updateSpeed();
+      _controller.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(SpinningWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isSpinning && !oldWidget.isSpinning) {
+      _updateSpeed();
+      _controller.repeat();
+    } else if (!widget.isSpinning && oldWidget.isSpinning) {
+      _controller.stop();
+    } else if (widget.isSpinning && widget.speedLevel != oldWidget.speedLevel) {
+      _updateSpeed();
+      _controller.repeat();
+    }
+  }
+
+  void _updateSpeed() {
+    int durationMs = 1000; 
+    if (widget.speedLevel == 2) durationMs = 600; 
+    if (widget.speedLevel == 3) durationMs = 300; 
+    _controller.duration = Duration(milliseconds: durationMs);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(turns: _controller, child: widget.child);
+  }
+}
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -323,7 +388,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('Thông tin tài khoản', style: TextStyle(color: tkGreen, fontSize: 18, fontWeight: FontWeight.bold)),
+                Text('Thông báo hệ thống', style: TextStyle(color: tkGreen, fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 24),
                 CircleAvatar(radius: 46, backgroundColor: tkGreen.withValues(alpha: 0.15), child: Icon(Icons.person, size: 46, color: tkGreen)),
                 const SizedBox(height: 20),
@@ -390,9 +455,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: const CircleAvatar(radius: 20, backgroundColor: Color(0xFF00A651), child: Icon(Icons.person, color: Colors.white)),
       onSelected: (value) {
         switch (value) {
-          case 0: _openProfileOrSettings(0); break; // Tab 0: Hồ sơ
-          case 1: _openProfileOrSettings(2); break; // Tab 2: Bảo mật
-          case 2: _onMenuTapped(3); break; // Phân quyền
+          case 0: _openProfileOrSettings(0); break;
+          case 1: _openProfileOrSettings(2); break;
+          case 2: _onMenuTapped(3); break;
           case 3: _performLogout(context); break;
         }
       },
@@ -461,7 +526,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       Navigator.pop(context); 
     }
     
-    // Nếu là Desktop và ấn vào Cài đặt -> Mở Popup Settings (Tab 0 mặc định)
     if (index == 4 && !isMobile) { 
       _showSettingsMenu(initialTab: 0);
     } else {
@@ -822,6 +886,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildMenuItem(1, Icons.maps_home_work_rounded, 'Phòng ban', txtMain, txtSub),
                   _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub),
                   _buildMenuItem(3, Icons.security_rounded, 'Phân quyền', txtMain, txtSub),
+                  _buildMenuItem(5, Icons.house_rounded, 'Quản lý nhà', txtMain, txtSub),
                   _buildMenuItem(4, Icons.settings_rounded, 'Cài đặt', txtMain, txtSub),
                 ],
               ),
@@ -912,7 +977,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ==========================================================================
-  // [BẢN CẬP NHẬT] DESKTOP DASHBOARD (CHỐNG TRÀN VÀ CHỐNG KÉO GIÃN VÔ HẠN)
+  // GIAO DIỆN DESKTOP & TABLET
   // ==========================================================================
   Widget _buildBentoDashboard(bool isDark, Color textMain, Color textSub) {
     return Column(
@@ -950,7 +1015,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // CỘT TRÁI: THIẾT BỊ (Cuộn độc lập)
+              // CỘT TRÁI: THIẾT BỊ
               Expanded(
                 flex: 7,
                 child: GlassContainer(
@@ -965,10 +1030,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              // NÚT THÊM THIẾT BỊ CHUẨN MỚI
                               if (userRole == 'SUPER_USER' || userRole == 'HOME_OWNER')
-                                IconButton(
-                                  icon: Icon(Icons.add_circle_outline_rounded, color: tkGreen, size: 24),
-                                  tooltip: 'Thêm thiết bị mới',
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: tkGreen.withValues(alpha: 0.15),
+                                    foregroundColor: tkGreen,
+                                    elevation: 0,
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                  ),
+                                  icon: const Icon(Icons.add, size: 20),
+                                  label: const Text('Thêm thiết bị', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                                   onPressed: () async {
                                     final result = await showDialog(
                                       context: context,
@@ -978,12 +1051,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     if (result == true) _initializeHome();
                                   },
                                 ),
-                              IconButton(
-                                icon: Icon(Icons.refresh, color: textSub), 
-                                onPressed: () {
-                                  if (targetMac.isNotEmpty) Provider.of<DeviceProvider>(context, listen: false).fetchDeviceState(targetMac);
-                                }
-                              ),
                             ],
                           ),
                         ],
@@ -1001,7 +1068,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(width: 24),
               
-              // CỘT PHẢI: WIDGET ĐIỆN & CAMERA (Cuộn dọc, giữ nguyên form dáng)
+              // CỘT PHẢI: WIDGET ĐIỆN & CAMERA
               Expanded(
                 flex: 3,
                 child: SingleChildScrollView(
@@ -1104,7 +1171,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min, // Bo gọn nội dung bên trong
+        mainAxisSize: MainAxisSize.min,
         children: [
           Wrap(
             alignment: WrapAlignment.spaceBetween,
@@ -1155,11 +1222,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          
-          // SỬ DỤNG TỶ LỆ KHUNG HÌNH (ASPECT RATIO) THAY VÌ CHIỀU CAO TĨNH
           _cameraViewMode == 1 
             ? AspectRatio(
-                aspectRatio: 16 / 9, // Tỷ lệ chuẩn của 1 Camera
+                aspectRatio: 16 / 9,
                 child: Container(
                   decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), 
                   child: Center(
@@ -1176,12 +1241,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               )
             : GridView.builder(
                 shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(), // Tắt cuộn lưới vì đã có cuộn ngoài
+                physics: const NeverScrollableScrollPhysics(),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,      // Chia 2 cột
+                  crossAxisCount: 2,
                   crossAxisSpacing: 8,
                   mainAxisSpacing: 8,
-                  childAspectRatio: 4 / 3, // Ép tỷ lệ 4:3 để cam không bị kéo dài thòng lọng
+                  childAspectRatio: 4 / 3,
                 ),
                 itemCount: 4,
                 itemBuilder: (context, index) {
@@ -1199,6 +1264,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // ==========================================================================
+  // GIAO DIỆN ĐIỆN THOẠI
+  // ==========================================================================
   Widget _buildMobileContent(bool isDark, Color surfaceLight, Color textMain, Color textSub) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1233,10 +1301,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // NÚT THÊM THIẾT BỊ MỚI - TO, RÕ, ĐẸP
                   if (userRole == 'SUPER_USER' || userRole == 'HOME_OWNER')
-                    IconButton(
-                      icon: Icon(Icons.add_circle_outline_rounded, color: tkGreen, size: 24),
-                      tooltip: 'Thêm thiết bị mới',
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: tkGreen.withValues(alpha: 0.15),
+                        foregroundColor: tkGreen,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      ),
+                      icon: const Icon(Icons.add, size: 20),
+                      label: const Text('Thêm', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                       onPressed: () async {
                         final result = await showDialog(
                           context: context,
@@ -1246,9 +1322,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         if (result == true) _initializeHome();
                       },
                     ),
-                  IconButton(icon: Icon(Icons.refresh, color: textSub), onPressed: () {
-                    if (targetMac.isNotEmpty) Provider.of<DeviceProvider>(context, listen: false).fetchDeviceState(targetMac);
-                  }),
                 ],
               ),
             ],
@@ -1256,14 +1329,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 16),
           _buildDevicesGrid(isDark, textMain, textSub),
           const SizedBox(height: 24),
-          
-          // XÓA SIZEDBOX ÉP CHIỀU CAO - ĐỂ NÓ TỰ DO
           _buildEnergyWidget(isDark, textMain, textSub),
           const SizedBox(height: 16),
-          
-          // XÓA SIZEDBOX ÉP CHIỀU CAO - ĐỂ NÓ TỰ DO
           _buildCameraWidget(isDark, textMain, textSub),
-          
           const SizedBox(height: 32),
         ],
       ),
@@ -1306,6 +1374,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return GlassContainer(width: 140, padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Icon(icon, color: color, size: 24), const SizedBox(height: 8), Text(title, style: TextStyle(color: txtSub, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), Text(value, style: TextStyle(color: txtMain, fontSize: 20, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)]));
   }
 
+  // ==========================================================================
+  // RESPONSIVE GRID CHỐNG THÔ TRÊN MÁY TÍNH
+  // ==========================================================================
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     return Consumer<DeviceProvider>(
       builder: (context, provider, child) {
@@ -1343,9 +1414,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // QUẠT THÔNG MINH
             if (fans.isNotEmpty) Wrap(spacing: 16, runSpacing: 16, children: fans.map((e) => SmartFanCard(mac: targetMac, endpoint: e.key, initialSpeed: e.value.speed ?? 0, initialSwing: e.value.swing == true, provider: provider)).toList()),
             const SizedBox(height: 24),
-            if (switches.isNotEmpty) GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: switches.length, gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 180, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.0), itemBuilder: (context, index) { String key = switches[index].key; String? backendName = switches[index].value.name; bool isOnline = switches[index].value.state == 'ON'; return SmartSwitchCard(mac: targetMac, endpointKey: key, backendName: backendName, initialStatus: isOnline, provider: provider); }),
+            
+            // LƯỚI RESPONSIVE: Tự động tính toán số cột để giữ hình vuông trên PC/Tablet
+            if (switches.isNotEmpty) 
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  int crossAxisCount;
+                  double ratio;
+                  
+                  if (constraints.maxWidth < 500) {
+                    crossAxisCount = 4; // Mobile giữ 4 cột
+                    ratio = 0.85; // Ép hình chữ nhật đứng nhẹ cho Mobile
+                  } else {
+                    // Máy tính/Tablet: Lấy chiều rộng chia cho 120px để ra số cột dồn ngang tự động
+                    crossAxisCount = (constraints.maxWidth / 120).floor(); 
+                    if (crossAxisCount < 4) crossAxisCount = 4; // Tối thiểu 4 cột
+                    ratio = 1.0; // Máy tính ép cứng chuẩn hình vuông
+                  }
+
+                  return GridView.builder(
+                    shrinkWrap: true, 
+                    physics: const NeverScrollableScrollPhysics(), 
+                    itemCount: switches.length, 
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: crossAxisCount,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: ratio,
+                    ), 
+                    itemBuilder: (context, index) { 
+                      String key = switches[index].key; 
+                      String? backendName = switches[index].value.name; 
+                      bool isOnline = switches[index].value.state == 'ON'; 
+                      return SmartSwitchCard(mac: targetMac, endpointKey: key, backendName: backendName, initialStatus: isOnline, provider: provider); 
+                    }
+                  );
+                }
+              ),
           ],
         );
       },
@@ -1620,7 +1728,7 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
 }
 
 // ============================================================================
-// 💡 CÔNG TẮC ĐÈN
+// 💡 CÔNG TẮC ĐÈN CHIA 4 CỘT
 // ============================================================================
 class SmartSwitchCard extends StatefulWidget {
   final String mac;
@@ -1676,14 +1784,14 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
     final Color powerIconColor = isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400);
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
+      borderRadius: BorderRadius.circular(16), 
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           decoration: BoxDecoration(
             color: bgColor,
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(color: isOnline ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.2)), width: 1.5),
             boxShadow: [if (!isDark && !isOnline) BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]
           ),
@@ -1693,18 +1801,26 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
               onTap: _toggleSwitch,
               child: Stack(
                 children: [
-                  Positioned(top: 14, left: 14, child: Icon(Icons.lightbulb_outline, color: isOnline ? Colors.white : tkGreen, size: 22)),
-                  Positioned(top: 14, right: 14, child: Icon(Icons.more_horiz, color: iconColor, size: 18)),
+                  Positioned(top: 10, left: 10, child: Icon(Icons.lightbulb_outline, color: isOnline ? Colors.white : tkGreen, size: 18)),
+                  Positioned(top: 10, right: 10, child: Icon(Icons.more_horiz, color: iconColor, size: 16)),
+                  
                   Align(
                     alignment: Alignment.center,
                     child: Padding(
-                      padding: const EdgeInsets.only(bottom: 12.0, top: 10.0),
-                      child: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 54),
+                      padding: const EdgeInsets.only(bottom: 14.0, top: 10.0),
+                      child: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 36),
                     ),
                   ),
+                  
                   Positioned(
-                    bottom: 14, left: 8, right: 8,
-                    child: Text(_formatName(), textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    bottom: 8, left: 6, right: 6,
+                    child: Text(
+                      _formatName(), 
+                      textAlign: TextAlign.center, 
+                      style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), 
+                      maxLines: 2, 
+                      overflow: TextOverflow.ellipsis
+                    ),
                   ),
                 ],
               ),
@@ -1717,7 +1833,7 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 }
 
 // ============================================================================
-// 🌀 QUẠT THÔNG MINH
+// 🌀 QUẠT THÔNG MINH - CHIA ĐỀU BẰNG EXPANDED
 // ============================================================================
 class SmartFanCard extends StatefulWidget {
   final String mac;
@@ -1784,7 +1900,16 @@ class _SmartFanCardState extends State<SmartFanCard> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(color: isOnline ? tkGreen.withValues(alpha: 0.15) : (isDark ? Colors.white10 : Colors.grey.shade100), shape: BoxShape.circle),
-                  child: Icon(Icons.mode_fan_off, color: isOnline ? tkGreen : textSub, size: 28),
+                  // BỌC VÀO TRONG SPINNING WIDGET ĐỂ XOAY CÁNH QUẠT
+                  child: SpinningWidget(
+                    isSpinning: isOnline,
+                    speedLevel: speed,
+                    child: Icon(
+                      Icons.cyclone, // 👈 Đã đổi thành icon 3 cánh quạt chuẩn
+                      color: isOnline ? tkGreen : textSub, 
+                      size: 28
+                    ),
+                  )
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -1800,28 +1925,35 @@ class _SmartFanCardState extends State<SmartFanCard> {
               ],
             ),
             const SizedBox(height: 20),
+            
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 _buildBtn(0, 'OFF', speed == 0, isDark),
+                const SizedBox(width: 8),
                 _buildBtn(1, '1', speed == 1, isDark),
+                const SizedBox(width: 8),
                 _buildBtn(2, '2', speed == 2, isDark),
+                const SizedBox(width: 8),
                 _buildBtn(3, '3', speed == 3, isDark),
-                Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300, margin: const EdgeInsets.symmetric(horizontal: 4)),
+                const SizedBox(width: 12),
+                Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300),
+                const SizedBox(width: 12),
                 
                 Material(
                   color: isSwingActive ? tkGreen : (isDark ? Colors.white24 : Colors.grey.shade200),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(10),
                   child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(10),
                     onTap: _toggleSwing,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    child: Container(
+                      height: 40,
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      alignment: Alignment.center,
                       child: Row(
                         children: [
-                          Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 18),
-                          const SizedBox(width: 6),
-                          Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 13, fontWeight: FontWeight.w800)),
+                          Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16),
+                          const SizedBox(width: 4),
+                          Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800)),
                         ],
                       ),
                     ),
@@ -1840,15 +1972,18 @@ class _SmartFanCardState extends State<SmartFanCard> {
     Color bgColor = isActive ? (isOffBtn ? Colors.redAccent : tkGreen) : (isDark ? Colors.white10 : Colors.grey.shade200);
     Color textColor = isActive ? Colors.white : (isDark ? Colors.white : Colors.black87);
 
-    return Material(
-      color: bgColor,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _changeSpeed(btnSpeed),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Text(label, style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w900)),
+    return Expanded(
+      child: Material(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => _changeSpeed(btnSpeed),
+          child: Container(
+            height: 40,
+            alignment: Alignment.center,
+            child: Text(label, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w900)),
+          ),
         ),
       ),
     );

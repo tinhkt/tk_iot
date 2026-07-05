@@ -18,6 +18,7 @@ dependencies:
   window_manager: ^0.5.1
   mobile_scanner: ^7.2.0
   image_picker: ^1.2.3
+  app_settings: ^7.0.0
 
 dev_dependencies:
   flutter_test:
@@ -29,6 +30,8 @@ flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
   image_path: "assets/images/icon_app.png"
+  adaptive_icon_background: "#FFFFFF" # Thêm dòng này (màu nền trắng, hoặc mã màu của bác)
+  adaptive_icon_foreground: "assets/images/icon_app.png" # Thêm dòng này
 
 flutter:
   uses-material-design: true

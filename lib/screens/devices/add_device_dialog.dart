@@ -3,8 +3,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:ui';
 import 'dart:io' show Platform, Process; 
 import 'dart:async';
-import 'dart:convert'; 
 import 'package:http/http.dart' as http; 
+import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
 import '../../services/auth_service.dart';
 
 // ============================================================================
@@ -51,7 +51,7 @@ class GlassCard extends StatelessWidget {
 }
 
 // ============================================================================
-// POPUP CHÍNH: THÊM THIẾT BỊ (ĐÃ CHUẨN HÓA DANH XƯNG TOÀN CỤC)
+// POPUP CHÍNH: THÊM THIẾT BỊ
 // ============================================================================
 class AddDeviceDialog extends StatefulWidget {
   const AddDeviceDialog({super.key});
@@ -60,7 +60,7 @@ class AddDeviceDialog extends StatefulWidget {
   State<AddDeviceDialog> createState() => _AddDeviceDialogState();
 }
 
-class _AddDeviceDialogState extends State<AddDeviceDialog> {
+class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProviderStateMixin {
   final MobileScannerController _cameraController = MobileScannerController();
   final TextEditingController _macController = TextEditingController();
   final AuthService _authService = AuthService();
@@ -71,59 +71,83 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
   int _currentView = 0; 
   bool _isProcessing = false;
   
-  // Vòng lặp quét tìm thiết bị phát Wi-Fi AP ngầm
+  // Trạng thái cho luồng quét AP Mode
   Timer? _apDetectionTimer;
-  String _apStatusMessage = "Đang chờ bạn kết nối vào Wi-Fi của thiết bị...";
+  late AnimationController _pulseController;
+  bool isConnectedToHub = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Tạo hiệu ứng sóng Radar chớp tắt
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    );
+  }
 
   @override
   void dispose() {
     _cameraController.dispose();
     _macController.dispose();
     _stopAPDetection();
+    _pulseController.dispose();
     super.dispose();
   }
 
-  // --- HÀM ĐIỀU HƯỚNG MỞ CÀI ĐẶT WI-FI HỆ THỐNG ---
-  void _openWifiSettings() async {
+  // --- HÀM MỞ CÀI ĐẶT WIFI CỦA ĐIỆN THOẠI ---
+  void _openWiFiSettings() async {
     try {
       if (Platform.isWindows) {
         await Process.run('cmd', ['/c', 'start', 'ms-settings:network-wifi']);
-      } else if (Platform.isAndroid || Platform.isIOS) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Vui lòng mở mục Cài đặt Wi-Fi trên điện thoại của bạn.'))
-        );
+      } else {
+        AppSettings.openAppSettings(type: AppSettingsType.wifi);
       }
     } catch (e) {
       print("Lỗi mở cài đặt mạng: $e");
     }
   }
 
-  // --- VÒNG LẶP PING TỰ ĐỘNG PHÁT HIỆN THIẾT BỊ QUA GATEWAY AP (192.168.4.1) ---
+  // --- QUÉT NGẦM MẠNG WIFI CỦA THIẾT BỊ ---
   void _startAPDetection() {
     _stopAPDetection();
     setState(() {
-      _apStatusMessage = "Đang quét ngầm hệ thống để tìm kiếm thiết bị...";
+      isConnectedToHub = false;
     });
+    _pulseController.repeat(reverse: true);
 
+    // Cứ 2 giây sẽ Ping vào mạch ESP32 một lần
     _apDetectionTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
-      if (_isProcessing) return;
+      if (!mounted) return;
+      
       try {
-        final response = await http.get(Uri.parse('http://192.168.4.1/info')).timeout(const Duration(seconds: 1));
+        // IP mặc định của ESP32 khi ở chế độ AP Mode
+        final response = await http.get(
+          Uri.parse('http://192.168.4.1/api/check_ip'),
+        ).timeout(const Duration(seconds: 1)); // Timeout cực nhanh để không đơ app
         
         if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          String? hubMac = data['mac'] ?? data['mac_address'];
-          
-          if (hubMac != null && hubMac.isNotEmpty) {
-            _stopAPDetection();
+          // Bắt được mạch ESP32!
+          _stopAPDetection();
+          if (mounted) {
             setState(() {
-              _apStatusMessage = "Đã tìm thấy thiết bị! Đang tự động tiến hành liên kết Cloud...";
+              isConnectedToHub = true;
             });
-            _processLinkDevice(hubMac);
+            _pulseController.stop();
+            
+            // Đợi 1.5s cho người dùng nhìn thấy dấu Check Xanh rồi chuyển bước
+            Future.delayed(const Duration(milliseconds: 1500), () {
+              if (mounted) {
+                // Tạm thời trả về "true" (Thành công). 
+                // Bác có thể thay dòng pop này bằng Navigator.push sang một màn hình WebView 
+                // trỏ tới "http://192.168.4.1" để cấu hình WiFi nhà nhé.
+                Navigator.pop(context, true); 
+              }
+            });
           }
         }
-      } catch (_) {
-        // Bỏ qua lỗi kết nối khi chưa cấu hình Wi-Fi xong
+      } catch (e) {
+        // Bỏ qua lỗi kết nối (Do người dùng chưa bấm chọn WiFi hoặc đang dùng 4G/WiFi nhà)
       }
     });
   }
@@ -131,9 +155,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
   void _stopAPDetection() {
     _apDetectionTimer?.cancel();
     _apDetectionTimer = null;
+    _pulseController.stop();
   }
 
-  // --- [ĐÃ SỬA LỖI ĐỒNG BỘ BACKEND] HÀM XỬ LÝ GỬI MÃ ĐỊA CHỈ THIẾT BỊ LÊN SERVER CLOUD ---
+  // --- HÀM XỬ LÝ GỬI MÃ ĐỊA CHỈ THIẾT BỊ LÊN SERVER CLOUD ---
   Future<void> _processLinkDevice(String rawMac) async {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
@@ -148,27 +173,23 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
 
     if (_currentView == 1) _cameraController.stop();
 
-    // Gọi API Backend (Hàm này đã được nâng cấp trên Server Go để tự tạo bộ nhớ đệm nếu thiết bị mới tinh)
     String? error = await _authService.linkHub(cleanMac);
     
     if (!mounted) return;
 
     if (error == null) {
-      // Thành công: Thông báo màu xanh lá và đóng hộp thoại, trả về kết quả true để Dashboard load lại dữ liệu
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Liên kết thiết bị $cleanMac thành công!'), backgroundColor: tkGreen)
       );
       Navigator.pop(context, true); 
     } else {
-      // Thất bại: Hiển thị lỗi đỏ
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent));
       if (_currentView == 1) _cameraController.start();
       setState(() => _isProcessing = false);
-      if (_currentView == 3) _startAPDetection(); 
     }
   }
 
-  // --- WIDGET HEADER (Tiêu đề Popup gọn gàng) ---
+  // --- WIDGET HEADER ---
   Widget _buildHeader(String title, Color textMain, Color textSub) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -207,7 +228,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
     );
   }
 
-  // --- VIEW 0: MENU LỰA CHỌN PHƯƠNG THỨC ---
+  // --- VIEW 0: MENU ---
   Widget _buildSelectionMenu(bool isDark, Color textMain, Color textSub) {
     return Padding(
       padding: const EdgeInsets.all(20.0),
@@ -251,7 +272,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
             padding: const EdgeInsets.all(12),
             onTap: () {
               setState(() => _currentView = 3);
-              _startAPDetection();
+              _startAPDetection(); // Gọi hàm quét ngầm và phát radar
             },
             child: Row(
               children: [
@@ -387,7 +408,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
     );
   }
 
-  // --- VIEW 3: LUỒNG AP MODE TỰ ĐỘNG HOÀN TOÀN ---
+  // --- VIEW 3: LUỒNG AP MODE TỰ ĐỘNG ---
   Widget _buildAPModeView(bool isDark, Color textMain, Color textSub) {
     return Padding(
       padding: const EdgeInsets.all(20.0),
@@ -395,53 +416,89 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
         mainAxisSize: MainAxisSize.min,
         children: [
           _buildHeader('Kết nối Wi-Fi AP Tự động', textMain, textSub),
-          const SizedBox(height: 20),
-          
-          Container(
-            padding: const EdgeInsets.all(16),
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: isDark ? Colors.black12 : Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: isDark ? Colors.white10 : Colors.grey.shade200)
-            ),
-            child: Column(
-              children: [
-                if (!_isProcessing)
-                  const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.orange))
-                else
-                  Icon(Icons.cloud_upload_rounded, color: tkGreen, size: 32),
-                const SizedBox(height: 16),
-                Text(
-                  _apStatusMessage,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.w600, height: 1.4),
-                ),
-              ],
+          const SizedBox(height: 32),
+
+          // HIỆU ỨNG RADAR HOẶC DẤU CHECK THÀNH CÔNG
+          SizedBox(
+            height: 120,
+            child: Center(
+              child: isConnectedToHub
+                  ? TweenAnimationBuilder(
+                      tween: Tween<double>(begin: 0.0, end: 1.0),
+                      duration: const Duration(milliseconds: 500),
+                      builder: (context, double value, child) {
+                        return Transform.scale(
+                          scale: value,
+                          child: Container(
+                            width: 100, height: 100,
+                            decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), shape: BoxShape.circle),
+                            child: Icon(Icons.check_circle_rounded, color: tkGreen, size: 64),
+                          ),
+                        );
+                      },
+                    )
+                  : AnimatedBuilder(
+                      animation: _pulseController,
+                      builder: (context, child) {
+                        return Container(
+                          width: 100 + (_pulseController.value * 20),
+                          height: 100 + (_pulseController.value * 20),
+                          decoration: BoxDecoration(
+                            color: Colors.blueAccent.withValues(alpha: 0.1 + (_pulseController.value * 0.1)),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.blueAccent.withValues(alpha: 0.5 - (_pulseController.value * 0.3)),
+                              width: 2,
+                            ),
+                          ),
+                          child: Center(
+                            child: Container(
+                              width: 80, height: 80,
+                              decoration: BoxDecoration(color: Colors.blueAccent.withValues(alpha: 0.2), shape: BoxShape.circle),
+                              child: const Icon(Icons.wifi_tethering, color: Colors.blueAccent, size: 40),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ),
-          const SizedBox(height: 20),
+          
+          const SizedBox(height: 24),
 
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: tkGreen,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                elevation: 2,
-              ),
-              onPressed: _openWifiSettings,
-              icon: const Icon(Icons.wifi_rounded, color: Colors.white, size: 20),
-              label: const Text('BƯỚC 1: MỞ CÀI ĐẶT WI-FI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-            ),
+          // TRẠNG THÁI VÀ HƯỚNG DẪN
+          Text(
+            isConnectedToHub ? 'Đã kết nối với Smart Hub!' : 'Đang tìm kiếm mạng thiết bị...',
+            style: TextStyle(color: isConnectedToHub ? tkGreen : textMain, fontSize: 16, fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 12),
           Text(
-            'Sau khi nhấn, hãy kết nối vào Wi-Fi do thiết bị phát ra (Ví dụ: TK_DEVICE_...). Hệ thống sẽ tự động bắt tay và cấu hình Cloud ngay lập tức.',
+            isConnectedToHub 
+              ? 'Chuẩn bị mở màn hình Cài đặt kết nối...' 
+              : 'Vui lòng nhấn nút bên dưới để mở cài đặt Wi-Fi. Kết nối với mạng có tên "Smart_Hub_..." sau đó quay lại App.',
+            style: TextStyle(color: textSub, fontSize: 13, height: 1.5),
             textAlign: TextAlign.center,
-            style: TextStyle(color: textSub, fontSize: 11, height: 1.4),
-          )
+          ),
+          const SizedBox(height: 32),
+
+          // NÚT BẤM MỞ WIFI SETTINGS
+          if (!isConnectedToHub)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.settings_suggest_rounded, size: 20),
+                label: const Text('MỞ CÀI ĐẶT WI-FI ĐIỆN THOẠI', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                onPressed: _openWiFiSettings,
+              ),
+            ),
         ],
       ),
     );
@@ -471,7 +528,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
                       ? _buildScannerView(textMain, textSub)
                       : _currentView == 2
                           ? _buildManualEntryView(isDark, textMain, textSub)
-                          : _buildAPModeView(isDark, textMain, textSub),
+                          : _buildAPModeView(isDark, textMain, textSub), // Render View 3
             ),
           ),
         ),
