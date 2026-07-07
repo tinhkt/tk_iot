@@ -5,7 +5,6 @@ import 'dart:io' show Platform, Process;
 import 'dart:async';
 import 'package:http/http.dart' as http; 
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
-import '../../services/auth_service.dart';
 
 // ============================================================================
 // WIDGET HỖ TRỢ: KÍNH MỜ CHO POPUP
@@ -63,7 +62,6 @@ class AddDeviceDialog extends StatefulWidget {
 class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProviderStateMixin {
   final MobileScannerController _cameraController = MobileScannerController();
   final TextEditingController _macController = TextEditingController();
-  final AuthService _authService = AuthService();
   
   final Color tkGreen = const Color(0xFF00A651);
 
@@ -158,11 +156,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     _pulseController.stop();
   }
 
-  // --- HÀM XỬ LÝ GỬI MÃ ĐỊA CHỈ THIẾT BỊ LÊN SERVER CLOUD ---
+  // --- [BẢN CẬP NHẬT MỚI]: HÀM TRẢ VỀ MÃ MAC CHO MÀN HÌNH CHÍNH XỬ LÝ ---
   Future<void> _processLinkDevice(String rawMac) async {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
 
+    // Chuẩn hóa định dạng chuỗi
     String cleanMac = rawMac.replaceAll('MAC:', '').replaceAll('SN:', '').replaceAll(':', '').trim();
 
     if (cleanMac.isEmpty) {
@@ -173,20 +172,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
 
     if (_currentView == 1) _cameraController.stop();
 
-    String? error = await _authService.linkHub(cleanMac);
-    
-    if (!mounted) return;
-
-    if (error == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Liên kết thiết bị $cleanMac thành công!'), backgroundColor: tkGreen)
-      );
-      Navigator.pop(context, true); 
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent));
-      if (_currentView == 1) _cameraController.start();
-      setState(() => _isProcessing = false);
-    }
+    // 👈 KHÔNG GỌI API Ở ĐÂY NỮA. CHỈ ĐÓNG POPUP VÀ NÉM MÃ MAC VỀ CHO MÀN HÌNH CHÍNH
+    Navigator.pop(context, cleanMac); 
   }
 
   // --- WIDGET HEADER ---
