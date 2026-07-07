@@ -12,6 +12,9 @@ class DeviceProvider with ChangeNotifier {
   DeviceState? _deviceState;
   bool _isLoading = false;
 
+  // THÊM: Biến hứng data phụ cho Bảng Điều Khiển
+  Function(String topic, String message)? _globalListener;
+
   DeviceState? get deviceState => _deviceState;
   bool get isLoading => _isLoading;
 
@@ -19,35 +22,38 @@ class DeviceProvider with ChangeNotifier {
     _initializeMqtt();
   }
 
+  // --- HÀM MỚI: Bảng điều khiển (Dashboard) sẽ gọi hàm này để hứng tin nhắn MQTT ---
+  void setGlobalMqttListener(Function(String topic, String message) callback) {
+    _globalListener = callback;
+  }
+
   // --- HÀM KHỞI TẠO VÀ LẮNG NGHE MQTT ---
   void _initializeMqtt() {
     _mqttService.onMessageReceived = (topic, message) {
+      
+      // 1. CHIA SẺ DATA CHO BẢNG ĐIỀU KHIỂN (Dành cho mọi thiết bị: Hass, Hub...)
+      if (_globalListener != null) {
+        _globalListener!(topic, message);
+      }
+
+      // 2. LOGIC CŨ CHO MÀN HÌNH CHI TIẾT HUB V38
       if (_deviceState == null) return;
       
       String currentMac = _deviceState!.mac.replaceAll(':', '').toUpperCase();
-      
-      // Chỉ xử lý nếu Topic chứa MAC của Hub đang mở trên màn hình
       if (topic.contains(currentMac)) {
-        // Tách chuỗi theo dấu "/". 
-        // VD 1: smarthub/MAC/S_1234/state -> Length = 4
-        // VD 2: smarthub/MAC/F_1234/speed/state -> Length = 5
         List<String> parts = topic.split('/');
         
         if (parts.length >= 4 && parts[0] == 'smarthub') {
           String endpoint = parts[2];
-
-          // Bắt trạng thái BẬT/TẮT CHUNG (Công tắc & Quạt)
           if (parts.length == 4 && parts[3] == 'state') {
             if (message == "ON" || message == "OFF") {
               _updateStateRealTime(endpoint, state: message);
             }
           } 
-          // Bắt trạng thái TỐC ĐỘ QUẠT
           else if (parts.length == 5 && parts[3] == 'speed' && parts[4] == 'state') {
             int speedVal = int.tryParse(message) ?? 0;
             _updateStateRealTime(endpoint, speed: speedVal);
           }
-          // Bắt trạng thái TÚP NĂNG QUẠT (SWING)
           else if (parts.length == 5 && parts[3] == 'osc' && parts[4] == 'state') {
             bool isSwing = (message == 'swing');
             _updateStateRealTime(endpoint, isSwing: isSwing);
@@ -66,13 +72,9 @@ class DeviceProvider with ChangeNotifier {
       final oldDevice = _deviceState!.endpoints[endpoint]!;
       bool isChanged = false;
 
-      // Chuẩn bị biến mới để so sánh
       String newState = state ?? oldDevice.state;
-      
-      // [ĐÃ VÁ LỖI WINDOWS BUILD]: Chuyển thành var để tương thích với int? (Null Safety)
       var newSpeed = speed ?? oldDevice.speed;
       
-      // Kiểm tra xem có gì thay đổi so với hiện tại không
       if (state != null && state != oldDevice.state) isChanged = true;
       if (speed != null && speed != oldDevice.speed) isChanged = true;
       if (isSwing != null) isChanged = true; 
@@ -83,11 +85,11 @@ class DeviceProvider with ChangeNotifier {
           on: newState == 'ON',
           active: newState == 'ON',
           state: newState,
-          speed: newSpeed, // Sử dụng biến an toàn
+          speed: newSpeed, 
         );
         
         print('🔄 [UI CẬP NHẬT] Đã cập nhật $endpoint - Trạng thái: $newState | Tốc độ: $newSpeed');
-        notifyListeners(); // Ra lệnh vẽ lại màn hình điện thoại
+        notifyListeners(); 
       }
     }
   }
@@ -112,16 +114,27 @@ class DeviceProvider with ChangeNotifier {
   }
 
   void toggleDevice(String mac, String endpoint, bool currentState) {
-    _mqttService.sendCommand(mac, endpoint, !currentState);
+    bool turnOn = !currentState;
+    String payload = turnOn ? "ON" : "OFF";
+    String topic = "";
 
-    // Optimistic Update (Tạm thời thay đổi ngay để UI mượt mà)
+    List<String> smartHubMacs = ['ECE334468B64']; 
+    if (smartHubMacs.contains(mac)) {
+      topic = 'smarthub/$mac/$endpoint/set';
+    } else {
+      topic = '$mac/control'; 
+    }
+
+    print("⚡ [BẮN LỆNH PROVIDER]: $payload -> Topic: $topic");
+    _mqttService.publish(topic, payload); 
+
     if (_deviceState != null && _deviceState!.endpoints.containsKey(endpoint)) {
       final oldDevice = _deviceState!.endpoints[endpoint]!;
       _deviceState!.endpoints[endpoint] = SubDevice(
-        power: !currentState,
-        on: !currentState,
-        active: !currentState,
-        state: currentState ? 'OFF' : 'ON',
+        power: turnOn,
+        on: turnOn,
+        active: turnOn,
+        state: turnOn ? 'ON' : 'OFF',
         speed: oldDevice.speed,
       );
       notifyListeners(); 
@@ -132,7 +145,6 @@ class DeviceProvider with ChangeNotifier {
     bool isTurningOn = speed > 0;
     _mqttService.sendCommand(mac, endpoint, isTurningOn, speed: speed, swing: isSwing);
 
-    // Optimistic Update (Tạm thời thay đổi ngay để UI mượt mà)
     if (_deviceState != null && _deviceState!.endpoints.containsKey(endpoint)) {
       final oldDevice = _deviceState!.endpoints[endpoint]!;
       _deviceState!.endpoints[endpoint] = SubDevice(

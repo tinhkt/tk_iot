@@ -16,6 +16,7 @@ import 'devices/add_device_dialog.dart';
 import 'admin/profile_management_view.dart';
 import '../providers/notification_provider.dart';
 import 'home/home_management_screen.dart'; 
+import 'dart:async';
 
 class GlassContainer extends StatelessWidget {
   final Widget child;
@@ -75,13 +76,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isLoadingDevices = true; 
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...'};
-
+  Timer? _debounceSync;
+  bool _isSelectionMode = false;
+  Set<String> _selectedDevices = {}; 
+  Set<String> _hiddenDevices = {}; // Chứa ID (MAC_Endpoint) của các công tắc bị ẩn
+  bool _showHiddenFilter = false; // Bật cờ này lên để xem các thiết bị đang bị ẩn
   List<dynamic> _currentHomeDevices = [], _allHomesForSuperUser = [];
   Map<String, dynamic>? _selectedHomeForSuperUser; 
   final Color tkGreen = const Color(0xFF00A651); 
 
   @override
-  void initState() { super.initState(); _initializeHome(); }
+  void initState() { super.initState(); _initializeHome(); _fetchWeather(); WidgetsBinding.instance.addPostFrameCallback((_) { Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail); _setupRealtimeSync();}); }
 
   Future<void> _handleRefresh() async { await _initializeHome(isSilent: false); await Future.delayed(const Duration(milliseconds: 500)); }
 
@@ -110,23 +115,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   int onCount = 0, offCount = 0, totalEndpoints = 0;
                   
                   for (var d in devs) {
-                    var rawState = d['state'] ?? d['state_data'] ?? {}; 
+                    var rawState = d['state'] ?? d['state_data'] ?? d['properties'] ?? {}; 
                     Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
-                    
                     bool hasEp = false;
-                    stateMap.forEach((k, v) {
-                      String kl = k.toLowerCase();
-                      if (kl.contains('fan') || kl.contains('speed')) {
-                        if (!hasEp) { hasEp = true; totalEndpoints++; }
-                        if (v.toString() != '0' && v.toString().toUpperCase() != 'OFF' && v.toString() != 'FALSE') onCount++; else offCount++;
-                      } else if (v.toString().toUpperCase() == 'ON' || v.toString().toUpperCase() == 'TRUE' || v.toString() == '1') {
+
+                    // HÀM ĐỆ QUY CẬP NHẬT TÍNH TOÁN (LỌC BỎ IP, MAC, WIFI...)
+                    void countRecursive(String key, dynamic val) {
+                      final kLow = key.toLowerCase();
+                      final ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping'];
+                      for (var ig in ignored) { if (kLow == ig || kLow.contains(ig)) return; } // Gặp rác là bỏ qua ngay
+
+                      if (val is Map) {
+                        if (val.containsKey('state') || val.containsKey('value')) {
+                           String s = (val['state'] ?? val['value']).toString().toUpperCase();
+                           if (s == 'ON' || s == 'TRUE' || s == '1') { hasEp = true; totalEndpoints++; onCount++; }
+                           else if (s == 'OFF' || s == 'FALSE' || s == '0') { hasEp = true; totalEndpoints++; offCount++; }
+                        } else {
+                           val.forEach((k, v) => countRecursive(k, v));
+                        }
+                        return;
+                      }
+                      
+                      String s = val.toString().toUpperCase();
+                      if (s == 'ON' || s == 'TRUE' || s == '1') {
                         hasEp = true; totalEndpoints++; onCount++;
-                      } else if (v.toString().toUpperCase() == 'OFF' || v.toString().toUpperCase() == 'FALSE' || v.toString() == '0') {
+                      } else if (s == 'OFF' || s == 'FALSE' || s == '0') {
                         hasEp = true; totalEndpoints++; offCount++;
                       }
-                    });
+                    }
+
+                    if (stateMap.isNotEmpty) stateMap.forEach((k, v) => countRecursive(k, v));
                     if (!hasEp) { totalEndpoints++; offCount++; }
                   }
+                  
                   home['on_count'] = onCount; home['off_count'] = offCount; home['total_endpoints'] = totalEndpoints; home['raw_devices'] = devs; 
                 }
               }
@@ -136,7 +157,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           } else {
             if (homeId.isNotEmpty) { await _fetchDevicesForHome(homeId, token); }
           }
-          if (mounted) { Provider.of<NotificationProvider>(context, listen: false).fetchHistory(); Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail); _fetchWeather(); }
+          if (mounted) { Provider.of<NotificationProvider>(context, listen: false).fetchHistory(); }
         }
       } catch (e) { print("Lỗi giải mã token: $e"); }
     }
@@ -157,19 +178,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) { print("Lỗi fetch thiết bị: $e"); }
   }
 
+  void _setupRealtimeSync() {
+    final provider = Provider.of<DeviceProvider>(context, listen: false);
+    
+    provider.setGlobalMqttListener((topic, message) {
+      if (!mounted) return;
+      
+      if (_debounceSync?.isActive ?? false) _debounceSync!.cancel();
+      
+      _debounceSync = Timer(const Duration(milliseconds: 800), () {
+         if (mounted) {
+           _initializeHome(isSilent: true); 
+         }
+      });
+    });
+  }
+
   Future<void> _fetchWeather() async {
     try {
       final token = await AuthService().getToken();
       final response = await http.get(
-        Uri.parse('$baseUrl/weather/current'),
+        Uri.parse('$baseUrl/weather/current'), 
         headers: {'Authorization': 'Bearer $token'},
       );
+
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (mounted) setState(() => _weatherData = data);
+        final jsonResponse = jsonDecode(response.body);
+        
+        // Trỏ đúng vào lớp "data" bên trong JSON trả về
+        final weatherInfo = jsonResponse['data'] ?? {}; 
+        
+        if (mounted) {
+          setState(() {
+            _weatherData = {
+              'temp': weatherInfo['temp']?.toString() ?? '--',
+              'condition': weatherInfo['description']?.toString() ?? 'Đang tải...',
+              'humidity': weatherInfo['humidity']?.toString() ?? '66', // Lấy luôn độ ẩm
+            };
+          });
+        }
       }
     } catch (e) {
-      print("Lỗi tải thời tiết: $e");
+      print("☁️ Lỗi API thời tiết: $e");
     }
   }
 
@@ -177,7 +227,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final provider = Provider.of<DeviceProvider>(context, listen: false);
     List<dynamic> rawDevices = home['raw_devices'] ?? [];
     int totalEndps = home['total_endpoints'] ?? 0;
-    setState(() { if (turnOn) { home['on_count'] = totalEndps; home['off_count'] = 0; } else { home['on_count'] = 0; home['off_count'] = totalEndps; } });
+    
+    // Cập nhật UI ngay lập tức để tạo cảm giác mượt
+    setState(() { 
+      if (turnOn) { home['on_count'] = totalEndps; home['off_count'] = 0; } 
+      else { home['on_count'] = 0; home['off_count'] = totalEndps; } 
+    });
     
     for (var device in rawDevices) {
       String mac = device['mac_address'] ?? device['mac'] ?? ''; 
@@ -187,14 +242,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
       bool hasEndpoints = false;
       stateMap.forEach((k, v) {
         String kl = k.toLowerCase();
-        if (kl.contains('fan') || kl.contains('speed')) { hasEndpoints = true; provider.toggleDevice(mac, 'fan', !turnOn); }
+        
+        // GIẢI QUYẾT LỖI NGƯỢC LỆNH: 
+        // Thêm dấu (!) vào !turnOn để đánh lừa "Hàm lật". 
+        // VD: Muốn bật (turnOn=true), ta truyền false (!turnOn), hàm lật sẽ lật thành true (ON).
+        if (kl.contains('fan') || kl.contains('speed')) { 
+          hasEndpoints = true; 
+          provider.toggleDevice(mac, 'fan', !turnOn); 
+        }
         else if (v.toString().toUpperCase() == 'ON' || v.toString().toUpperCase() == 'OFF' || v.toString() == '1' || v.toString() == '0') {
-          hasEndpoints = true; provider.toggleDevice(mac, k, !turnOn);
+          hasEndpoints = true; 
+          provider.toggleDevice(mac, k, !turnOn);
         }
       });
-      if (!hasEndpoints) { provider.toggleDevice(mac, 'S_$mac', !turnOn); }
+      
+      // Nếu thiết bị không có trạng thái cũ, mặc định bắn vào endpoint S_1
+      if (!hasEndpoints) { 
+        provider.toggleDevice(mac, 'S_1', !turnOn); 
+      }
     }
-    Future.delayed(const Duration(milliseconds: 1500), () => _initializeHome(isSilent: true));
   }
 
   void _performLogout(BuildContext context) async {
@@ -394,7 +460,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 children: [
                                   Text('Nhận thông báo đẩy (Push)', style: TextStyle(color: textMain, fontSize: 13)),
                                   Switch(
-                                    value: _isPushEnabled, activeColor: tkGreen,
+                                    value: _isPushEnabled, activeThumbColor: tkGreen,
                                     onChanged: (val) { setState(() => _isPushEnabled = val); setDialogState(() => _isPushEnabled = val); },
                                   )
                                 ]
@@ -408,11 +474,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 constraints: const BoxConstraints(maxHeight: 400),
                                 child: ListView.separated(
                                   shrinkWrap: true, physics: const BouncingScrollPhysics(), itemCount: listNotif.length,
-                                  separatorBuilder: (_, __) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
+                                  separatorBuilder: (_, _) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
                                   itemBuilder: (context, index) {
                                     final notif = listNotif[index];
                                     IconData icon = Icons.info_outline_rounded;
-                                    if (notif.type == 'ALERT') icon = Icons.warning_amber_rounded; else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
+                                    if (notif.type == 'ALERT') {
+                                      icon = Icons.warning_amber_rounded;
+                                    } else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
                                     Color notifColor = Color(int.parse(notif.color));
                                     return ListTile(
                                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), hoverColor: isDark ? Colors.white10 : Colors.grey.shade50,
@@ -478,7 +546,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text('Đẩy (Push)', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
-                        Switch(value: _isPushEnabled, activeColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
+                        Switch(value: _isPushEnabled, activeThumbColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
                       ],
                     )
                   ],
@@ -490,11 +558,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ? Center(child: Text('Không có thông báo nào.', style: TextStyle(color: textSub)))
                     : ListView.separated(
                         physics: const BouncingScrollPhysics(), padding: const EdgeInsets.all(16), itemCount: listNotif.length,
-                        separatorBuilder: (_, __) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
+                        separatorBuilder: (_, _) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
                         itemBuilder: (context, index) {
                           final notif = listNotif[index];
                           IconData icon = Icons.info_outline_rounded;
-                          if (notif.type == 'ALERT') icon = Icons.warning_amber_rounded; else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
+                          if (notif.type == 'ALERT') {
+                            icon = Icons.warning_amber_rounded;
+                          } else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
                           Color notifColor = Color(int.parse(notif.color));
                           return ListTile(
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), leading: CircleAvatar(backgroundColor: notifColor.withValues(alpha: 0.12), child: Icon(icon, color: notifColor, size: 20)),
@@ -511,6 +581,67 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- THANH CÔNG CỤ HIỆN LÊN KHI CHỌN NHIỀU THIẾT BỊ ---
+  Widget _buildSelectionActionBar(bool isDark) {
+    return Material(
+      elevation: 20,
+      borderRadius: BorderRadius.circular(24),
+      color: isDark ? const Color(0xFF1E293B) : Colors.white,
+      shadowColor: Colors.black45,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        width: 450, // Giới hạn chiều rộng cho đẹp trên màn hình PC
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Đã chọn ${_selectedDevices.length}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF00A651))),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Đổi tên hàng loạt',
+                  icon: const Icon(Icons.edit_rounded, color: Colors.blueAccent),
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tính năng đổi tên hàng loạt đang phát triển')));
+                    setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
+                  }
+                ),
+                IconButton(
+                  tooltip: 'Ẩn / Hiện hàng loạt',
+                  icon: Icon(_showHiddenFilter ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.orange), 
+                  onPressed: () {
+                    setState(() { 
+                      if (_showHiddenFilter) _hiddenDevices.removeAll(_selectedDevices); 
+                      else _hiddenDevices.addAll(_selectedDevices); 
+                      _isSelectionMode = false; _selectedDevices.clear(); 
+                    });
+                  }
+                ),
+                IconButton(
+                  tooltip: 'Xóa hàng loạt',
+                  icon: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent), 
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang xóa ${_selectedDevices.length} thiết bị...')));
+                    setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
+                  }
+                ),
+                Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.2), shape: BoxShape.circle),
+                  child: IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.grey, size: 20), 
+                    onPressed: () => setState(() { _isSelectionMode = false; _selectedDevices.clear(); })
+                  ),
+                ),
+              ],
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
   @override
   Widget build(BuildContext context) {
     final bool isMobile = MediaQuery.of(context).size.width < 900;
@@ -530,8 +661,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 IconButton(
                   icon: Icon(Icons.add_circle_outline_rounded, color: textMain),
                   onPressed: () async {
-                    final result = await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
-                    if (result != null) _handleRefresh();
+                    // ĐÃ SỬA: Ép buộc làm mới ngay sau khi đóng Dialog
+                    await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
+                    _handleRefresh(); 
                   },
                 ),
                 _buildNotificationBell(textMain, textSub), const SizedBox(width: 8),
@@ -539,6 +671,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             )
           : null,
       drawer: isMobile ? _buildMobileDrawer(isDark, surfaceLight, textMain, textSub) : null,
+      
       body: Column(
         children: [
           if (!kIsWeb && !isMobile && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) _buildCustomTitleBar(isDark),
@@ -563,6 +696,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
+      
+      // THANH CHỌN NHIỀU NỔI LÊN BÊN DƯỚI
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: _isSelectionMode ? _buildSelectionActionBar(isDark) : null,
+
       bottomNavigationBar: isMobile ? _buildBottomNav(surfaceLight, textSub) : null,
     );
   }
@@ -714,11 +852,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       duration: const Duration(milliseconds: 200),
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent, borderRadius: BorderRadius.circular(16), border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent)),
-      child: ListTile(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        leading: Icon(icon, color: isSelected ? tkGreen : txtSub, size: 22),
-        title: Text(title, style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600)),
-        onTap: () => _onMenuTapped(index, isFromDrawer: isFromDrawer),
+      
+      // SỬA LỖI CẢNH BÁO LIST TILE BẰNG THẺ MATERIAL NÀY
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          leading: Icon(icon, color: isSelected ? tkGreen : txtSub, size: 22),
+          title: Text(title, style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600)),
+          onTap: () => _onMenuTapped(index, isFromDrawer: isFromDrawer),
+        ),
       ),
     );
   }
@@ -794,8 +937,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               style: ElevatedButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), foregroundColor: tkGreen, elevation: 0, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
                               icon: const Icon(Icons.add, size: 20), label: const Text('Thêm', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               onPressed: () async {
-                                final result = await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
-                                if (result != null) _handleRefresh();
+                                // ĐÃ SỬA: Bỏ if (result != null), ép buộc gọi _handleRefresh()
+                                await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
+                                _handleRefresh();
                               },
                             ),
                         ],
@@ -832,18 +976,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           _buildWeatherBento(isDark, textMain, textSub),
           const SizedBox(height: 16),
-          SizedBox(
-            height: 130,
-            child: ListView(
-              scrollDirection: Axis.horizontal, physics: const BouncingScrollPhysics(), clipBehavior: Clip.none,
-              children: [
-                _buildMiniStatusMobile(Icons.thermostat, 'Nhiệt độ', '31.0°C', Colors.orange, textMain, textSub), const SizedBox(width: 12),
-                _buildMiniStatusMobile(Icons.water_drop, 'Độ ẩm', '66%', Colors.blue, textMain, textSub), const SizedBox(width: 12),
-                _buildMiniStatusMobile(Icons.bolt, 'Tiêu thụ', '2.1 kW', tkGreen, textMain, textSub), const SizedBox(width: 12),
-                _buildMiniStatusMobile(Icons.security, 'An ninh', 'BẬT', Colors.redAccent, textMain, textSub),
-              ],
-            ),
+          
+          // ĐOẠN ĐƯỢC CẬP NHẬT ĐỂ TÍNH TOÁN KÍCH THƯỚC CHUẨN 3 CỘT
+          Builder(
+            builder: (context) {
+              // Chiều rộng màn hình - 32px (padding 2 bên) - 24px (2 khoảng trống 12px giữa 3 thẻ đầu) = chiều rộng chia 3
+              double screenWidth = MediaQuery.of(context).size.width;
+              double itemWidth = (screenWidth - 56) / 3;
+
+              return SizedBox(
+                height: 130,
+                child: ListView(
+                  scrollDirection: Axis.horizontal, 
+                  physics: const BouncingScrollPhysics(), 
+                  clipBehavior: Clip.none,
+                  children: [
+                    // Gắn biến thời tiết thực tế và truyền itemWidth vào từng thẻ
+                    _buildMiniStatusMobile(Icons.thermostat, 'Nhiệt độ', '${_weatherData['temp'] ?? '--'}°C', Colors.orange, textMain, textSub, itemWidth), 
+                    const SizedBox(width: 12),
+                    _buildMiniStatusMobile(Icons.water_drop, 'Độ ẩm', '${_weatherData['humidity'] ?? '--'}%', Colors.blue, textMain, textSub, itemWidth), 
+                    const SizedBox(width: 12),
+                    _buildMiniStatusMobile(Icons.bolt, 'Tiêu thụ', '2.1 kW', tkGreen, textMain, textSub, itemWidth), 
+                    const SizedBox(width: 12),
+                    _buildMiniStatusMobile(Icons.security, 'An ninh', 'BẬT', Colors.redAccent, textMain, textSub, itemWidth),
+                  ],
+                ),
+              );
+            }
           ),
+          
           const SizedBox(height: 24),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -870,6 +1031,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 32),
         ],
       ),
+    );
+  }
+
+  // CẬP NHẬT THÊM HÀM NÀY ĐỂ NHẬN CHIỀU RỘNG TỪ BÊN TRÊN
+  Widget _buildMiniStatusMobile(IconData icon, String title, String value, Color color, Color txtMain, Color txtSub, double cardWidth) {
+    return GlassContainer(
+      width: cardWidth, 
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center, 
+        mainAxisAlignment: MainAxisAlignment.center, 
+        children: [
+          Icon(icon, color: color, size: 26), 
+          const SizedBox(height: 10), 
+          
+          // ĐÃ BỌC FITTEDBOX CHO TITLE ĐỂ CHỐNG TRÀN RENDERFLEX
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              title, 
+              style: TextStyle(color: txtSub, fontSize: 11, fontWeight: FontWeight.w600), 
+            ),
+          ),
+          
+          const SizedBox(height: 6), 
+          FittedBox(
+            fit: BoxFit.scaleDown, 
+            child: Text(
+              value, 
+              style: TextStyle(color: txtMain, fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+          )
+        ]
+      )
     );
   }
 
@@ -915,7 +1110,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildMiniStatusDesktop(Icons.water_drop, 'Độ ẩm', '66%', Colors.blue, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
+          _buildMiniStatusDesktop(Icons.water_drop, 'Độ ẩm', '${_weatherData['humidity'] ?? '--'}%', Colors.blue, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
           _buildMiniStatusDesktop(Icons.bolt, 'Tiêu thụ', '2.1 kW', tkGreen, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
           _buildMiniStatusDesktop(Icons.security, 'An ninh', 'BẬT', Colors.redAccent, txtMain, txtSub),
         ],
@@ -1001,12 +1196,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Row(children: [Icon(icon, size: 16, color: color), const SizedBox(width: 6), Text(label, style: TextStyle(color: txtSub, fontSize: 13))]), const SizedBox(height: 8), Text(val, style: TextStyle(color: txtMain, fontSize: 18, fontWeight: FontWeight.bold))]);
   }
 
-  Widget _buildMiniStatusMobile(IconData icon, String title, String value, Color color, Color txtMain, Color txtSub) {
-    return GlassContainer(width: 140, padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Icon(icon, color: color, size: 24), const SizedBox(height: 8), Text(title, style: TextStyle(color: txtSub, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), Text(value, style: TextStyle(color: txtMain, fontSize: 20, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)]));
-  }
 
   // ==========================================================================
-  // THUẬT TOÁN QUÉT VÀ VẼ UI THIẾT BỊ 
+  // THUẬT TOÁN QUÉT VÀ VẼ UI THIẾT BỊ (CHUẨN HÓA AUTO-DISCOVERY NHƯ HASS)
   // ==========================================================================
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
@@ -1016,7 +1208,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ)
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
       if (_allHomesForSuperUser.isEmpty) return _buildEmptyState(isDark, textSub, "Không tìm thấy ngôi nhà nào trên hệ thống.");
-
       return LayoutBuilder(
         builder: (context, constraints) {
           int crossAxisCount; double ratio;
@@ -1024,12 +1215,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           else { crossAxisCount = (constraints.maxWidth / 140).floor(); if (crossAxisCount < 3) crossAxisCount = 3; ratio = 1.0; }
 
           return GridView.builder(
-            shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-            itemCount: _allHomesForSuperUser.length,
+            shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _allHomesForSuperUser.length,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio),
             itemBuilder: (context, index) {
               final home = _allHomesForSuperUser[index];
-              int onCount = home['on_count'] ?? 0; int devCount = home['total_endpoints'] ?? 0; bool isAnyOn = onCount > 0;
+              
+              // Lấy thẳng số lượng từ API vì hàm _initializeHome đã tính toán đệ quy ngầm rất chuẩn rồi
+              int devCount = home['total_endpoints'] ?? 0; 
+              int onCount = home['on_count'] ?? 0; 
+              bool isAnyOn = onCount > 0;
               
               final Color bgColor = isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.6));
               final Color textColor = isAnyOn ? Colors.white : (isDark ? Colors.white : Colors.black87);
@@ -1040,8 +1234,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5), boxShadow: [if (!isDark && !isAnyOn) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
+                    duration: const Duration(milliseconds: 300), decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5), boxShadow: [if (!isDark && !isAnyOn) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
                     child: Material(
                       color: Colors.transparent,
                       child: InkWell(
@@ -1068,117 +1261,142 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // VIEW 2: TẤT CẢ THIẾT BỊ 
     if (_currentHomeDevices.isEmpty) return _buildEmptyState(isDark, textSub, "Khu vực này chưa kết nối với thiết bị/Hub nào.");
 
-    List<Map<String, dynamic>> allFans = [];
     List<Map<String, dynamic>> allSwitches = [];
+
+    // HÀM QUÉT BÓC TÁCH
+    void scanEndpoints(Map<String, dynamic> rawDevicePayload, String mac, Map<String, dynamic> sourceMap, Map<String, dynamic> uiMap) {
+      bool hasFound = false;
+
+      // Loại bỏ Sensor/Diagnostic khỏi danh sách công tắc
+      bool isIgnoredKey(String key) {
+        final k = key.toLowerCase();
+        final ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping'];
+        for (var ig in ignored) { if (k == ig || k.contains(ig)) return true; }
+        return false;
+      }
+
+      String getProperName(String key, dynamic valueObj) {
+        if (valueObj is Map && valueObj['name'] != null && valueObj['name'].toString().isNotEmpty) return valueObj['name'].toString();
+        if (uiMap.containsKey(key) && uiMap[key] is Map && uiMap[key]['name'] != null) return uiMap[key]['name'].toString();
+        String kLow = key.toLowerCase();
+        if (kLow == 'sw' || kLow == 'swing') return 'Túp năng';
+        if (kLow == 'power' || kLow == 'switch') return 'Nguồn quạt';
+        if (kLow == '1' || kLow == '2' || kLow == '3' || kLow == '4') return 'Số $key';
+        if (kLow.startsWith('swa')) return 'Công tắc ${kLow.replaceAll(RegExp(r'[^0-9]'), '')}';
+        if (kLow.startsWith('s_')) return 'Công tắc ${kLow.replaceAll(RegExp(r'[^0-9]'), '')}';
+        return 'Công tắc $key';
+      }
+
+      void extractRecursive(String key, dynamic value) {
+        if (value == null || isIgnoredKey(key)) return;
+        if (value is Map) {
+          if (value.containsKey('state') || value.containsKey('value')) {
+            String valStr = (value['state'] ?? value['value']).toString().toUpperCase();
+            if (valStr == 'ON' || valStr == 'OFF' || valStr == 'TRUE' || valStr == 'FALSE' || valStr == '1' || valStr == '0') {
+              hasFound = true;
+              allSwitches.add({
+                'mac': mac, 'endpoint': key, 'data': {'state': (valStr == 'ON' || valStr == 'TRUE' || valStr == '1') ? 'ON' : 'OFF', 'name': getProperName(key, value)},
+                'rawDevice': rawDevicePayload // <--- GÓI TOÀN BỘ DATA THIẾT BỊ VÀO ĐÂY
+              });
+            }
+          } else {
+            value.forEach((subKey, subVal) => extractRecursive(subKey, subVal));
+          }
+          return;
+        }
+
+        String valStr = value.toString().toUpperCase();
+        if (valStr == 'ON' || valStr == 'OFF' || valStr == 'TRUE' || valStr == 'FALSE' || valStr == '1' || valStr == '0') {
+          hasFound = true;
+          allSwitches.add({
+            'mac': mac, 'endpoint': key, 'data': {'state': (valStr == 'ON' || valStr == 'TRUE' || valStr == '1') ? 'ON' : 'OFF', 'name': getProperName(key, null)},
+            'rawDevice': rawDevicePayload // <--- GÓI TOÀN BỘ DATA THIẾT BỊ VÀO ĐÂY
+          });
+        }
+      }
+
+      sourceMap.forEach((k, v) => extractRecursive(k, v));
+      if (!hasFound) allSwitches.add({'mac': mac, 'endpoint': 'S_1', 'data': {'state': 'OFF', 'name': 'Chưa kết nối'}, 'rawDevice': rawDevicePayload});
+    }
 
     for (var device in _currentHomeDevices) {
       String mac = device['mac_address'] ?? device['mac'] ?? 'UNKNOWN';
-      String deviceName = device['name'] ?? device['home_name'] ?? 'Thiết bị $mac';
-
       var rawState = device['state'] ?? device['state_data'] ?? {};
-      var rawCaps = device['capabilities'] ?? {};
       var rawUi = device['ui'] ?? device['ui_schema'] ?? {};
 
       Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
-      Map<String, dynamic> capsMap = rawCaps is String ? (jsonDecode(rawCaps) ?? {}) : Map<String, dynamic>.from(rawCaps ?? {});
       Map<String, dynamic> uiMap = rawUi is String ? (jsonDecode(rawUi) ?? {}) : Map<String, dynamic>.from(rawUi ?? {});
 
-      bool hasFoundAnything = false;
-
-      bool isSwitchState(dynamic v) {
-        if (v == null) return false;
-        String s = v.toString().toUpperCase();
-        return s == 'ON' || s == 'OFF' || s == 'TRUE' || s == 'FALSE' || s == '1' || s == '0';
-      }
-      
-      bool getSwitchStatus(dynamic v) {
-        if (v == null) return false;
-        String s = v.toString().toUpperCase();
-        return s == 'ON' || s == 'TRUE' || s == '1';
-      }
-
-      Map<String, dynamic> structureToScan = uiMap.isNotEmpty ? uiMap : (capsMap.isNotEmpty ? capsMap : stateMap);
-
-      structureToScan.forEach((key, value) {
-        String kLow = key.toLowerCase();
-        
-        if (kLow.contains('fan') || kLow.startsWith('f_')) {
-          hasFoundAnything = true;
-          int fSpeed = 0; bool fSwing = false;
-          
-          if (stateMap.containsKey(key) && stateMap[key] is Map) {
-            fSpeed = int.tryParse(stateMap[key]['speed']?.toString() ?? '0') ?? 0;
-            fSwing = stateMap[key]['swing'] == true || stateMap[key]['swing'] == 'ON';
-          } else if (stateMap.containsKey('fan_speed') || stateMap.containsKey('speed')) {
-            fSpeed = int.tryParse(stateMap['fan_speed']?.toString() ?? stateMap['speed']?.toString() ?? '0') ?? 0;
-            fSwing = stateMap['fan_swing'] == true || stateMap['swing'] == true;
-          }
-
-          allFans.add({
-            'mac': mac,
-            'endpoint': key,
-            'data': {'speed': fSpeed, 'swing': fSwing, 'name': value is Map ? value['name'] : 'Quạt thông minh'}
-          });
-        }
-        else if (kLow.startsWith('s_') || kLow.startsWith('sw') || kLow.startsWith('l_') || kLow.contains('light') || kLow.contains('relay') || (value is Map && value['type'] == 'switch')) {
-          hasFoundAnything = true;
-          bool isOn = false;
-          
-          if (stateMap.containsKey(key)) isOn = getSwitchStatus(stateMap[key]);
-          else if (stateMap.containsKey('switches') && stateMap['switches'] is Map) isOn = getSwitchStatus(stateMap['switches'][key]);
-
-          String sName = (value is Map && value['name'] != null) ? value['name'] : 'Công tắc ${key.replaceAll(RegExp(r'[^0-9]'), '')}';
-          if (sName == 'Công tắc ') sName = 'Công tắc $key';
-
-          allSwitches.add({
-            'mac': mac,
-            'endpoint': key,
-            'data': {'state': isOn ? 'ON' : 'OFF', 'name': sName}
-          });
-        }
-      });
-
-      if (!hasFoundAnything && stateMap.isNotEmpty) {
-         bool localFanFound = false;
-         stateMap.forEach((k, v) {
-            String kl = k.toLowerCase();
-            if (kl.contains('fan') || kl.contains('speed')) {
-               if (!localFanFound) {
-                  hasFoundAnything = true; localFanFound = true;
-                  int fSpeed = int.tryParse(stateMap['fan_speed']?.toString() ?? stateMap['speed']?.toString() ?? stateMap[k]?.toString() ?? '0') ?? 0;
-                  bool fSwing = stateMap['fan_swing'] == true || stateMap['swing'] == true || stateMap['fan_swing'] == 'ON';
-                  allFans.add({'mac': mac, 'endpoint': 'fan', 'data': {'speed': fSpeed, 'swing': fSwing, 'name': 'Quạt thông minh'}});
-               }
-            } else if (isSwitchState(v)) {
-               hasFoundAnything = true;
-               allSwitches.add({
-                  'mac': mac, 'endpoint': k, 'data': {'state': getSwitchStatus(v) ? 'ON' : 'OFF', 'name': 'Công tắc $k'}
-               });
-            }
-         });
-      }
-
-      if (!hasFoundAnything) {
-        allSwitches.add({'mac': mac, 'endpoint': 'S_1', 'data': {'state': 'OFF', 'name': deviceName}});
-      }
+      if (stateMap.isEmpty && uiMap.isNotEmpty) scanEndpoints(device, mac, uiMap, uiMap);
+      else scanEndpoints(device, mac, stateMap, uiMap);
     }
 
-    if (allFans.isEmpty && allSwitches.isEmpty) return _buildEmptyState(isDark, textSub, "Hub của bạn chưa có công tắc hoặc quạt nào.");
+    List<Map<String, dynamic>> visibleSwitches = allSwitches.where((item) {
+      String deviceKey = "${item['mac']}_${item['endpoint']}";
+      if (_hiddenDevices.contains(deviceKey) && !_showHiddenFilter) return false;
+      return true;
+    }).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (allFans.isNotEmpty) Wrap(spacing: 16, runSpacing: 16, children: allFans.map((e) => SmartFanCard(mac: e['mac'], endpoint: e['endpoint'], initialSpeed: e['data']['speed'] ?? 0, initialSwing: e['data']['swing'] == true, provider: provider, onRefresh: _handleRefresh)).toList()),
-        if (allFans.isNotEmpty && allSwitches.isNotEmpty) const SizedBox(height: 24),
-        if (allSwitches.isNotEmpty) LayoutBuilder(
+        if (visibleSwitches.isNotEmpty) LayoutBuilder(
             builder: (context, constraints) {
               int crossAxisCount; double ratio;
               if (constraints.maxWidth < 500) { crossAxisCount = 3; ratio = 1.0; } 
               else { crossAxisCount = (constraints.maxWidth / 120).floor(); if (crossAxisCount < 4) crossAxisCount = 4; ratio = 1.0; }
-              return GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: allSwitches.length, gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio), itemBuilder: (context, index) { var item = allSwitches[index]; bool isOnline = item['data']['state'] == 'ON'; return SmartSwitchCard(mac: item['mac'], endpointKey: item['endpoint'], backendName: item['data']['name'], initialStatus: isOnline, provider: provider, onRefresh: _handleRefresh); });
+              
+              return GridView.builder(
+                shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: visibleSwitches.length, 
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio), 
+                itemBuilder: (context, index) { 
+                  var item = visibleSwitches[index]; 
+                  bool isOnline = item['data']['state'] == 'ON'; 
+                  String deviceKey = "${item['mac']}_${item['endpoint']}";
+                  
+                  return SmartSwitchCard(
+                    mac: item['mac'], endpointKey: item['endpoint'], backendName: item['data']['name'], 
+                    initialStatus: isOnline, provider: provider, onRefresh: _handleRefresh,
+                    rawDeviceData: item['rawDevice'], 
+                    isHidden: _hiddenDevices.contains(deviceKey), isSelectionMode: _isSelectionMode, isSelected: _selectedDevices.contains(deviceKey),
+                    hasHiddenDevices: _hiddenDevices.isNotEmpty, isShowingHidden: _showHiddenFilter,
+                    onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
+                    onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
+                    onToggleSelect: () => setState(() {
+                      _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey);
+                      if (_selectedDevices.isEmpty) _isSelectionMode = false;
+                    }),
+                    onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); }),
+                    onDelete: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang xóa ${item['endpoint']}...'))),
+                    onRename: () => _showRenameDialog(deviceKey, item['data']['name']),
+                  ); 
+                }
+              );
             }
           ),
       ],
+    );
+  }
+
+  void _showRenameDialog(String deviceKey, String currentName) {
+    TextEditingController controller = TextEditingController(text: currentName);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Đổi tên thiết bị', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nhập tên mới...')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A651)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã lưu tên mới: ${controller.text}')));
+            },
+            child: const Text('Lưu thay đổi', style: TextStyle(color: Colors.white)),
+          )
+        ],
+      ),
     );
   }
 
@@ -1186,7 +1404,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const SizedBox(height: 40), Icon(Icons.devices_other_rounded, size: 64, color: isDark ? Colors.white24 : Colors.grey.shade300), const SizedBox(height: 16), Text(message, style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w500)), const SizedBox(height: 40)]));
   }
 }
-
 class WindowsSettingsDialog extends StatefulWidget {
   final String currentRole; final String currentEmail; final int initialTab;
   const WindowsSettingsDialog({super.key, required this.currentRole, required this.currentEmail, this.initialTab = 0});
@@ -1338,13 +1555,37 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
 // 💡 CÔNG TẮC ĐÈN CHIA 3 CỘT (MOBILE) VÀ NỀN SOLID GREEN KHI BẬT
 // ============================================================================
 class SmartSwitchCard extends StatefulWidget {
-  final String mac, endpointKey; 
-  final String? backendName; 
-  final bool initialStatus; 
+  final String mac;
+  final String endpointKey;
+  final bool initialStatus;
   final DeviceProvider provider;
-  final VoidCallback onRefresh; // Gọi lại khi xóa thiết bị
-  
-  const SmartSwitchCard({super.key, required this.mac, required this.endpointKey, this.backendName, required this.initialStatus, required this.provider, required this.onRefresh});
+  final Function onRefresh;
+  final String? backendName;
+  final Map<String, dynamic> rawDeviceData; // <--- CHỨA CẢM BIẾN & CHẨN ĐOÁN
+
+  final bool isSelectionMode;
+  final bool isSelected;
+  final bool isHidden;
+  final VoidCallback onToggleSelect;
+  final VoidCallback onEnterSelectionMode;
+  final Function(bool) onToggleHide; 
+  final VoidCallback onDelete;
+  final VoidCallback onRename;
+  final bool hasHiddenDevices;
+  final bool isShowingHidden;
+  final VoidCallback? onToggleShowHidden;
+
+  const SmartSwitchCard({
+    Key? key,
+    required this.mac, required this.endpointKey, required this.initialStatus,
+    required this.provider, required this.onRefresh, this.backendName,
+    required this.rawDeviceData,
+    this.isSelectionMode = false, this.isSelected = false, this.isHidden = false,
+    required this.onToggleSelect, required this.onEnterSelectionMode,
+    required this.onToggleHide, required this.onDelete, required this.onRename,
+    this.hasHiddenDevices = false, this.isShowingHidden = false, this.onToggleShowHidden,
+  }) : super(key: key);
+
   @override
   State<SmartSwitchCard> createState() => _SmartSwitchCardState();
 }
@@ -1359,95 +1600,205 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
   @override
   void didUpdateWidget(SmartSwitchCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialStatus != widget.initialStatus) isOnline = widget.initialStatus;
+    if (oldWidget.initialStatus != widget.initialStatus) setState(() => isOnline = widget.initialStatus);
   }
 
-  void _toggleSwitch() {
-    bool oldState = isOnline;
-    setState(() => isOnline = !isOnline); 
-    widget.provider.toggleDevice(widget.mac, widget.endpointKey, oldState);
+  void _handleTap() {
+    if (widget.isSelectionMode) widget.onToggleSelect(); 
+    else {
+      bool oldState = isOnline;
+      setState(() => isOnline = !isOnline); 
+      widget.provider.toggleDevice(widget.mac, widget.endpointKey, oldState);
+    }
   }
 
   String _formatName() {
     if (widget.backendName != null && widget.backendName!.isNotEmpty) return widget.backendName!;
-    if (widget.endpointKey.startsWith('S_')) {
-      String shortHex = widget.endpointKey.substring(2);
-      if (shortHex.length > 4) shortHex = shortHex.substring(0, 4);
-      return 'Công tắc $shortHex';
-    }
     return widget.endpointKey;
   }
 
-  // --- MENU CÀI ĐẶT / XÓA THIẾT BỊ ---
+  // --- MÀN HÌNH CÀI ĐẶT CHI TIẾT (POPUP GIỮA MÀN HÌNH - KÍNH MỜ CHUẨN) ---
+  void _showDeviceSettingsDialog(BuildContext context, bool isDark) {
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    // BÓC TÁCH CẢM BIẾN (DIAGNOSTICS) CỰC KỲ CHI TIẾT
+    Map<String, dynamic> raw = widget.rawDeviceData;
+    var stateData = raw['state'] ?? raw['state_data'] ?? raw['properties'] ?? {};
+    if (stateData is String) stateData = jsonDecode(stateData) ?? {};
+    
+    // Hàm Helper thông minh: Lục lọi các key có thể chứa dữ liệu
+    String findValue(List<String> keys, String fallback) {
+      for (var k in keys) {
+        if (raw.containsKey(k) && raw[k] != null && raw[k].toString().isNotEmpty) return raw[k].toString();
+        if (stateData.containsKey(k) && stateData[k] != null && stateData[k].toString().isNotEmpty) return stateData[k].toString();
+      }
+      return fallback;
+    }
+
+    // Quét lấy các thông số thật từ thiết bị
+    String ipStr = findValue(['ip', 'ip_address', 'ipAddress', 'wifi_ip'], 'Không xác định');
+    String rssiStr = findValue(['rssi', 'wifi_signal', 'signal', 'wifi'], '-');
+    String serialStr = findValue(['serial', 'mac', 'mac_address', 'macAddress'], widget.mac);
+    String fwStr = findValue(['fw', 'version', 'firmware', 'sw_version'], '1.0.0');
+
+    showDialog(
+      context: context, 
+      barrierColor: Colors.black.withValues(alpha: 0.5), // Nền làm mờ tối lại
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent, // Bắt buộc transparent để hiện hiệu ứng kính mờ
+        elevation: 0, 
+        insetPadding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420), // Khung giới hạn vừa vặn ở giữa màn hình
+          child: GlassContainer(
+            padding: const EdgeInsets.all(0), 
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // --- HEADER ---
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.tune_rounded, color: tkGreen, size: 28),
+                            const SizedBox(width: 12),
+                            Text('Cài đặt thiết bị', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        IconButton(icon: Icon(Icons.close, color: textSub), onPressed: () => Navigator.pop(ctx), padding: EdgeInsets.zero, constraints: const BoxConstraints())
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12),
+                  
+                  // --- NỘI DUNG CHI TIẾT ---
+                  Flexible(
+                    child: SingleChildScrollView(
+                      physics: const BouncingScrollPhysics(),
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // BLOCK 1: THÔNG TIN CHUNG
+                          Text('THÔNG TIN CHUNG', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                          const SizedBox(height: 12),
+                          Container(
+                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
+                            child: Column(
+                              children: [
+                                ListTile(title: Text('Tên thiết bị', style: TextStyle(color: textMain, fontSize: 14)), trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(_formatName(), style: TextStyle(color: textSub, fontSize: 14)), const SizedBox(width: 8), Icon(Icons.edit, color: tkGreen, size: 18)]), onTap: () { Navigator.pop(ctx); widget.onRename(); }),
+                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
+                                ListTile(title: Text('Nhà sản xuất', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text('Tuan Kiet Smart Home', style: TextStyle(color: textSub, fontSize: 14))),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+
+                          // BLOCK 2: CẤU HÌNH
+                          Text('CẤU HÌNH', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                          const SizedBox(height: 12),
+                          Container(
+                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
+                            child: Column(
+                              children: [
+                                ListTile(leading: Icon(Icons.system_update_alt, color: textSub, size: 20), title: Text('Cập nhật Firmware', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text('Mới nhất', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.bold))),
+                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
+                                ListTile(leading: Icon(Icons.wifi_password, color: textSub, size: 20), title: Text('Reset Factory WiFi', style: TextStyle(color: textMain, fontSize: 14)), trailing: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)), child: Text('Nhấn', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)))),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+
+                          // BLOCK 3: CHẨN ĐOÁN HỆ THỐNG
+                          Text('CHẨN ĐOÁN HỆ THỐNG', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                          const SizedBox(height: 12),
+                          Container(
+                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
+                            child: Column(
+                              children: [
+                                ListTile(leading: Icon(Icons.lan_outlined, color: textSub, size: 20), title: Text('IP Address', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(ipStr, style: TextStyle(color: textSub, fontFamily: 'monospace', fontSize: 13))),
+                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
+                                ListTile(leading: Icon(Icons.qr_code_2, color: textSub, size: 20), title: Text('Số Serial (MAC)', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(serialStr, style: TextStyle(color: textSub, fontFamily: 'monospace', fontSize: 13))),
+                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
+                                ListTile(leading: Icon(Icons.wifi, color: textSub, size: 20), title: Text('Cường độ WiFi (RSSI)', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(rssiStr != '-' ? '$rssiStr dBm' : rssiStr, style: TextStyle(color: textSub, fontSize: 13))),
+                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
+                                ListTile(leading: Icon(Icons.memory, color: textSub, size: 20), title: Text('Phiên bản lõi', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(fwStr, style: TextStyle(color: textSub, fontSize: 13))),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      )
+    );
+  }
+
   void _showDeviceOptions(BuildContext context, bool isDark) {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
     showDialog(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
+      context: context, barrierColor: Colors.black.withValues(alpha: 0.5),
       builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        insetPadding: const EdgeInsets.all(24),
+        backgroundColor: Colors.transparent, elevation: 0, insetPadding: const EdgeInsets.all(24),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
+          constraints: const BoxConstraints(maxWidth: 380),
           child: GlassContainer(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.settings_input_component_rounded, color: tkGreen, size: 28),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(_formatName(), style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text('MAC: ${widget.mac}', style: TextStyle(color: textSub, fontSize: 12)),
-                Text('Endpoint: ${widget.endpointKey}', style: TextStyle(color: textSub, fontSize: 12)),
-                const SizedBox(height: 24),
-                
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  hoverColor: isDark ? Colors.white10 : Colors.black12,
-                  leading: Icon(Icons.settings_rounded, color: textMain),
-                  title: Text('Cài đặt thiết bị', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tính năng cài đặt đang được phát triển'), backgroundColor: Color(0xFF00A651)));
-                  },
-                ),
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  hoverColor: isDark ? Colors.white10 : Colors.black12,
-                  leading: Icon(Icons.visibility_off_rounded, color: textMain),
-                  title: Text('Ẩn khỏi Bảng điều khiển', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Vẫn hiển thị trong danh sách thiết bị', style: TextStyle(color: textSub, fontSize: 11)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã ẩn ${_formatName()}'), backgroundColor: Colors.orange));
-                  },
-                ),
-                Divider(color: isDark ? Colors.white10 : Colors.black12),
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  hoverColor: Colors.redAccent.withValues(alpha: 0.1),
-                  leading: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
-                  title: const Text('Xóa thiết bị', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _confirmDeleteDevice(context, isDark, textMain, textSub);
-                  },
-                ),
-              ],
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.settings_input_component_rounded, color: tkGreen, size: 30), const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(_formatName(), style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            const SizedBox(height: 6), Text('MAC: ${widget.mac}', style: TextStyle(color: textSub, fontSize: 12)),
+                            const SizedBox(height: 2), Text('Endpoint: ${widget.endpointKey}', style: TextStyle(color: textSub, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  
+                  // GỌI MENU CÀI ĐẶT (CHẨN ĐOÁN) Ở ĐÂY
+                  _buildMenuItem(Icons.settings_rounded, 'Cài đặt thiết bị', textMain, () { Navigator.pop(ctx); _showDeviceSettingsDialog(context, isDark); }),
+                  _buildMenuItem(Icons.edit_rounded, 'Sửa tên thiết bị', textMain, () { Navigator.pop(ctx); widget.onRename(); }),
+                  _buildMenuItem(widget.isHidden ? Icons.visibility_rounded : Icons.visibility_off_rounded, widget.isHidden ? 'Hiển thị lại công tắc này' : 'Ẩn khỏi Bảng điều khiển', textMain, () { Navigator.pop(ctx); widget.onToggleHide(!widget.isHidden); }, subtitle: widget.isHidden ? null : 'Vẫn hiển thị trong danh sách thiết bị'),
+                  _buildMenuItem(Icons.checklist_rtl_rounded, 'Chọn nhiều thiết bị', textMain, () { Navigator.pop(ctx); widget.onEnterSelectionMode(); }),
+                  if (widget.hasHiddenDevices) _buildMenuItem(widget.isShowingHidden ? Icons.filter_alt_off_rounded : Icons.filter_alt_rounded, widget.isShowingHidden ? 'Đóng chế độ xem thiết bị ẩn' : 'Hiển thị các thiết bị đã ẩn', Colors.orange, () { Navigator.pop(ctx); if (widget.onToggleShowHidden != null) widget.onToggleShowHidden!(); }),
+                  Padding(padding: const EdgeInsets.symmetric(vertical: 8.0), child: Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1, thickness: 1)),
+                  _buildMenuItem(Icons.delete_outline_rounded, 'Xóa thiết bị', Colors.redAccent, () { Navigator.pop(ctx); _confirmDeleteDevice(context, isDark, textMain, textSub); }, isDestructive: true),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildMenuItem(IconData icon, String title, Color color, VoidCallback onTap, {String? subtitle, bool isDestructive = false}) {
+    return ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), hoverColor: isDestructive ? Colors.redAccent.withValues(alpha: 0.1) : Colors.white10, leading: Icon(icon, color: color, size: 24), title: Text(title, style: TextStyle(color: color, fontSize: 15, fontWeight: isDestructive ? FontWeight.bold : FontWeight.w600)), subtitle: subtitle != null ? Text(subtitle, style: TextStyle(color: Colors.grey.shade500, fontSize: 12, height: 1.2)) : null, onTap: onTap);
   }
 
   void _confirmDeleteDevice(BuildContext context, bool isDark, Color textMain, Color textSub) {
@@ -1456,19 +1807,10 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
       builder: (ctx) => AlertDialog(
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         title: Text('Xóa ${_formatName()}?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
-        content: Text('Bạn có chắc chắn muốn xóa gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
+        content: Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              // TODO: Gọi API xóa thiết bị thực tế qua Golang Backend ở đây
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã xóa thiết bị thành công!'), backgroundColor: Colors.redAccent));
-              widget.onRefresh(); 
-            },
-            child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          )
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); widget.onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))
         ],
       )
     );
@@ -1478,7 +1820,8 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color bgColor = isOnline ? tkGreen : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6));
-    final Color iconColor = isOnline ? Colors.white : (isDark ? Colors.white38 : Colors.black45), textColor = isOnline ? Colors.white : (isDark ? Colors.white : Colors.black87), powerIconColor = isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400);
+    final Color textColor = isOnline ? Colors.white : (isDark ? Colors.white : Colors.black87);
+    final Color powerIconColor = isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(16), 
@@ -1486,26 +1829,16 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
-          decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isOnline ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5), boxShadow: [if (!isDark && !isOnline) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
+          foregroundDecoration: widget.isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
+          decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: widget.isSelected ? tkGreen : (isOnline ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white)), width: widget.isSelected ? 3.0 : 1.5), boxShadow: [if (!isDark && !isOnline) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
           child: Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: _toggleSwitch,
-              onLongPress: () => _showDeviceOptions(context, isDark), // BẤM GIỮ MỞ MENU
+              onTap: _handleTap, onLongPress: () { if (!widget.isSelectionMode) _showDeviceOptions(context, isDark); }, 
               child: Stack(
                 children: [
                   Positioned(top: 10, left: 10, child: Icon(Icons.lightbulb_outline, color: isOnline ? Colors.white : tkGreen, size: 18)),
-                  
-                  // BẤM VÀO 3 CHẤM MỞ MENU
-                  Positioned(
-                    top: 2, right: 2, 
-                    child: IconButton(
-                      icon: Icon(Icons.more_horiz, color: iconColor, size: 20),
-                      onPressed: () => _showDeviceOptions(context, isDark),
-                      splashRadius: 20,
-                    )
-                  ),
-                  
+                  if (widget.isSelected) Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.all(2), decoration: BoxDecoration(color: tkGreen, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.check, color: Colors.white, size: 14))),
                   Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 36))),
                   Positioned(bottom: 8, left: 6, right: 6, child: Text(_formatName(), textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), maxLines: 2, overflow: TextOverflow.ellipsis)),
                 ],

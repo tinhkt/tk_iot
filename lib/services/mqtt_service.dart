@@ -37,6 +37,9 @@ class MqttService {
       // Dùng '#' để bắt trọn mọi báo cáo từ SmartHub (Bật/Tắt, Tốc độ, Túp năng)
       client.subscribe('smarthub/#', MqttQos.atLeastOnce);
       
+      // LƯU Ý: Nếu công tắc Hass của bác trả trạng thái về topic khác (ví dụ: stat/MAC/RESULT), 
+      // bác có thể thêm dòng subscribe ở đây sau này.
+      
       // Bắt đầu lắng nghe luồng tin nhắn đổ về
       client.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) {
         final MqttPublishMessage recMess = c[0].payload as MqttPublishMessage;
@@ -58,7 +61,24 @@ class MqttService {
     }
   }
 
-  // Ép đợi khôi phục mạng ngầm trước khi bắn lệnh
+  // --- HÀM MỚI ĐƯỢC THÊM VÀO ĐỂ GỬI LỆNH ĐÃ PHÂN LUỒNG TỪ PROVIDER ---
+  Future<void> publish(String topic, String payload) async {
+    // Ép đợi khôi phục mạng ngầm trước khi bắn lệnh (chống rớt mạng)
+    if (!isConnected || client.connectionStatus?.state != MqttConnectionState.connected) {
+      print('⚠️ Mất kết nối, đang tự động khôi phục...');
+      await connect();
+      if (client.connectionStatus?.state != MqttConnectionState.connected) return;
+    }
+
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(payload);
+    
+    client.publishMessage(topic, MqttQos.atLeastOnce, builder.payload!);
+    // Log ra terminal để bác dễ kiểm soát
+    print('📤 [MQTT PUBLISH]: $payload -> Topic: $topic');
+  }
+
+  // --- GIỮ NGUYÊN HÀM CŨ ĐỂ SAU NÀY BÁC DÙNG CHO QUẠT (Tốc độ, Túp năng) ---
   Future<void> sendCommand(String mac, String endpoint, bool currentState, {int? speed, bool? swing}) async {
     if (!isConnected || client.connectionStatus?.state != MqttConnectionState.connected) {
       print('⚠️ Mất kết nối, đang tự động khôi phục...');
