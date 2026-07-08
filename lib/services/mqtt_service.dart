@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 // Phục vụ đọc/ghi JSON nếu sau này cần mở rộng
@@ -28,10 +29,10 @@ class MqttService {
     client.connectionMessage = connMessage;
 
     try {
-      print('⏳ [MQTT TCP] Đang kết nối kênh điều khiển...');
+      if (kDebugMode) print('⏳ [MQTT TCP] Đang kết nối kênh điều khiển...');
       await client.connect();
       isConnected = true;
-      print('✅ [MQTT TCP] KẾT NỐI ĐIỀU KHIỂN THÀNH CÔNG!');
+      if (kDebugMode) print('✅ [MQTT TCP] KẾT NỐI ĐIỀU KHIỂN THÀNH CÔNG!');
 
       // --- [CHUẨN HÓA LẮNG NGHE ĐÚNG CODE ESP32] ---
       // Dùng '#' để bắt trọn mọi báo cáo từ SmartHub (Bật/Tắt, Tốc độ, Túp năng)
@@ -46,7 +47,7 @@ class MqttService {
         final String message = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
         final String topic = c[0].topic;
 
-        print('📥 [MQTT NHẬN]: Topic: $topic | Payload: $message');
+        if (kDebugMode) print('📥 [MQTT NHẬN]: Topic: $topic | Payload: $message');
 
         // Bắn dữ liệu về cho DeviceProvider bóc tách và vẽ lại UI
         if (onMessageReceived != null) {
@@ -55,7 +56,7 @@ class MqttService {
       });
 
     } catch (e) {
-      print('❌ [MQTT TCP] Lỗi kết nối: $e');
+      if (kDebugMode) print('❌ [MQTT TCP] Lỗi kết nối: $e');
       isConnected = false;
       client.disconnect();
     }
@@ -65,7 +66,7 @@ class MqttService {
   Future<void> publish(String topic, String payload) async {
     // Ép đợi khôi phục mạng ngầm trước khi bắn lệnh (chống rớt mạng)
     if (!isConnected || client.connectionStatus?.state != MqttConnectionState.connected) {
-      print('⚠️ Mất kết nối, đang tự động khôi phục...');
+      if (kDebugMode) print('⚠️ Mất kết nối, đang tự động khôi phục...');
       await connect();
       if (client.connectionStatus?.state != MqttConnectionState.connected) return;
     }
@@ -75,13 +76,13 @@ class MqttService {
     
     client.publishMessage(topic, MqttQos.atLeastOnce, builder.payload!);
     // Log ra terminal để bác dễ kiểm soát
-    print('📤 [MQTT PUBLISH]: $payload -> Topic: $topic');
+    if (kDebugMode) print('📤 [MQTT PUBLISH]: $payload -> Topic: $topic');
   }
 
   // --- GIỮ NGUYÊN HÀM CŨ ĐỂ SAU NÀY BÁC DÙNG CHO QUẠT (Tốc độ, Túp năng) ---
   Future<void> sendCommand(String mac, String endpoint, bool currentState, {int? speed, bool? swing}) async {
     if (!isConnected || client.connectionStatus?.state != MqttConnectionState.connected) {
-      print('⚠️ Mất kết nối, đang tự động khôi phục...');
+      if (kDebugMode) print('⚠️ Mất kết nối, đang tự động khôi phục...');
       await connect();
       if (client.connectionStatus?.state != MqttConnectionState.connected) return;
     }
@@ -94,7 +95,7 @@ class MqttService {
     // Bắn lệnh TẮT/BẬT tổng
     final command = currentState ? "ON" : "OFF";
     client.publishMessage(topic, MqttQos.atLeastOnce, MqttClientPayloadBuilder().addString(command).payload!);
-    print('⚡ [BẮN LỆNH]: $command -> Topic: $topic');
+    if (kDebugMode) print('⚡ [BẮN LỆNH]: $command -> Topic: $topic');
 
     // Bắn lệnh chỉnh TỐC ĐỘ QUẠT (nếu có)
     if (speed != null) {

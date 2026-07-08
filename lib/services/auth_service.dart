@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'dart:io'; // <-- [BẢN CẬP NHẬT MỚI]: Yêu cầu để sử dụng đối tượng File tải ảnh
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart'; // Yêu cầu để sử dụng ScaffoldMessenger và MaterialPageRoute
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../main.dart'; // Import để truy cập navigatorKey toàn cục
 import '../screens/auth/login_screen.dart'; // Import màn hình Đăng nhập
+import 'secure_storage_service.dart';
 
 class AuthService {
   final String baseUrl = "https://api.iot-smart.vn/api";
@@ -54,26 +55,21 @@ class AuthService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final token = data['token'];
-        
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('jwt_token', token);
+
+        await SecureStorageService.saveToken(token);
         return true;
       }
     } catch (e) {
-      print("Lỗi kết nối auth: $e");
+      if (kDebugMode) print("Lỗi kết nối auth: $e");
     }
     return false;
   }
 
   Future<void> logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('jwt_token');
+    await SecureStorageService.deleteToken();
   }
 
-  Future<String?> getToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('jwt_token');
-  }
+  Future<String?> getToken() => SecureStorageService.getToken();
 
   // ============================================================================
   // 2. ĐĂNG KÝ TÀI KHOẢN (BỔ SUNG OTP)
@@ -237,7 +233,7 @@ class AuthService {
         return decoded['data'] ?? []; 
       }
     } catch (e) {
-      print("Lỗi getHomeUsers: $e");
+      if (kDebugMode) print("Lỗi getHomeUsers: $e");
     }
     return null; 
   }
@@ -316,8 +312,7 @@ class AuthService {
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         // LƯU Ý QUAN TRỌNG: Lưu đè token mới (chứa mã MAC thật) do server vừa cấp
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('jwt_token', data['token']);
+        await SecureStorageService.saveToken(data['token']);
         return null; // Thành công
       }
       return data['error'] ?? "Lỗi từ máy chủ";
@@ -349,7 +344,7 @@ class AuthService {
       }
       return null;
     } catch (e) {
-      print("Lỗi getMyProfile: $e");
+      if (kDebugMode) print("Lỗi getMyProfile: $e");
       return null;
     }
   }
@@ -379,7 +374,7 @@ class AuthService {
       }
       return null;
     } catch (e) {
-      print("Lỗi uploadAvatar: $e");
+      if (kDebugMode) print("Lỗi uploadAvatar: $e");
       return null;
     }
   }
@@ -439,7 +434,7 @@ class AuthService {
         return decoded['data'] ?? [];
       }
     } catch (e) {
-      print("Lỗi kết nối API thông báo: $e");
+      if (kDebugMode) print("Lỗi kết nối API thông báo: $e");
     }
     return null;
   }

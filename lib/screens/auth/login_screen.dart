@@ -1,42 +1,8 @@
 import 'package:flutter/material.dart';
-import 'dart:ui'; 
 import '../../services/auth_service.dart';
+import '../../widgets/glass_container.dart';
 import '../dashboard_screen.dart';
-import 'register_screen.dart'; 
-
-// ============================================================================
-// WIDGET HỖ TRỢ: HIỆU ỨNG KÍNH MỜ
-// ============================================================================
-class GlassContainer extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-
-  const GlassContainer({super.key, required this.child, this.padding});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          padding: padding ?? const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.15), width: 1.5),
-            boxShadow: [
-              if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 24, offset: const Offset(0, 8))
-            ],
-          ),
-          child: child,
-        ),
-      ),
-    );
-  }
-}
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -211,6 +177,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                   final newPass = newPassCtrl.text.trim();
                                   
                                   if (otp.isEmpty || newPass.isEmpty) return;
+                                  if (newPass.length < 6) {
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mật khẩu mới phải có tối thiểu 6 ký tự'), backgroundColor: Colors.redAccent));
+                                    return;
+                                  }
 
                                   setDialogState(() => isDialogLoading = true);
                                   String? error = await _authService.resetPassword(email, otp, newPass);
@@ -328,7 +298,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text('Chưa có tài khoản?', style: TextStyle(color: textSub)),
+                    Flexible(child: Text('Chưa có tài khoản?', style: TextStyle(color: textSub), overflow: TextOverflow.ellipsis)),
                     TextButton(
                       onPressed: () {
                         Navigator.push(

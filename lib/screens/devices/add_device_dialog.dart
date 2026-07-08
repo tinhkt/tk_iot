@@ -1,53 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:ui';
-import 'dart:io' show Platform, Process; 
+import 'dart:io' show Platform, Process;
 import 'dart:async';
-import 'package:http/http.dart' as http; 
+import 'package:http/http.dart' as http;
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
-
-// ============================================================================
-// WIDGET HỖ TRỢ: KÍNH MỜ CHO POPUP
-// ============================================================================
-class GlassCard extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-  final Widget? trailing;
-  final VoidCallback? onTap;
-
-  const GlassCard({super.key, required this.child, this.padding, this.trailing, this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(24),
-            child: Container(
-              padding: padding ?? const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.95),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.15), width: 1.5),
-                boxShadow: [
-                  if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 20, offset: const Offset(0, 4))
-                ],
-              ),
-              child: child,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
+import '../../widgets/glass_container.dart';
 
 // ============================================================================
 // POPUP CHÍNH: THÊM THIẾT BỊ
@@ -102,7 +60,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
         AppSettings.openAppSettings(type: AppSettingsType.wifi);
       }
     } catch (e) {
-      print("Lỗi mở cài đặt mạng: $e");
+      if (kDebugMode) print("Lỗi mở cài đặt mạng: $e");
     }
   }
 

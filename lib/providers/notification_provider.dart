@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import '../services/auth_service.dart';
@@ -60,12 +61,12 @@ class NotificationProvider with ChangeNotifier {
     _mqttClient!.connectionMessage = connMessage;
 
     try {
-      print('⏳ [CHUÔNG TCP] Đang kết nối kênh thông báo tới mqtt.iot-smart.vn:21883...');
+      if (kDebugMode) print('⏳ [CHUÔNG TCP] Đang kết nối kênh thông báo tới mqtt.iot-smart.vn:21883...');
       await _mqttClient!.connect();
       if (_mqttClient!.connectionStatus!.state == MqttConnectionState.connected) {
         String topic = 'notifications/$email';
         _mqttClient!.subscribe(topic, MqttQos.atMostOnce);
-        print('✅ [CHUÔNG TCP] Đã kết nối và Subscribe thành công topic: $topic');
+        if (kDebugMode) print('✅ [CHUÔNG TCP] Đã kết nối và Subscribe thành công topic: $topic');
 
         _mqttClient!.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) {
           final MqttPublishMessage recMess = c[0].payload as MqttPublishMessage;
@@ -79,12 +80,12 @@ class NotificationProvider with ChangeNotifier {
             _hasNewNotification = true; 
             notifyListeners();
           } catch (e) {
-            print("Lỗi parse gói tin thông báo MQTT: $e");
+            if (kDebugMode) print("Lỗi parse gói tin thông báo MQTT: $e");
           }
         });
       }
     } catch (e) {
-      print("❌ Không thể kết nối MQTT thông báo Cloud: $e");
+      if (kDebugMode) print("❌ Không thể kết nối MQTT thông báo Cloud: $e");
     }
   }
 

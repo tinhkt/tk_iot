@@ -31,6 +31,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _showError('Vui lòng điền đầy đủ thông tin để đăng ký');
       return;
     }
+    if (pass.length < 6) {
+      _showError('Mật khẩu phải có tối thiểu 6 ký tự');
+      return;
+    }
     if (pass != confirm) {
       _showError('Mật khẩu xác nhận không khớp');
       return;
@@ -226,7 +230,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text("Đã có tài khoản? ", style: TextStyle(color: textSub)),
+                    Flexible(child: Text("Đã có tài khoản? ", style: TextStyle(color: textSub), overflow: TextOverflow.ellipsis)),
                     TextButton(
                       onPressed: () => Navigator.pop(context),
                       style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0), tapTargetSize: MaterialTapTargetSize.shrinkWrap),

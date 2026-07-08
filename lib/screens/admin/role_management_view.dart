@@ -1,40 +1,6 @@
 import 'package:flutter/material.dart';
-import 'dart:ui';
 import '../../services/auth_service.dart';
-
-// ============================================================================
-// WIDGET HỖ TRỢ: KÍNH MỜ CAO CẤP
-// ============================================================================
-class GlassCard extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-
-  const GlassCard({super.key, required this.child, this.padding});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          padding: padding ?? const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.15), width: 1.5),
-            boxShadow: [
-              if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 20, offset: const Offset(0, 4))
-            ],
-          ),
-          child: child,
-        ),
-      ),
-    );
-  }
-}
+import '../../widgets/glass_container.dart';
 
 // ============================================================================
 // GIAO DIỆN CHÍNH: QUẢN LÝ PHÂN QUYỀN TRONG VẬN HÀNH THỰC TẾ

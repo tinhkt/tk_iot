@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:ui'; 
 import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:window_manager/window_manager.dart'; 
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http; 
@@ -15,33 +15,9 @@ import 'admin/role_management_view.dart';
 import 'devices/add_device_dialog.dart';
 import 'admin/profile_management_view.dart';
 import '../providers/notification_provider.dart';
-import 'home/home_management_screen.dart'; 
+import 'home/home_management_screen.dart';
+import '../widgets/glass_container.dart';
 import 'dart:async';
-
-class GlassContainer extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-  final double? width, height;
-  final BorderRadiusGeometry? borderRadius;
-  const GlassContainer({super.key, required this.child, this.padding, this.width, this.height, this.borderRadius});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final radius = borderRadius ?? BorderRadius.circular(24);
-    return ClipRRect(
-      borderRadius: radius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          width: width, height: height, padding: padding ?? const EdgeInsets.all(20),
-          decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.6), borderRadius: radius, border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.white, width: 1.5), boxShadow: [if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 24, offset: const Offset(0, 8))]),
-          child: child,
-        ),
-      ),
-    );
-  }
-}
 
 class SpinningWidget extends StatefulWidget {
   final Widget child; final bool isSpinning; final int speedLevel;
@@ -88,6 +64,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() { super.initState(); _initializeHome(); _fetchWeather(); WidgetsBinding.instance.addPostFrameCallback((_) { Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail); _setupRealtimeSync();}); }
 
+  @override
+  void dispose() { _debounceSync?.cancel(); super.dispose(); }
+
   Future<void> _handleRefresh() async { await _initializeHome(isSilent: false); await Future.delayed(const Duration(milliseconds: 500)); }
 
   Future<void> _initializeHome({bool isSilent = false}) async {
@@ -107,9 +86,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final resHomes = await http.get(Uri.parse('$baseUrl/homes'), headers: {'Authorization': 'Bearer $token'});
             if (resHomes.statusCode == 200) {
               List<dynamic> homes = jsonDecode(resHomes.body);
-              for (var home in homes) {
+              // Gọi API lấy thiết bị của tất cả các nhà SONG SONG thay vì chờ tuần tự từng nhà
+              await Future.wait(homes.map((home) async {
                 final hId = home['home_id'];
-                final dRes = await http.get(Uri.parse('$baseUrl/homes/$hId/devices'), headers: {'Authorization': 'Bearer $token'});
+                final dRes = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(hId.toString())}/devices'), headers: {'Authorization': 'Bearer $token'});
                 if (dRes.statusCode == 200) {
                   List<dynamic> devs = jsonDecode(dRes.body);
                   int onCount = 0, offCount = 0, totalEndpoints = 0;
@@ -148,9 +128,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     if (!hasEp) { totalEndpoints++; offCount++; }
                   }
                   
-                  home['on_count'] = onCount; home['off_count'] = offCount; home['total_endpoints'] = totalEndpoints; home['raw_devices'] = devs; 
+                  home['on_count'] = onCount; home['off_count'] = offCount; home['total_endpoints'] = totalEndpoints; home['raw_devices'] = devs;
                 }
-              }
+              }));
               if (mounted) setState(() => _allHomesForSuperUser = homes);
             }
             if (_selectedHomeForSuperUser != null) { await _fetchDevicesForHome(_selectedHomeForSuperUser!['home_id'], token); }
@@ -159,23 +139,105 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
           if (mounted) { Provider.of<NotificationProvider>(context, listen: false).fetchHistory(); }
         }
-      } catch (e) { print("Lỗi giải mã token: $e"); }
+      } catch (e) { if (kDebugMode) print("Lỗi giải mã token: $e"); }
     }
     if (mounted && !isSilent) setState(() => _isLoadingDevices = false);
   }
 
   Future<void> _fetchDevicesForHome(String homeId, String token) async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/homes/$homeId/devices'), headers: {'Authorization': 'Bearer $token'});
+      final response = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'), headers: {'Authorization': 'Bearer $token'});
       if (response.statusCode == 200) {
         List<dynamic> devices = jsonDecode(response.body);
+        
+        for (var device in devices) {
+           var rawState = device['state'] ?? device['state_data'] ?? device['properties']; 
+           Map<String, dynamic> stateMap = {};
+           
+           if (rawState is String) {
+             String s = rawState.trim();
+             if (s.startsWith('{')) { try { stateMap = Map<String, dynamic>.from(jsonDecode(s)); } catch(_) {} }
+             else { stateMap = {'state': s}; }
+           } else if (rawState is Map) {
+             stateMap = Map<String, dynamic>.from(rawState);
+           }
+
+           // THUẬT TOÁN ÉP PHẲNG JSON ĐỂ ĐẾM SỐ NÚT KHÔNG BAO GIỜ SÓT
+           Map<String, dynamic> flatMap = {};
+           void flatten(Map m) {
+             m.forEach((k, v) { if (v is Map) flatten(v); else flatMap[k] = v; });
+           }
+           flatten(stateMap);
+
+           int onCount = 0, offCount = 0, totalEndpoints = 0;
+           bool hasEp = false;
+           final ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping', 'type', 'id'];
+
+           flatMap.forEach((k, v) {
+              if (ignored.contains(k.toLowerCase())) return;
+              String s = v.toString().toUpperCase();
+              if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) {
+                 hasEp = true; totalEndpoints++;
+                 if (['ON', 'TRUE', '1'].contains(s)) onCount++; else offCount++;
+              }
+           });
+           
+           if (!hasEp) {
+             String dNameLow = (device['name'] ?? '').toString().toLowerCase();
+             if (dNameLow.contains('quạt') || dNameLow.contains('fan')) { totalEndpoints += 5; offCount += 5; hasEp = true; }
+             else if (dNameLow.contains('4b') || dNameLow.contains('4 nút') || dNameLow.contains('4ch')) { totalEndpoints += 4; offCount += 4; hasEp = true; }
+           }
+
+           if (!hasEp) { totalEndpoints++; offCount++; }
+           
+           device['on_count'] = onCount; device['off_count'] = offCount; device['total_endpoints'] = totalEndpoints;
+        }
+
         if (mounted) {
-          setState(() => _currentHomeDevices = devices);
-          if (devices.isNotEmpty) { String firstMac = devices[0]['mac_address'] ?? devices[0]['mac'] ?? ''; setState(() => targetMac = firstMac); Provider.of<DeviceProvider>(context, listen: false).fetchDeviceState(targetMac); } 
-          else { setState(() => targetMac = ''); }
+          setState(() {
+            _currentHomeDevices = devices;
+            if (_selectedHomeForSuperUser != null && _selectedHomeForSuperUser!['home_id'] == homeId) {
+               int totalOn = 0, totalDev = 0;
+               for(var d in devices) { totalOn += (d['on_count'] as int? ?? 0); totalDev += (d['total_endpoints'] as int? ?? 0); }
+               _selectedHomeForSuperUser!['on_count'] = totalOn; _selectedHomeForSuperUser!['total_endpoints'] = totalDev;
+            }
+          });
+          if (devices.isNotEmpty) { 
+             setState(() => targetMac = devices[0]['mac_address'] ?? devices[0]['mac'] ?? ''); 
+          } else { setState(() => targetMac = ''); }
         }
       }
-    } catch (e) { print("Lỗi fetch thiết bị: $e"); }
+    } catch (e) { if (kDebugMode) print("Lỗi fetch thiết bị: $e"); }
+  }
+
+  // --- HÀM GỌI API XÓA THIẾT BỊ ---
+  Future<void> _deleteDevice(String mac) async {
+    try {
+      final token = await AuthService().getToken();
+      
+      // LƯU Ý: Giả định endpoint xóa thiết bị của backend Golang là: DELETE /api/devices/:mac
+      // Nếu route backend của bác là kiểu khác (VD: /api/homes/$currentHomeId/devices/$mac), bác sửa lại URL dưới đây nhé.
+      final response = await http.delete(
+        Uri.parse('$baseUrl/devices/${Uri.encodeComponent(mac)}'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Đã xóa thiết bị thành công!'), backgroundColor: Color(0xFF00A651)),
+        );
+        // Xóa xong thì bắt buộc phải gọi làm mới danh sách
+        _handleRefresh();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Lỗi xóa thiết bị trên Server: Mã ${response.statusCode}'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể kết nối đến máy chủ!'), backgroundColor: Colors.redAccent),
+      );
+    }
   }
 
   void _setupRealtimeSync() {
@@ -219,7 +281,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
     } catch (e) {
-      print("☁️ Lỗi API thời tiết: $e");
+      if (kDebugMode) print("☁️ Lỗi API thời tiết: $e");
     }
   }
 
@@ -329,6 +391,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             onPressed: isDialogLoading ? null : () async {
                               final oldPass = oldPassCtrl.text.trim(), newPass = newPassCtrl.text.trim(), confirmPass = confirmPassCtrl.text.trim();
                               if (oldPass.isEmpty || newPass.isEmpty) return;
+                              if (newPass.length < 6) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mật khẩu mới phải có tối thiểu 6 ký tự'), backgroundColor: Colors.redAccent)); return; }
                               if (newPass != confirmPass) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mật khẩu xác nhận không khớp!'), backgroundColor: Colors.redAccent)); return; }
                               setDialogState(() => isDialogLoading = true);
                               String? error = await AuthService().changePassword(oldPass, newPass);
@@ -1198,14 +1261,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
 
   // ==========================================================================
-  // THUẬT TOÁN QUÉT VÀ VẼ UI THIẾT BỊ (CHUẨN HÓA AUTO-DISCOVERY NHƯ HASS)
+  // THUẬT TOÁN PHÂN LẬP RÕ RÀNG QUẠT VÀ CÔNG TẮC - AUTO DISCOVERY
   // ==========================================================================
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
     final provider = Provider.of<DeviceProvider>(context, listen: false);
 
-    // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ)
+    // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
       if (_allHomesForSuperUser.isEmpty) return _buildEmptyState(isDark, textSub, "Không tìm thấy ngôi nhà nào trên hệ thống.");
       return LayoutBuilder(
@@ -1219,22 +1282,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio),
             itemBuilder: (context, index) {
               final home = _allHomesForSuperUser[index];
-              
-              // Lấy thẳng số lượng từ API vì hàm _initializeHome đã tính toán đệ quy ngầm rất chuẩn rồi
-              int devCount = home['total_endpoints'] ?? 0; 
-              int onCount = home['on_count'] ?? 0; 
-              bool isAnyOn = onCount > 0;
-              
+              int devCount = home['total_endpoints'] ?? 0; int onCount = home['on_count'] ?? 0; bool isAnyOn = onCount > 0;
               final Color bgColor = isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.6));
               final Color textColor = isAnyOn ? Colors.white : (isDark ? Colors.white : Colors.black87);
-              final Color powerIconColor = isAnyOn ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400);
-
+              
               return ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300), decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5), boxShadow: [if (!isDark && !isAnyOn) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
+                    duration: const Duration(milliseconds: 300), decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5)),
                     child: Material(
                       color: Colors.transparent,
                       child: InkWell(
@@ -1242,7 +1299,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         child: Stack(
                           children: [
                             Positioned(top: 10, left: 10, child: Icon(Icons.maps_home_work_outlined, color: isAnyOn ? Colors.white : tkGreen, size: 18)),
-                            Positioned(top: 2, right: 2, child: IconButton(icon: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 24), onPressed: () => _bulkToggleHome(home, !isAnyOn), splashRadius: 20)),
+                            Positioned(top: 2, right: 2, child: IconButton(icon: Icon(Icons.power_settings_new_rounded, color: isAnyOn ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400), size: 24), onPressed: () => _bulkToggleHome(home, !isAnyOn))),
                             Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Text('$onCount / $devCount', style: TextStyle(color: textColor.withValues(alpha: 0.8), fontSize: 18, fontWeight: FontWeight.bold)))),
                             Positioned(bottom: 8, left: 6, right: 6, child: Text(home['home_name'] ?? 'Home', textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), maxLines: 2, overflow: TextOverflow.ellipsis)),
                           ],
@@ -1261,85 +1318,117 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // VIEW 2: TẤT CẢ THIẾT BỊ 
     if (_currentHomeDevices.isEmpty) return _buildEmptyState(isDark, textSub, "Khu vực này chưa kết nối với thiết bị/Hub nào.");
 
+    List<Map<String, dynamic>> allFans = [];
     List<Map<String, dynamic>> allSwitches = [];
 
-    // HÀM QUÉT BÓC TÁCH
-    void scanEndpoints(Map<String, dynamic> rawDevicePayload, String mac, Map<String, dynamic> sourceMap, Map<String, dynamic> uiMap) {
-      bool hasFound = false;
-
-      // Loại bỏ Sensor/Diagnostic khỏi danh sách công tắc
-      bool isIgnoredKey(String key) {
-        final k = key.toLowerCase();
-        final ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping'];
-        for (var ig in ignored) { if (k == ig || k.contains(ig)) return true; }
-        return false;
-      }
-
-      String getProperName(String key, dynamic valueObj) {
-        if (valueObj is Map && valueObj['name'] != null && valueObj['name'].toString().isNotEmpty) return valueObj['name'].toString();
-        if (uiMap.containsKey(key) && uiMap[key] is Map && uiMap[key]['name'] != null) return uiMap[key]['name'].toString();
-        String kLow = key.toLowerCase();
-        if (kLow == 'sw' || kLow == 'swing') return 'Túp năng';
-        if (kLow == 'power' || kLow == 'switch') return 'Nguồn quạt';
-        if (kLow == '1' || kLow == '2' || kLow == '3' || kLow == '4') return 'Số $key';
-        if (kLow.startsWith('swa')) return 'Công tắc ${kLow.replaceAll(RegExp(r'[^0-9]'), '')}';
-        if (kLow.startsWith('s_')) return 'Công tắc ${kLow.replaceAll(RegExp(r'[^0-9]'), '')}';
-        return 'Công tắc $key';
-      }
-
-      void extractRecursive(String key, dynamic value) {
-        if (value == null || isIgnoredKey(key)) return;
-        if (value is Map) {
-          if (value.containsKey('state') || value.containsKey('value')) {
-            String valStr = (value['state'] ?? value['value']).toString().toUpperCase();
-            if (valStr == 'ON' || valStr == 'OFF' || valStr == 'TRUE' || valStr == 'FALSE' || valStr == '1' || valStr == '0') {
-              hasFound = true;
-              allSwitches.add({
-                'mac': mac, 'endpoint': key, 'data': {'state': (valStr == 'ON' || valStr == 'TRUE' || valStr == '1') ? 'ON' : 'OFF', 'name': getProperName(key, value)},
-                'rawDevice': rawDevicePayload // <--- GÓI TOÀN BỘ DATA THIẾT BỊ VÀO ĐÂY
-              });
-            }
-          } else {
-            value.forEach((subKey, subVal) => extractRecursive(subKey, subVal));
-          }
-          return;
-        }
-
-        String valStr = value.toString().toUpperCase();
-        if (valStr == 'ON' || valStr == 'OFF' || valStr == 'TRUE' || valStr == 'FALSE' || valStr == '1' || valStr == '0') {
-          hasFound = true;
-          allSwitches.add({
-            'mac': mac, 'endpoint': key, 'data': {'state': (valStr == 'ON' || valStr == 'TRUE' || valStr == '1') ? 'ON' : 'OFF', 'name': getProperName(key, null)},
-            'rawDevice': rawDevicePayload // <--- GÓI TOÀN BỘ DATA THIẾT BỊ VÀO ĐÂY
-          });
-        }
-      }
-
-      sourceMap.forEach((k, v) => extractRecursive(k, v));
-      if (!hasFound) allSwitches.add({'mac': mac, 'endpoint': 'S_1', 'data': {'state': 'OFF', 'name': 'Chưa kết nối'}, 'rawDevice': rawDevicePayload});
+    // TỪ ĐIỂN DỊCH TÊN CHUẨN HASS
+    String translateName(String key) {
+      String k = key.toLowerCase();
+      if (k == 'all') return 'Bật/Tắt Tất Cả';
+      if (k.startsWith('relay')) return 'Relay ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
+      if (k.startsWith('power') && k != 'power') return 'Relay ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
+      if (k.startsWith('swa') || k.startsWith('s_')) return 'Công tắc ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
+      return 'Công tắc ${key.toUpperCase()}';
     }
 
+    final ignoredKeys = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping', 'type', 'id'];
+
+    // BÓC TÁCH THÔNG MINH
     for (var device in _currentHomeDevices) {
       String mac = device['mac_address'] ?? device['mac'] ?? 'UNKNOWN';
-      var rawState = device['state'] ?? device['state_data'] ?? {};
-      var rawUi = device['ui'] ?? device['ui_schema'] ?? {};
+      String deviceName = device['name'] ?? device['home_name'] ?? 'Thiết bị $mac';
+      
+      var rawState = device['state'] ?? device['state_data'] ?? device['properties']; 
+      Map<String, dynamic> stateMap = {};
+      if (rawState is String) {
+        String s = rawState.trim();
+        if (s.startsWith('{')) { try { stateMap = Map<String, dynamic>.from(jsonDecode(s)); } catch(_) {} }
+        else { stateMap = {'state': s}; }
+      } else if (rawState is Map) {
+        stateMap = Map<String, dynamic>.from(rawState);
+      }
 
-      Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
-      Map<String, dynamic> uiMap = rawUi is String ? (jsonDecode(rawUi) ?? {}) : Map<String, dynamic>.from(rawUi ?? {});
+      // TRẢI PHẲNG JSON: Dù mạch gửi dạng {"switch":{"power1": "ON"}} hay gộp chung thì đều moi ra được hết!
+      Map<String, String> flatEndpoints = {};
+      void flatten(Map m) {
+        m.forEach((k, v) {
+          if (v is Map) {
+             if (v.containsKey('state') || v.containsKey('value')) {
+                String s = (v['state'] ?? v['value']).toString().toUpperCase();
+                if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) flatEndpoints[k] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
+             } else { flatten(v); }
+          } else {
+             String s = v.toString().toUpperCase();
+             if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) flatEndpoints[k] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
+          }
+        });
+      }
+      flatten(stateMap);
 
-      if (stateMap.isEmpty && uiMap.isNotEmpty) scanEndpoints(device, mac, uiMap, uiMap);
-      else scanEndpoints(device, mac, stateMap, uiMap);
+      // Nhận diện Quạt
+      List<String> eps = flatEndpoints.keys.map((e) => e.toLowerCase()).toList();
+      bool isFan = deviceName.toLowerCase().contains('quạt') || deviceName.toLowerCase().contains('fan') ||
+                   eps.contains('sw') || eps.contains('swing') || eps.contains('tupnang') ||
+                   eps.any((e) => e.contains('speed')) || 
+                   (eps.contains('1') && eps.contains('2') && eps.contains('3'));
+
+      // --- NẾU LÀ QUẠT ---
+      if (isFan) {
+        int speed = 0; bool swing = false;
+        bool checkOn(String t) => flatEndpoints.entries.any((entry) => entry.key.toLowerCase() == t && entry.value == 'ON');
+
+        if (checkOn('3') || checkOn('speed3')) speed = 3;
+        else if (checkOn('2') || checkOn('speed2')) speed = 2;
+        else if (checkOn('1') || checkOn('speed1')) speed = 1;
+        else if (checkOn('power') || checkOn('power0') || checkOn('fan_power') || checkOn('state')) speed = 1;
+
+        if (checkOn('sw') || checkOn('swing') || checkOn('tupnang')) swing = true;
+
+        allFans.add({
+          'mac': mac, 'endpoint': 'fan', 'data': {'speed': speed, 'swing': swing, 'name': deviceName}, 'rawDevice': device
+        });
+        continue; 
+      }
+
+      // --- NẾU LÀ CÔNG TẮC ĐA KÊNH ---
+      if (flatEndpoints.isEmpty) {
+        String dLow = deviceName.toLowerCase();
+        if (dLow.contains('4b') || dLow.contains('4ch') || dLow.contains('4 nút') || dLow.contains('công tắc 4')) {
+          ['power1', 'power2', 'power3', 'power4'].forEach((ep) => allSwitches.add({'mac': mac, 'endpoint': ep, 'data': {'state': 'OFF', 'name': 'Relay ${ep.replaceAll("power", "")}'}, 'rawDevice': device}));
+        } else {
+          allSwitches.add({'mac': mac, 'endpoint': 'power1', 'data': {'state': 'OFF', 'name': deviceName}, 'rawDevice': device});
+        }
+      } else {
+        flatEndpoints.forEach((key, state) {
+          if (!ignoredKeys.contains(key.toLowerCase())) {
+             allSwitches.add({'mac': mac, 'endpoint': key, 'data': {'state': state, 'name': translateName(key)}, 'rawDevice': device});
+          }
+        });
+      }
     }
 
-    List<Map<String, dynamic>> visibleSwitches = allSwitches.where((item) {
-      String deviceKey = "${item['mac']}_${item['endpoint']}";
-      if (_hiddenDevices.contains(deviceKey) && !_showHiddenFilter) return false;
-      return true;
-    }).toList();
+    List<Map<String, dynamic>> visibleSwitches = allSwitches.where((item) => !_hiddenDevices.contains("${item['mac']}_${item['endpoint']}") || _showHiddenFilter).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 1. VẼ THẺ QUẠT LỚN NẰM TRÊN CÙNG
+        if (allFans.isNotEmpty) Padding(
+          padding: const EdgeInsets.only(bottom: 24.0),
+          child: Wrap(
+            spacing: 16, runSpacing: 16, 
+            children: allFans.map((e) => SmartFanCard(
+              key: ValueKey("${e['mac']}_fan_${e['data']['speed']}_${e['data']['swing']}"), 
+              mac: e['mac'], endpoint: e['endpoint'], initialSpeed: e['data']['speed'] ?? 0, 
+              initialSwing: e['data']['swing'] == true, provider: provider, onRefresh: _handleRefresh,
+              
+              // KÍCH HOẠT HÀM XÓA CHO QUẠT
+              onDelete: () => _deleteDevice(e['mac']),
+            )).toList()
+          ),
+        ),
+
+        // 2. VẼ LƯỚI CÔNG TẮC Ở BÊN DƯỚI
         if (visibleSwitches.isNotEmpty) LayoutBuilder(
             builder: (context, constraints) {
               int crossAxisCount; double ratio;
@@ -1351,23 +1440,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio), 
                 itemBuilder: (context, index) { 
                   var item = visibleSwitches[index]; 
+                  String mac = item['mac']; String ep = item['endpoint']; String deviceKey = "${mac}_$ep";
                   bool isOnline = item['data']['state'] == 'ON'; 
-                  String deviceKey = "${item['mac']}_${item['endpoint']}";
                   
                   return SmartSwitchCard(
-                    mac: item['mac'], endpointKey: item['endpoint'], backendName: item['data']['name'], 
+                    key: ValueKey("${deviceKey}_$isOnline"), 
+                    mac: mac, endpointKey: ep, backendName: item['data']['name'], 
                     initialStatus: isOnline, provider: provider, onRefresh: _handleRefresh,
                     rawDeviceData: item['rawDevice'], 
                     isHidden: _hiddenDevices.contains(deviceKey), isSelectionMode: _isSelectionMode, isSelected: _selectedDevices.contains(deviceKey),
                     hasHiddenDevices: _hiddenDevices.isNotEmpty, isShowingHidden: _showHiddenFilter,
                     onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
                     onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
-                    onToggleSelect: () => setState(() {
-                      _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey);
-                      if (_selectedDevices.isEmpty) _isSelectionMode = false;
-                    }),
+                    onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
                     onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); }),
-                    onDelete: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang xóa ${item['endpoint']}...'))),
+                    
+                    // KÍCH HOẠT HÀM XÓA CHO CÔNG TẮC
+                    onDelete: () => _deleteDevice(mac),
+                    
                     onRename: () => _showRenameDialog(deviceKey, item['data']['name']),
                   ); 
                 }
@@ -1857,8 +1947,9 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 class SmartFanCard extends StatefulWidget {
   final String mac, endpoint; final int initialSpeed; final bool initialSwing; final DeviceProvider provider;
   final VoidCallback onRefresh;
-  
-  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, required this.provider, required this.onRefresh});
+  final VoidCallback onDelete;
+
+  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, required this.provider, required this.onRefresh, required this.onDelete});
   @override
   State<SmartFanCard> createState() => _SmartFanCardState();
 }
@@ -1922,13 +2013,28 @@ class _SmartFanCardState extends State<SmartFanCard> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   leading: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
                   title: const Text('Xóa thiết bị', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                  onTap: () { Navigator.pop(ctx); },
+                  onTap: () { Navigator.pop(ctx); _confirmDeleteFan(context, isDark, textMain, textSub); },
                 ),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  void _confirmDeleteFan(BuildContext context, bool isDark, Color textMain, Color textSub) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        title: Text('Xóa Quạt thông minh?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
+        content: Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); widget.onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))
+        ],
+      )
     );
   }
 

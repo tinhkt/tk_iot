@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import '../models/device_state.dart';
 import '../services/api_service.dart';
 import '../services/mqtt_service.dart';
@@ -88,7 +89,7 @@ class DeviceProvider with ChangeNotifier {
           speed: newSpeed, 
         );
         
-        print('🔄 [UI CẬP NHẬT] Đã cập nhật $endpoint - Trạng thái: $newState | Tốc độ: $newSpeed');
+        if (kDebugMode) print('🔄 [UI CẬP NHẬT] Đã cập nhật $endpoint - Trạng thái: $newState | Tốc độ: $newSpeed');
         notifyListeners(); 
       }
     }
@@ -102,7 +103,7 @@ class DeviceProvider with ChangeNotifier {
     try {
       _deviceState = await _apiService.getDeviceState(mac);
     } catch (e) {
-      print("❌ Lỗi trong Provider: $e");
+      if (kDebugMode) print("❌ Lỗi trong Provider: $e");
       final errorStr = e.toString().toLowerCase();
       if (errorStr.contains('401') || errorStr.contains('unauthorized')) {
         _authService.handleUnauthorized();
@@ -125,7 +126,7 @@ class DeviceProvider with ChangeNotifier {
       topic = '$mac/control'; 
     }
 
-    print("⚡ [BẮN LỆNH PROVIDER]: $payload -> Topic: $topic");
+    if (kDebugMode) print("⚡ [BẮN LỆNH PROVIDER]: $payload -> Topic: $topic");
     _mqttService.publish(topic, payload); 
 
     if (_deviceState != null && _deviceState!.endpoints.containsKey(endpoint)) {
@@ -146,7 +147,6 @@ class DeviceProvider with ChangeNotifier {
     _mqttService.sendCommand(mac, endpoint, isTurningOn, speed: speed, swing: isSwing);
 
     if (_deviceState != null && _deviceState!.endpoints.containsKey(endpoint)) {
-      final oldDevice = _deviceState!.endpoints[endpoint]!;
       _deviceState!.endpoints[endpoint] = SubDevice(
         power: isTurningOn,
         on: isTurningOn,

@@ -35,7 +35,7 @@ class _HomeDevicesScreenState extends State<HomeDevicesScreen> {
       final homeId = widget.homeData['home_id'];
       
       final response = await http.get(
-        Uri.parse('$baseUrl/homes/$homeId/devices'),
+        Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId.toString())}/devices'),
         headers: {'Authorization': 'Bearer $token'},
       );
 
@@ -72,7 +72,7 @@ class _HomeDevicesScreenState extends State<HomeDevicesScreen> {
       final homeId = widget.homeData['home_id'];
 
       final response = await http.post(
-        Uri.parse('$baseUrl/homes/$homeId/devices'),
+        Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId.toString())}/devices'),
         headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
         body: jsonEncode({"mac_address": macAddress}),
       );

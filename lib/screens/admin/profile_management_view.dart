@@ -21,7 +21,6 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
   final _phoneCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
   String _editingEmail = '';
-  String _editingRole = '';
   String _avatarUrl = '';
   
   // Trạng thái file ảnh chọn từ máy để review trước khi upload
@@ -53,7 +52,6 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
     
     // Mặc định nạp hồ sơ của chính mình trước
     _editingEmail = widget.currentEmail;
-    _editingRole = widget.currentRole;
     
     // GỌI API LẤY DỮ LIỆU THẬT CỦA BẢN THÂN
     final myProfile = await _authService.getMyProfile();
@@ -79,7 +77,6 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
   void _selectUserToEdit(Map<String, dynamic> user) {
     setState(() {
       _editingEmail = user['email'];
-      _editingRole = user['role'] ?? 'USER';
       _nameCtrl.text = user['full_name'] ?? '';
       _phoneCtrl.text = user['phone'] ?? '';
       _addressCtrl.text = user['address'] ?? '';
