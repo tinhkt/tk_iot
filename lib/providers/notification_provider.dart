@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import '../services/auth_service.dart';
+import '../services/mqtt_credentials_service.dart';
 
 class NotificationItem {
   final String type;
@@ -47,21 +48,30 @@ class NotificationProvider with ChangeNotifier {
   void initMQTTListener(String email) async {
     _mqttClient?.disconnect();
 
-    // [CHUẨN TCP] Đồng bộ với MqttService
-    _mqttClient = MqttServerClient('mqtt.iot-smart.vn', 'app_client_${DateTime.now().millisecondsSinceEpoch}');
-    _mqttClient!.port = 21883; 
+    // [BẢO MẬT] Dùng credentials MQTT động theo user do Backend cấp,
+    // thay cho tài khoản iot_admin hardcode dùng chung mọi nhà trước đây.
+    final creds = await MqttCredentialsService.get();
+    if (creds == null) {
+      if (kDebugMode) print('⚠️ [CHUÔNG] Chưa có credentials MQTT, bỏ qua kênh thông báo.');
+      return;
+    }
+
+    final clientId = 'app_client_${DateTime.now().millisecondsSinceEpoch}';
+    _mqttClient = MqttServerClient(creds.host, clientId);
+    _mqttClient!.port = creds.port;
+    _mqttClient!.secure = creds.secure;
     _mqttClient!.keepAlivePeriod = 20;
     _mqttClient!.logging(on: false);
 
     final connMessage = MqttConnectMessage()
-        .withClientIdentifier('app_client_${DateTime.now().millisecondsSinceEpoch}')
-        .authenticateAs('iot_admin', 'Mqtttk') 
+        .withClientIdentifier(clientId)
+        .authenticateAs(creds.username, creds.password)
         .startClean()
         .withWillQos(MqttQos.atMostOnce);
     _mqttClient!.connectionMessage = connMessage;
 
     try {
-      if (kDebugMode) print('⏳ [CHUÔNG TCP] Đang kết nối kênh thông báo tới mqtt.iot-smart.vn:21883...');
+      if (kDebugMode) print('⏳ [CHUÔNG] Đang kết nối kênh thông báo tới ${creds.host}:${creds.port} (TLS: ${creds.secure})...');
       await _mqttClient!.connect();
       if (_mqttClient!.connectionStatus!.state == MqttConnectionState.connected) {
         String topic = 'notifications/$email';

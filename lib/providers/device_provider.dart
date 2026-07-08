@@ -28,6 +28,10 @@ class DeviceProvider with ChangeNotifier {
     _globalListener = callback;
   }
 
+  // Dashboard gọi sau khi đăng nhập thành công: lúc app khởi động chưa có token
+  // nên kết nối trong constructor bị bỏ qua, cần kích hoạt lại với credentials mới
+  Future<void> connectMqtt() => _mqttService.connect();
+
   // --- HÀM KHỞI TẠO VÀ LẮNG NGHE MQTT ---
   void _initializeMqtt() {
     _mqttService.onMessageReceived = (topic, message) {

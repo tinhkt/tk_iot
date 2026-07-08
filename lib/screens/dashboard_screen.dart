@@ -242,7 +242,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _setupRealtimeSync() {
     final provider = Provider.of<DeviceProvider>(context, listen: false);
-    
+
+    // Kích hoạt (lại) kết nối MQTT bằng credentials động của user vừa đăng nhập
+    provider.connectMqtt();
+
     provider.setGlobalMqttListener((topic, message) {
       if (!mounted) return;
       

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../../main.dart'; // Import để truy cập navigatorKey toàn cục
 import '../screens/auth/login_screen.dart'; // Import màn hình Đăng nhập
+import 'mqtt_credentials_service.dart';
 import 'secure_storage_service.dart';
 
 class AuthService {
@@ -57,6 +58,9 @@ class AuthService {
         final token = data['token'];
 
         await SecureStorageService.saveToken(token);
+        // Xóa credentials MQTT của phiên/tài khoản trước để lần kết nối tới
+        // lấy đúng quyền (ACL topic) của user vừa đăng nhập
+        MqttCredentialsService.clear();
         return true;
       }
     } catch (e) {
@@ -67,6 +71,7 @@ class AuthService {
 
   Future<void> logout() async {
     await SecureStorageService.deleteToken();
+    MqttCredentialsService.clear();
   }
 
   Future<String?> getToken() => SecureStorageService.getToken();
