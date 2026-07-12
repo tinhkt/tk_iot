@@ -26,6 +26,11 @@ import '../widgets/room_group_dialogs.dart';
 import '../providers/room_group_provider.dart';
 import 'groups/edit_group_screen.dart';
 import 'groups/room_management_screen.dart';
+import 'automation/automation_screen.dart';
+import 'automation/create_automation_screen.dart';
+import 'devices/device_timer_screen.dart';
+import 'devices/device_history_screen.dart';
+import '../widgets/share_device_dialog.dart';
 import 'dart:async';
 
 class SpinningWidget extends StatefulWidget {
@@ -680,14 +685,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
   }
 
-  // [MOCK] Báo "đang phát triển" cho các tính năng chuẩn Tuya/Google Home chưa có Backend.
-  void _mockFeature(String feature, String mac) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Tính năng đang phát triển: $feature cho thiết bị $mac'),
-      backgroundColor: tkGreen,
-    ));
-  }
-
   // [CHUẨN HÓA — NGUỒN BƠM DUY NHẤT] Bộ callback tiêu chuẩn cho MỌI loại thẻ thiết bị.
   // Thẻ mới (vd SmartCurtainCard) chỉ cần nhận các callback này là có đủ Cài đặt/Thông tin/Hẹn giờ/
   // Lịch sử/Ngữ cảnh/Chia sẻ/Sửa/Xóa/Chuyển phòng/Chuyển nhà — KHÔNG phải viết logic riêng.
@@ -697,7 +694,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     VoidCallback delete,
     VoidCallback assignRoom,
     VoidCallback? assignHome,
-    VoidCallback info,
     VoidCallback timer,
     VoidCallback history,
     VoidCallback automation,
@@ -707,12 +703,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         delete: () => _deleteDevice(mac),
         assignRoom: () => _assignSingleRoom(mac),
         assignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
-        // [MOCK] các tính năng mới — đấu API sau chỉ thay thân hàm
-        info: () => _mockFeature('Thông tin thiết bị', mac),
-        timer: () => _mockFeature('Hẹn giờ & Lịch trình', mac),
-        history: () => _mockFeature('Lịch sử hoạt động', mac),
-        automation: () => _mockFeature('Thêm vào Ngữ cảnh', mac),
-        share: () => _mockFeature('Chia sẻ thiết bị', mac),
+        // Điều hướng tới các màn hình thật (mock UI tĩnh — đấu Backend sau)
+        timer: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DeviceTimerScreen(mac: mac, deviceName: name))),
+        history: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DeviceHistoryScreen(mac: mac, deviceName: name))),
+        automation: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateAutomationScreen())),
+        share: () => showShareDeviceDialog(context, mac: mac, deviceName: name),
       );
 
   // [PHÒNG] Gán 1 thiết bị vào phòng (từ menu ngữ cảnh của thẻ).
@@ -1306,6 +1301,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: _selectedIndex == 7 ? const AdminSystemScreen()
                          // [PHÒNG] index 1 = Quản lý phòng, nhúng làm tab body (embedded: bỏ AppBar Back)
                          : _selectedIndex == 1 ? const RoomManagementScreen(embedded: true)
+                         // [NGỮ CẢNH] index 2 = Automation/Scene, nhúng làm tab body
+                         : _selectedIndex == 2 ? const AutomationScreen(embedded: true)
                          : _selectedIndex == 6 ? const RoleManagementView()
                          : _selectedIndex == 3 ? Padding(padding: const EdgeInsets.all(16.0), child: _buildFullNotificationView(isDark, textMain, textSub))
                          : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole)
@@ -2472,7 +2469,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onRename: cb.rename,
                 onAssignHome: cb.assignHome,
                 onAssignRoom: cb.assignRoom,
-                onDeviceInfo: cb.info,
                 onDeviceTimer: cb.timer,
                 onDeviceHistory: cb.history,
                 onDeviceAutomation: cb.automation,
@@ -2513,7 +2509,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onDelete: cb.delete,
                 onAssignHome: cb.assignHome,
                 onAssignRoom: cb.assignRoom,
-                onDeviceInfo: cb.info,
                 onDeviceTimer: cb.timer,
                 onDeviceHistory: cb.history,
                 onDeviceAutomation: cb.automation,
@@ -2575,7 +2570,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onRename: cb.rename,
                   onAssignHome: cb.assignHome,
                   onAssignRoom: cb.assignRoom,
-                  onDeviceInfo: cb.info,
                   onDeviceTimer: cb.timer,
                   onDeviceHistory: cb.history,
                   onDeviceAutomation: cb.automation,
@@ -2885,8 +2879,7 @@ class SmartSwitchCard extends StatefulWidget {
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
   final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
   final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> dùng settings nội bộ)
-  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng
-  final VoidCallback? onDeviceInfo;
+  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng (Thông tin đã gộp vào onOpenSettings)
   final VoidCallback? onDeviceTimer;
   final VoidCallback? onDeviceHistory;
   final VoidCallback? onDeviceAutomation;
@@ -2908,7 +2901,7 @@ class SmartSwitchCard extends StatefulWidget {
     this.onAssignHome,
     this.onAssignRoom,
     this.onOpenSettings,
-    this.onDeviceInfo, this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare,
+    this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare,
     this.isGroup = false,
     this.onEditGroup,
   });
@@ -2974,7 +2967,6 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
       subtitle: 'Endpoint: ${widget.endpointKey}',
       // [CHUẨN HÓA] ưu tiên callback bơm từ Dashboard; null -> settings nội bộ của thẻ
       onOpenSettings: widget.onOpenSettings ?? () => _showDeviceSettingsDialog(context, isDark),
-      onDeviceInfo: widget.onDeviceInfo,
       onDeviceTimer: widget.onDeviceTimer,
       onDeviceHistory: widget.onDeviceHistory,
       onDeviceAutomation: widget.onDeviceAutomation,
@@ -3064,10 +3056,10 @@ class SmartFanCard extends StatefulWidget {
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
   final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
   final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> settings nội bộ)
-  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng
-  final VoidCallback? onDeviceInfo, onDeviceTimer, onDeviceHistory, onDeviceAutomation, onDeviceShare;
+  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng (Thông tin đã gộp vào onOpenSettings)
+  final VoidCallback? onDeviceTimer, onDeviceHistory, onDeviceAutomation, onDeviceShare;
 
-  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, this.backendName, this.isOffline = false, required this.provider, required this.onRefresh, required this.onDelete, this.onRename, this.isHidden = false, this.onToggleHide, this.rawDeviceData = const {}, this.onAssignHome, this.onAssignRoom, this.onOpenSettings, this.onDeviceInfo, this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare});
+  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, this.backendName, this.isOffline = false, required this.provider, required this.onRefresh, required this.onDelete, this.onRename, this.isHidden = false, this.onToggleHide, this.rawDeviceData = const {}, this.onAssignHome, this.onAssignRoom, this.onOpenSettings, this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare});
   @override
   State<SmartFanCard> createState() => _SmartFanCardState();
 }
@@ -3109,7 +3101,6 @@ class _SmartFanCardState extends State<SmartFanCard> {
         fanEndpoint: widget.endpoint,
         onRename: widget.onRename,
       ),
-      onDeviceInfo: widget.onDeviceInfo,
       onDeviceTimer: widget.onDeviceTimer,
       onDeviceHistory: widget.onDeviceHistory,
       onDeviceAutomation: widget.onDeviceAutomation,
@@ -3209,8 +3200,8 @@ class SmartSensorCard extends StatelessWidget {
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
   final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
   final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> settings nội bộ)
-  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng
-  final VoidCallback? onDeviceInfo, onDeviceTimer, onDeviceHistory, onDeviceAutomation, onDeviceShare;
+  // [CHUẨN TUYA/GOOGLE HOME] bộ chức năng mở rộng (Thông tin đã gộp vào onOpenSettings)
+  final VoidCallback? onDeviceTimer, onDeviceHistory, onDeviceAutomation, onDeviceShare;
 
   const SmartSensorCard({
     super.key,
@@ -3222,7 +3213,7 @@ class SmartSensorCard extends StatelessWidget {
     this.onAssignHome,
     this.onAssignRoom,
     this.onOpenSettings,
-    this.onDeviceInfo, this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare,
+    this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare,
   });
 
   static const Color tkGreen = Color(0xFF00A651);
@@ -3284,7 +3275,6 @@ class SmartSensorCard extends StatelessWidget {
                       headerIcon: Icons.device_thermostat_rounded,
                       // [CHUẨN HÓA] ưu tiên callback bơm từ Dashboard; null -> settings nội bộ
                       onOpenSettings: onOpenSettings ?? () => showDeviceSettingsPopup(context, isDark: isDark, mac: mac, displayName: name, rawDeviceData: rawDeviceData, provider: provider, onRename: onRename),
-                      onDeviceInfo: onDeviceInfo,
                       onDeviceTimer: onDeviceTimer,
                       onDeviceHistory: onDeviceHistory,
                       onDeviceAutomation: onDeviceAutomation,

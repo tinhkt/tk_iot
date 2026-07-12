@@ -9,6 +9,7 @@ import 'providers/theme_provider.dart';
 import 'screens/auth/splash_screen.dart'; // 1. NHẬP NGƯỜI GÁC CỔNG VÀO
 import 'providers/notification_provider.dart';
 import 'providers/room_group_provider.dart';
+import 'providers/automation_provider.dart';
 
 // KHAI BÁO KHÓA ĐIỀU HƯỚNG TOÀN CỤC CHỐNG CRASH / TREO KHI HẾT HẠN TOKEN
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -79,6 +80,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => NotificationProvider()),
         ChangeNotifierProvider(create: (_) => RoomGroupProvider()), // Phòng + Nhóm (mock)
+        ChangeNotifierProvider(create: (_) => AutomationProvider()), // Ngữ cảnh (mock)
       ],
       child: const TkIotApp(),
     ),

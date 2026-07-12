@@ -37,7 +37,7 @@ class DeviceMenuHelper {
     bool isSuperUser = false, // giữ theo hợp đồng; UI thực tế dựa vào onAssignHome != null
     VoidCallback? onOpenSettings, // "Cài đặt thiết bị" (Popup chi tiết) — ẩn nếu null
     // [CHUẨN TUYA/GOOGLE HOME] Bộ chức năng mở rộng — mục nào callback null thì tự ẩn.
-    VoidCallback? onDeviceInfo, // "Thông tin thiết bị" (IP/MAC/Firmware/Mạng)
+    // ("Thông tin thiết bị" đã GỘP vào onOpenSettings — hiển thị IP/MAC/Firmware trong Popup Cài đặt.)
     VoidCallback? onDeviceTimer, // "Hẹn giờ & Lịch trình"
     VoidCallback? onDeviceHistory, // "Lịch sử hoạt động"
     VoidCallback? onDeviceAutomation, // "Thêm vào Ngữ cảnh/Automation"
@@ -78,7 +78,9 @@ class DeviceMenuHelper {
         elevation: 0,
         insetPadding: const EdgeInsets.all(24),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
+          // [FIX OVERFLOW] Giới hạn chiều cao 85% màn hình -> danh sách chức năng dài sẽ CUỘN
+          // (SingleChildScrollView bên dưới) thay vì tràn "Bottom overflowed by X pixels".
+          constraints: BoxConstraints(maxWidth: 400, maxHeight: MediaQuery.of(context).size.height * 0.85),
           child: GlassContainer(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
             child: Material(
@@ -114,11 +116,16 @@ class DeviceMenuHelper {
                   // (5) Ngữ cảnh -> (6) Chia sẻ -> (7) Sửa tên -> (8) Chuyển phòng ->
                   // (9) Chuyển nhà [+Chỉnh sửa nhóm] -> (10) Ẩn -> (11) extraItems -> (12) Xóa (đỏ).
                   // Mục nào callback null thì TỰ ẩn.
+                  // [FIX OVERFLOW] Flexible + SingleChildScrollView: header cố định, danh sách chức năng CUỘN.
                   // ============================================================
-                  if (onOpenSettings != null)
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (onOpenSettings != null)
                     row(Icons.settings_rounded, 'Cài đặt thiết bị', textMain, () { Navigator.pop(ctx); onOpenSettings(); }),
-                  if (onDeviceInfo != null)
-                    row(Icons.info_outline, 'Thông tin thiết bị', textMain, () { Navigator.pop(ctx); onDeviceInfo(); }, sub: 'IP, MAC, Firmware, Mạng'),
                   if (onDeviceTimer != null)
                     row(Icons.access_time, 'Hẹn giờ & Lịch trình', textMain, () { Navigator.pop(ctx); onDeviceTimer(); }),
                   if (onDeviceHistory != null)
@@ -152,7 +159,11 @@ class DeviceMenuHelper {
                     Padding(padding: const EdgeInsets.symmetric(vertical: 8.0), child: Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1, thickness: 1)),
                     row(Icons.delete_outline_rounded, 'Xóa thiết bị', Colors.redAccent, () { Navigator.pop(ctx); _confirmDelete(context, currentName, onDelete); }, destructive: true),
                   ],
-                ],
+                        ], // inner Column children
+                      ), // inner Column
+                    ), // SingleChildScrollView
+                  ), // Flexible
+                ], // outer Column children
               ),
             ),
           ),
