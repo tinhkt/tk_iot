@@ -36,6 +36,12 @@ class DeviceMenuHelper {
     IconData headerIcon = Icons.settings_input_component_rounded,
     bool isSuperUser = false, // giữ theo hợp đồng; UI thực tế dựa vào onAssignHome != null
     VoidCallback? onOpenSettings, // "Cài đặt thiết bị" (Popup chi tiết) — ẩn nếu null
+    // [CHUẨN TUYA/GOOGLE HOME] Bộ chức năng mở rộng — mục nào callback null thì tự ẩn.
+    VoidCallback? onDeviceInfo, // "Thông tin thiết bị" (IP/MAC/Firmware/Mạng)
+    VoidCallback? onDeviceTimer, // "Hẹn giờ & Lịch trình"
+    VoidCallback? onDeviceHistory, // "Lịch sử hoạt động"
+    VoidCallback? onDeviceAutomation, // "Thêm vào Ngữ cảnh/Automation"
+    VoidCallback? onDeviceShare, // "Chia sẻ thiết bị"
     VoidCallback? onRename, // "Sửa tên thiết bị" — ẩn nếu null
     VoidCallback? onAssignHome, // "Chuyển sang nhà khác" — TỰ render nếu != null
     VoidCallback? onAssignRoom, // "Chuyển / Thêm vào phòng" — TỰ render nếu != null
@@ -103,14 +109,24 @@ class DeviceMenuHelper {
                   const SizedBox(height: 20),
 
                   // ============================================================
-                  // THỨ TỰ MENU CỐ ĐỊNH (chuẩn hóa cho MỌI thiết bị):
-                  // (1) Cài đặt -> (2) Sửa tên -> (3) Chuyển/Thêm vào phòng ->
-                  // (4) Chuyển nhà -> [Chỉnh sửa nhóm nếu là nhóm] -> (5) Ẩn ->
-                  // (6) extraItems (card-specific) -> (7) Xóa (đỏ).
+                  // THỨ TỰ MENU CỐ ĐỊNH (chuẩn Tuya/Google Home):
+                  // (1) Cài đặt -> (2) Thông tin -> (3) Hẹn giờ -> (4) Lịch sử ->
+                  // (5) Ngữ cảnh -> (6) Chia sẻ -> (7) Sửa tên -> (8) Chuyển phòng ->
+                  // (9) Chuyển nhà [+Chỉnh sửa nhóm] -> (10) Ẩn -> (11) extraItems -> (12) Xóa (đỏ).
                   // Mục nào callback null thì TỰ ẩn.
                   // ============================================================
                   if (onOpenSettings != null)
                     row(Icons.settings_rounded, 'Cài đặt thiết bị', textMain, () { Navigator.pop(ctx); onOpenSettings(); }),
+                  if (onDeviceInfo != null)
+                    row(Icons.info_outline, 'Thông tin thiết bị', textMain, () { Navigator.pop(ctx); onDeviceInfo(); }, sub: 'IP, MAC, Firmware, Mạng'),
+                  if (onDeviceTimer != null)
+                    row(Icons.access_time, 'Hẹn giờ & Lịch trình', textMain, () { Navigator.pop(ctx); onDeviceTimer(); }),
+                  if (onDeviceHistory != null)
+                    row(Icons.history, 'Lịch sử hoạt động', textMain, () { Navigator.pop(ctx); onDeviceHistory(); }, sub: 'Nhật ký bật/tắt'),
+                  if (onDeviceAutomation != null)
+                    row(Icons.auto_awesome, 'Thêm vào Ngữ cảnh', textMain, () { Navigator.pop(ctx); onDeviceAutomation(); }),
+                  if (onDeviceShare != null)
+                    row(Icons.share, 'Chia sẻ thiết bị', textMain, () { Navigator.pop(ctx); onDeviceShare(); }),
                   if (onRename != null)
                     row(Icons.edit_rounded, 'Sửa tên thiết bị', textMain, () { Navigator.pop(ctx); onRename(); }),
                   if (onAssignRoom != null)
