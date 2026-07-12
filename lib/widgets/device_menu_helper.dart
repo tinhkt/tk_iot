@@ -38,6 +38,8 @@ class DeviceMenuHelper {
     VoidCallback? onOpenSettings, // "Cài đặt thiết bị" (Popup chi tiết) — ẩn nếu null
     VoidCallback? onRename, // "Sửa tên thiết bị" — ẩn nếu null
     VoidCallback? onAssignHome, // "Chuyển sang nhà khác" — TỰ render nếu != null
+    VoidCallback? onAssignRoom, // "Chuyển / Thêm vào phòng" — TỰ render nếu != null
+    VoidCallback? onEditGroup, // "Chỉnh sửa nhóm" — CHỈ hiện với Công tắc ảo (nhóm)
     VoidCallback? onDelete, // "Xóa thiết bị" (kèm hộp xác nhận) — ẩn nếu null
     bool isHidden = false,
     String? hideLabel, // nhãn tùy biến cho nút Ẩn/Hiện (mặc định chung nếu null)
@@ -100,11 +102,23 @@ class DeviceMenuHelper {
                   ),
                   const SizedBox(height: 20),
 
-                  // --- Các mục cơ bản (tự ẩn nếu callback null) ---
+                  // ============================================================
+                  // THỨ TỰ MENU CỐ ĐỊNH (chuẩn hóa cho MỌI thiết bị):
+                  // (1) Cài đặt -> (2) Sửa tên -> (3) Chuyển/Thêm vào phòng ->
+                  // (4) Chuyển nhà -> [Chỉnh sửa nhóm nếu là nhóm] -> (5) Ẩn ->
+                  // (6) extraItems (card-specific) -> (7) Xóa (đỏ).
+                  // Mục nào callback null thì TỰ ẩn.
+                  // ============================================================
                   if (onOpenSettings != null)
                     row(Icons.settings_rounded, 'Cài đặt thiết bị', textMain, () { Navigator.pop(ctx); onOpenSettings(); }),
                   if (onRename != null)
                     row(Icons.edit_rounded, 'Sửa tên thiết bị', textMain, () { Navigator.pop(ctx); onRename(); }),
+                  if (onAssignRoom != null)
+                    row(Icons.meeting_room, 'Chuyển / Thêm vào phòng', textMain, () { Navigator.pop(ctx); onAssignRoom(); }),
+                  if (onAssignHome != null)
+                    row(Icons.swap_horiz, 'Chuyển sang nhà khác', tkGreen, () { Navigator.pop(ctx); onAssignHome(); }, sub: 'Phân bổ thiết bị cho ngôi nhà khác (Admin)'),
+                  if (onEditGroup != null)
+                    row(Icons.category, 'Chỉnh sửa nhóm', tkGreen, () { Navigator.pop(ctx); onEditGroup(); }, sub: 'Thêm/bớt thiết bị trong nhóm'),
                   if (onToggleHide != null)
                     row(
                       isHidden ? Icons.visibility_rounded : Icons.visibility_off_rounded,
@@ -114,14 +128,10 @@ class DeviceMenuHelper {
                       sub: isHidden ? null : hideSubtitle,
                     ),
 
-                  // --- Mục card-specific (chọn nhiều, xem ẩn...) ---
+                  // (6) Mục mở rộng card-specific (chọn nhiều, xem ẩn...)
                   ...extraItems.map((e) => row(e.icon, e.title, e.color ?? textMain, () { Navigator.pop(ctx); e.onTap(); }, sub: e.subtitle)),
 
-                  // --- [ADMIN] Chuyển nhà — TỰ render nếu onAssignHome != null ---
-                  if (onAssignHome != null)
-                    row(Icons.swap_horiz, 'Chuyển sang nhà khác', tkGreen, () { Navigator.pop(ctx); onAssignHome(); }, sub: 'Phân bổ thiết bị cho ngôi nhà khác (Admin)'),
-
-                  // --- Xóa (kèm xác nhận dùng chung) ---
+                  // (7) Xóa — cuối cùng, màu đỏ, kèm xác nhận dùng chung
                   if (onDelete != null) ...[
                     Padding(padding: const EdgeInsets.symmetric(vertical: 8.0), child: Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1, thickness: 1)),
                     row(Icons.delete_outline_rounded, 'Xóa thiết bị', Colors.redAccent, () { Navigator.pop(ctx); _confirmDelete(context, currentName, onDelete); }, destructive: true),

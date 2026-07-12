@@ -288,8 +288,9 @@ class _WhitelistTabState extends State<_WhitelistTab> {
           const SizedBox(height: 20),
 
           // --- Danh sách ---
+          // [FIX iOS] Ép cứng fontSize + height: không để Text kế thừa DefaultTextStyle khổng lồ.
           Text('Đã cấp phép (${_list.length})',
-              style: TextStyle(color: textSub, fontWeight: FontWeight.bold, letterSpacing: 1)),
+              style: TextStyle(color: textSub, fontWeight: FontWeight.bold, fontSize: 16, height: 1.3, letterSpacing: 1)),
           const SizedBox(height: 8),
           if (_list.isEmpty)
             Padding(
@@ -576,8 +577,9 @@ class _FirmwareTabState extends State<_FirmwareTab> {
           const SizedBox(height: 20),
 
           // --- Danh sách firmware ---
+          // [FIX iOS] Ép cứng fontSize + height: không để Text kế thừa DefaultTextStyle khổng lồ.
           Text('Firmware trên server',
-              style: TextStyle(color: textSub, fontWeight: FontWeight.bold, letterSpacing: 1)),
+              style: TextStyle(color: textSub, fontWeight: FontWeight.bold, fontSize: 16, height: 1.3, letterSpacing: 1)),
           const SizedBox(height: 8),
           if (_loading)
             const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator(color: tkGreen)))

@@ -22,6 +22,10 @@ import '../providers/notification_provider.dart';
 import 'home/home_management_screen.dart';
 import '../widgets/glass_container.dart';
 import '../widgets/device_menu_helper.dart';
+import '../widgets/room_group_dialogs.dart';
+import '../providers/room_group_provider.dart';
+import 'groups/edit_group_screen.dart';
+import 'groups/room_management_screen.dart';
 import 'dart:async';
 
 class SpinningWidget extends StatefulWidget {
@@ -161,7 +165,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   int onCount = 0, offCount = 0, totalEndpoints = 0;
                   
                   for (var d in devs) {
-                    var rawState = d['state'] ?? d['state_data'] ?? d['properties'] ?? {}; 
+                    // [FIX ĐẾM SAI] Hub & Cảm biến LUÔN online nhưng KHÔNG phải công tắc bật/tắt.
+                    // Bỏ qua khỏi phép đếm để thẻ nhà không báo nhầm (trước đây 2/16 dù đã tắt hết).
+                    final String dType = '${d['fw_type'] ?? ''} ${d['category'] ?? ''} ${d['type'] ?? ''}'.toUpperCase();
+                    if (dType.contains('HUB') || dType.contains('SENSOR')) continue;
+
+                    var rawState = d['state'] ?? d['state_data'] ?? d['properties'] ?? {};
                     Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
                     bool hasEp = false;
 
@@ -239,6 +248,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                stateMap,
                online: (device['status']?.toString().toLowerCase() ?? '') == 'online',
              );
+           }
+
+           // [FIX ĐẾM SAI] Bỏ Hub & Cảm biến khỏi phép đếm bật/tắt (vẫn hydrate state ở trên).
+           final String dType = '${device['fw_type'] ?? ''} ${device['category'] ?? ''} ${device['type'] ?? ''}'.toUpperCase();
+           if (dType.contains('HUB') || dType.contains('SENSOR')) {
+             device['on_count'] = 0; device['off_count'] = 0; device['total_endpoints'] = 0;
+             continue;
            }
 
            // THUẬT TOÁN ÉP PHẲNG JSON ĐỂ ĐẾM SỐ NÚT KHÔNG BAO GIỜ SÓT
@@ -592,26 +608,145 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _showThemeDialog() {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color surface = isDark ? const Color(0xFF1E293B) : Colors.white, textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    showModalBottomSheet(
-      context: context, backgroundColor: surface, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    // [FIX] Đổi showModalBottomSheet -> showDialog để popup nổi GIỮA màn hình như các popup khác,
+    // kèm hiệu ứng kính mờ đồng nhất (Dialog trong suốt + BackdropFilter + nền bán trong suốt bo 24).
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.3),
       builder: (context) {
         final themeProvider = Provider.of<ThemeProvider>(context);
-        return Container(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Giao diện', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: tkGreen)), IconButton(icon: Icon(Icons.close, color: textMain), onPressed: () => Navigator.pop(context))]),
-              const SizedBox(height: 8),
-              RadioListTile<ThemeMode>(title: Text('Chế độ Sáng', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.light, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
-              RadioListTile<ThemeMode>(title: Text('Chế độ Tối', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.dark, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
-              RadioListTile<ThemeMode>(title: Text('Tự động theo thiết bị', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), subtitle: const Text('Đổi màu theo ban ngày/ban đêm'), value: ThemeMode.system, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
-            ],
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.all(24),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+              child: Container(
+                width: 380,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Giao diện', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: tkGreen)), IconButton(icon: Icon(Icons.close, color: textMain), onPressed: () => Navigator.pop(context))]),
+                    const SizedBox(height: 8),
+                    RadioListTile<ThemeMode>(title: Text('Chế độ Sáng', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.light, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
+                    RadioListTile<ThemeMode>(title: Text('Chế độ Tối', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.dark, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
+                    RadioListTile<ThemeMode>(title: Text('Tự động theo thiết bị', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), subtitle: const Text('Đổi màu theo ban ngày/ban đêm'), value: ThemeMode.system, groupValue: themeProvider.themeMode, activeColor: tkGreen, onChanged: (val) => themeProvider.setThemeMode(val!)),
+                  ],
+                ),
+              ),
+            ),
           ),
         );
-      }
+      },
     );
+  }
+
+  // MAC của các thiết bị đang chọn (deviceKey = "MAC_endpoint" -> lấy MAC ở segment đầu)
+  List<String> _selectedMacs() => _selectedDevices.map((k) => k.split('_').first).toSet().toList();
+
+  // [PHÒNG] Chuyển HÀNG LOẠT thiết bị đã chọn vào 1 phòng (mock qua RoomGroupProvider).
+  Future<void> _bulkAssignRoom() async {
+    final macs = _selectedMacs();
+    if (macs.isEmpty) return;
+    final provider = Provider.of<RoomGroupProvider>(context, listen: false);
+    final room = await showRoomSelectionDialog(context, provider);
+    if (room == null || !mounted) return;
+    showDialog(context: context, barrierDismissible: false, builder: (_) => Center(child: CircularProgressIndicator(color: tkGreen)));
+    await provider.assignDevicesToRoom(macs, room.id);
+    if (!mounted) return;
+    Navigator.pop(context); // đóng loading
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã chuyển ${macs.length} thiết bị vào "${room.name}"'), backgroundColor: tkGreen));
+    setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
+  }
+
+  // [NHÓM] Tạo Công tắc ảo từ các thiết bị đã chọn (mock).
+  Future<void> _bulkCreateGroup() async {
+    final macs = _selectedMacs();
+    if (macs.isEmpty) return;
+    final result = await showCreateGroupDialog(context);
+    if (result == null || !mounted) return;
+    Provider.of<RoomGroupProvider>(context, listen: false).createGroup(result.name, result.iconCodePoint, macs);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã tạo nhóm "${result.name}" (${macs.length} thiết bị)'), backgroundColor: tkGreen));
+    setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
+  }
+
+  // [CHUẨN HÓA — NGUỒN BƠM DUY NHẤT] Bộ callback tiêu chuẩn cho MỌI loại thẻ thiết bị.
+  // Thẻ mới (vd SmartCurtainCard) chỉ cần nhận các callback này là có đủ Sửa/Xóa/Chuyển phòng/
+  // Chuyển nhà — KHÔNG phải viết logic riêng. key = deviceKey/hideKey để đổi tên đúng endpoint.
+  ({VoidCallback rename, VoidCallback delete, VoidCallback assignRoom, VoidCallback? assignHome})
+      _stdCallbacks(String mac, String key, String name) => (
+            rename: () => _showRenameDialog(key, name),
+            delete: () => _deleteDevice(mac),
+            assignRoom: () => _assignSingleRoom(mac),
+            assignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
+          );
+
+  // [PHÒNG] Gán 1 thiết bị vào phòng (từ menu ngữ cảnh của thẻ).
+  Future<void> _assignSingleRoom(String mac) async {
+    final provider = Provider.of<RoomGroupProvider>(context, listen: false);
+    final room = await showRoomSelectionDialog(context, provider);
+    if (room == null || !mounted) return;
+    await provider.assignDevicesToRoom([mac], room.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã thêm vào "${room.name}"'), backgroundColor: tkGreen));
+  }
+
+  // [NHÓM] Đổi tên nhóm (Công tắc ảo) — dialog nhập tên nhanh.
+  Future<void> _renameGroup(String groupMac, String current) async {
+    final ctrl = TextEditingController(text: current);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        title: const Text('Đổi tên nhóm'),
+        content: TextField(controller: ctrl, autofocus: true, decoration: InputDecoration(border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white), onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('Lưu')),
+        ],
+      ),
+    );
+    if (newName == null || newName.trim().isEmpty || !mounted) return;
+    Provider.of<RoomGroupProvider>(context, listen: false).renameGroup(groupMac, newName);
+  }
+
+  // [NHÓM] Mở màn chỉnh sửa nhóm — RESPONSIVE: PC mở dạng Dialog nổi giữa (KHÔNG che Sidebar),
+  // Mobile mở full màn hình như cũ. Truyền danh sách công tắc thật để pick thêm thành viên.
+  void _openEditGroup(String groupMac) {
+    final avail = _currentHomeDevices.map((d) => {
+      'mac': (d['mac_address'] ?? d['mac'] ?? '').toString(),
+      'name': (d['name'] ?? d['mac_address'] ?? d['mac'] ?? '').toString(),
+    }).where((e) => (e['mac'] ?? '').isNotEmpty).toList();
+
+    if (MediaQuery.of(context).size.width > 800) {
+      // PC/Web: Dialog kích thước cố định nổi lên giữa, sidebar vẫn hiện phía sau
+      showDialog(
+        context: context,
+        barrierColor: Colors.black.withValues(alpha: 0.45),
+        builder: (_) => Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: SizedBox(width: 500, height: 600, child: EditGroupScreen(groupMac: groupMac, availableDevices: avail, embedded: true)),
+          ),
+        ),
+      );
+    } else {
+      // Mobile: full màn hình như cũ
+      Navigator.push(context, MaterialPageRoute(builder: (_) => EditGroupScreen(groupMac: groupMac, availableDevices: avail)));
+    }
   }
 
   void _onMenuTapped(int index, {bool isFromDrawer = false}) {
@@ -1050,9 +1185,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
                   }
                 ),
+                // [PHÒNG] Chuyển hàng loạt thiết bị đã chọn vào một phòng
+                IconButton(
+                  tooltip: 'Chuyển vào phòng',
+                  icon: const Icon(Icons.meeting_room, color: Color(0xFF00A651)),
+                  onPressed: _bulkAssignRoom,
+                ),
+                // [NHÓM] Tạo Công tắc ảo từ các thiết bị đã chọn
+                IconButton(
+                  tooltip: 'Tạo nhóm công tắc',
+                  icon: const Icon(Icons.category, color: Colors.purpleAccent),
+                  onPressed: _bulkCreateGroup,
+                ),
                 IconButton(
                   tooltip: 'Ẩn / Hiện hàng loạt',
-                  icon: Icon(_showHiddenFilter ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.orange), 
+                  icon: Icon(_showHiddenFilter ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.orange),
                   onPressed: () {
                     setState(() { 
                       if (_showHiddenFilter) {
@@ -1133,6 +1280,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: SafeArea(
                     // [ADMIN] index 7 = Quản trị hệ thống, nhúng thẳng vào body (giữ sidebar + header)
                     child: _selectedIndex == 7 ? const AdminSystemScreen()
+                         // [PHÒNG] index 1 = Quản lý phòng, nhúng làm tab body (embedded: bỏ AppBar Back)
+                         : _selectedIndex == 1 ? const RoomManagementScreen(embedded: true)
                          : _selectedIndex == 6 ? const RoleManagementView()
                          : _selectedIndex == 3 ? Padding(padding: const EdgeInsets.all(16.0), child: _buildFullNotificationView(isDark, textMain, textSub))
                          : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole)
@@ -1264,7 +1413,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   _buildMenuItem(0, Icons.dashboard_rounded, 'Bảng điều khiển', txtMain, txtSub),
                   _buildMenuItem(5, Icons.maps_home_work_rounded, 'Quản lý Nhà', txtMain, txtSub), 
-                  _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng ban', txtMain, txtSub),
+                  _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng', txtMain, txtSub),
                   _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub),
                   _buildMenuItem(3, Icons.notifications_active_rounded, 'Thông báo', txtMain, txtSub), 
                   _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub),
@@ -1303,7 +1452,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 _buildMenuItem(0, Icons.dashboard_rounded, 'Điều khiển', txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(5, Icons.maps_home_work_rounded, 'Quản lý Nhà', txtMain, txtSub, isFromDrawer: true),
-                _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng ban', txtMain, txtSub, isFromDrawer: true),
+                _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng', txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub, isFromDrawer: true),
                 // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
@@ -1460,7 +1609,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       const SizedBox(height: 16),
                       Expanded(
-                        child: SingleChildScrollView(physics: const BouncingScrollPhysics(), child: _buildDevicesGrid(isDark, textMain, textSub)),
+                        child: SingleChildScrollView(
+                          physics: const BouncingScrollPhysics(),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // [PHÒNG] Thanh chọn phòng ngang — đồng bộ PC/Tablet như Mobile
+                              _buildRoomTabs(),
+                              const SizedBox(height: 20),
+                              _buildDevicesGrid(isDark, textMain, textSub),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -1536,6 +1696,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Text('Tất cả thiết bị', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
             ],
           ),
+          const SizedBox(height: 12),
+          // [PHÒNG] Thanh điều hướng phòng ngang (ngay trên lưới thiết bị)
+          _buildRoomTabs(),
           const SizedBox(height: 16),
           _buildDevicesGrid(isDark, textMain, textSub),
           const SizedBox(height: 24),
@@ -1714,12 +1877,115 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ==========================================================================
   // THUẬT TOÁN PHÂN LẬP RÕ RÀNG QUẠT VÀ CÔNG TẮC - AUTO DISCOVERY
   // ==========================================================================
+  // [PHÒNG] Thanh điều hướng phòng NGANG — "Tất cả" + các phòng + nút Quản lý.
+  Widget _buildRoomTabs() {
+    return Consumer<RoomGroupProvider>(
+      builder: (context, roomProv, _) {
+        final bool isDark = Theme.of(context).brightness == Brightness.dark;
+        final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+        final Color chipBg = isDark ? const Color(0xFF1E293B) : Colors.white;
+        final sel = roomProv.selectedRoomId;
+
+        Widget chip({required String label, IconData? icon, required bool active, required VoidCallback onTap}) {
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Material(
+              color: active ? tkGreen : chipBg,
+              borderRadius: BorderRadius.circular(20),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: onTap,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (icon != null) ...[Icon(icon, size: 16, color: active ? Colors.white : textSub), const SizedBox(width: 6)],
+                    Text(label, style: TextStyle(color: active ? Colors.white : textSub, fontWeight: FontWeight.w700, fontSize: 13)),
+                  ]),
+                ),
+              ),
+            ),
+          );
+        }
+
+        return SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            children: [
+              chip(label: 'Tất cả', icon: Icons.widgets_rounded, active: sel == null, onTap: () => roomProv.selectRoom(null)),
+              ...roomProv.rooms.map((r) => chip(label: r.name, icon: Icons.meeting_room, active: sel == r.id, onTap: () => roomProv.selectRoom(r.id))),
+              // Nút Quản lý phòng
+              Material(
+                color: chipBg,
+                borderRadius: BorderRadius.circular(20),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoomManagementScreen())),
+                  child: Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9), child: Icon(Icons.settings, size: 18, color: textSub)),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // [PHÒNG] Thẻ Công tắc tổng của phòng — chạm để bật/tắt TOÀN BỘ thiết bị trong phòng.
+  Widget _buildRoomMasterCard(bool isDark, String roomId, String roomName) {
+    final bool on = context.watch<RoomGroupProvider>().roomOn(roomId);
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Material(
+        color: on ? tkGreen : (isDark ? const Color(0xFF1E293B) : Colors.white),
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: () => _toggleRoom(roomId),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            child: Row(children: [
+              Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: (on ? Colors.white : tkGreen).withValues(alpha: on ? 0.2 : 0.12), shape: BoxShape.circle), child: Icon(Icons.settings_power_rounded, color: on ? Colors.white : tkGreen, size: 26)),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Công tắc tổng — $roomName', style: TextStyle(color: on ? Colors.white : textMain, fontSize: 15, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 2),
+                Text(on ? 'Đang BẬT toàn phòng' : 'Chạm để bật/tắt tất cả', style: TextStyle(color: on ? Colors.white70 : (isDark ? Colors.white54 : Colors.black54), fontSize: 12)),
+              ])),
+              Icon(on ? Icons.toggle_on : Icons.toggle_off, color: on ? Colors.white : Colors.grey, size: 40),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // [PHÒNG] Bật/tắt cả phòng: cập nhật state mock + fan-out lệnh thật xuống từng thiết bị.
+  void _toggleRoom(String roomId) {
+    final roomProv = Provider.of<RoomGroupProvider>(context, listen: false);
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+    final bool turnOn = !roomProv.roomOn(roomId);
+    roomProv.toggleRoom(roomId, turnOn);
+    // toggleDevice gửi NGƯỢC currentState -> truyền !turnOn để ép về ON/OFF mong muốn.
+    // endpoint 'all': SSW04 bật/tắt cả 4 kênh; firmware 1 kênh/quạt bỏ qua endpoint, chỉ đọc value.
+    for (final mac in roomProv.devicesInRoom(roomId)) {
+      deviceProv.toggleDevice(mac, 'all', !turnOn);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(turnOn ? 'Đã bật tất cả thiết bị trong phòng' : 'Đã tắt tất cả thiết bị trong phòng'), backgroundColor: tkGreen));
+  }
+
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
     // listen: true — mỗi notifyListeners() từ DeviceProvider (sóng MQTT đổ vào kho DPS)
     // sẽ tự kích hoạt vẽ lại lưới này NGAY LẬP TỨC, không cần kéo lại HTTP API.
     final provider = Provider.of<DeviceProvider>(context);
+
+    // [PHÒNG] Phòng đang chọn (null = Tất cả) — dùng để LỌC thiết bị + chèn Công tắc tổng.
+    final roomProv = context.watch<RoomGroupProvider>();
+    final String? selRoom = roomProv.selectedRoomId;
 
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
@@ -1817,6 +2083,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // ==========================================================================
     for (var device in _currentHomeDevices) {
       String mac = (device['mac_address'] ?? device['mac'] ?? 'UNKNOWN').toString().replaceAll(':', '').toUpperCase();
+      // [PHÒNG] Đang xem 1 phòng cụ thể -> chỉ giữ thiết bị thuộc phòng đó.
+      if (selRoom != null && roomProv.roomOf(mac) != selRoom) continue;
       String deviceName = device['name'] ?? device['home_name'] ?? 'Thiết bị $mac';
 
       // ---------- LỚP 1: ẢNH TRẠNG THÁI BAN ĐẦU TỪ REST ----------
@@ -2111,6 +2379,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // [PHÒNG] Đang xem 1 phòng -> chèn Công tắc tổng phòng lên ĐẦU lưới
+        if (selRoom != null) _buildRoomMasterCard(isDark, selRoom, roomProv.roomName(selRoom)),
+
         // ====================================================================
         // 0. DẢI TRẠNG THÁI KÊNH REALTIME: MQTT đứt (PC ngủ mạng, broker timeout)
         //    là hiện ngay "Đang kết nối lại máy chủ..." — người dùng biết vì sao
@@ -2153,6 +2424,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // endpoint thật S_{MAC} mà Backend dùng trong Redis hash device_names
               final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
                   ? e['endpoint'] : 'S_${e['mac']}';
+              // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn (rename theo endpoint thật của quạt)
+              final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name']);
               return SmartFanCard(
                 key: ValueKey("${hideKey}_$status"),
                 mac: e['mac'],
@@ -2165,15 +2438,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 provider: provider,
                 rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
                 onRefresh: _handleRefresh,
-                onDelete: () => _deleteDevice(e['mac']),
-                onRename: () => _showRenameDialog("${e['mac']}_$renameEndpoint", e['name']),
                 // [FIX NÚT ẨN BỊ LIỆT] nối thẳng vào kho _hiddenDevices + lưu bền
                 onToggleHide: (hide) => setState(() {
                   hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
                   _persistHiddenDevices();
                 }),
-                // [ADMIN] Chuyển nhà — đồng loạt cho mọi loại thẻ (chỉ SUPER_USER)
-                onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(e['mac']) : null,
+                // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn
+                onDelete: cb.delete,
+                onRename: cb.rename,
+                onAssignHome: cb.assignHome,
+                onAssignRoom: cb.assignRoom,
               );
             }).toList(),
           ),
@@ -2188,6 +2462,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             spacing: 16, runSpacing: 16,
             children: visibleSensors.map((e) {
               final String hideKey = "${e['mac']}_${e['endpoint']}";
+              final cb = _stdCallbacks(e['mac'], hideKey, e['name']); // [NGUỒN BƠM DUY NHẤT]
               return SmartSensorCard(
                 // key chứa cả số đo + online: sóng MQTT đổi nhiệt/ẩm là thẻ vẽ lại ngay
                 key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
@@ -2204,10 +2479,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
                   _persistHiddenDevices();
                 }),
-                onRename: () => _showRenameDialog(hideKey, e['name']),
-                onDelete: () => _deleteDevice(e['mac']),
-                // [ADMIN] Chuyển nhà — đồng loạt cho mọi loại thẻ (chỉ SUPER_USER)
-                onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(e['mac']) : null,
+                // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn (dùng chung mọi loại thẻ)
+                onRename: cb.rename,
+                onDelete: cb.delete,
+                onAssignHome: cb.assignHome,
+                onAssignRoom: cb.assignRoom,
               );
             }).toList(),
           ),
@@ -2235,6 +2511,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final bool isDevOnline = item['online'] == true;
                 final String status = "${item['state']}_$isDevOnline";
                 final bool isOn = item['state'] == 'ON';
+                // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn — bơm đồng loạt vào thẻ
+                final cb = _stdCallbacks(mac, deviceKey, item['name']);
 
                 return SmartSwitchCard(
                   // Key chứa cả trạng thái + online: sóng MQTT đổi ON/OFF hay LWT báo
@@ -2258,15 +2536,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
                   onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
                   onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
-                  onDelete: () => _deleteDevice(mac),
-                  onRename: () => _showRenameDialog(deviceKey, item['name']),
-                  // [ADMIN] Chuyển nhà — CHỈ SUPER_USER thấy (callback null = ẩn tùy chọn trong menu)
-                  onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
+                  // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn
+                  onDelete: cb.delete,
+                  onRename: cb.rename,
+                  onAssignHome: cb.assignHome,
+                  onAssignRoom: cb.assignRoom,
                 );
               },
             );
           },
         ),
+
+        // ====================================================================
+        // [NHÓM] CÔNG TẮC ẢO — render bằng chính SmartSwitchCard (badge "NHÓM")
+        // ====================================================================
+        Builder(builder: (context) {
+          final groups = context.watch<RoomGroupProvider>().groups;
+          if (groups.isEmpty) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(top: 8.0),
+            child: LayoutBuilder(builder: (context, constraints) {
+              int crossAxisCount = constraints.maxWidth < 500 ? 3 : (constraints.maxWidth / 120).floor().clamp(4, 12);
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: groups.length,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.0),
+                itemBuilder: (context, index) {
+                  final g = groups[index];
+                  return SmartSwitchCard(
+                    key: ValueKey('group_${g.mac}_${g.memberMacs.length}'),
+                    mac: g.mac,
+                    endpointKey: 'all',
+                    backendName: g.name,
+                    initialStatus: false,
+                    provider: provider,
+                    onRefresh: _handleRefresh,
+                    rawDeviceData: const {},
+                    isGroup: true,
+                    onEditGroup: () => _openEditGroup(g.mac),
+                    onAssignRoom: () => _assignSingleRoom(g.mac), // [PHÒNG] nhóm cũng gán được vào phòng
+                    onRename: () => _renameGroup(g.mac, g.name),
+                    onDelete: () => Provider.of<RoomGroupProvider>(context, listen: false).deleteGroup(g.mac),
+                    onToggleHide: (_) {},
+                    onToggleSelect: () {},
+                    onEnterSelectionMode: () {},
+                  );
+                },
+              );
+            }),
+          );
+        }),
       ],
     );
   }
@@ -2524,6 +2844,10 @@ class SmartSwitchCard extends StatefulWidget {
   final bool isShowingHidden;
   final VoidCallback? onToggleShowHidden;
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
+  final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
+  final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> dùng settings nội bộ)
+  final bool isGroup;               // [NHÓM] true = Công tắc ảo (nhóm) -> hiện badge phân biệt
+  final VoidCallback? onEditGroup;  // [NHÓM] Chỉnh sửa nhóm — chỉ non-null khi isGroup
 
   const SmartSwitchCard({
     super.key,
@@ -2537,6 +2861,10 @@ class SmartSwitchCard extends StatefulWidget {
     required this.onToggleHide, required this.onDelete, required this.onRename,
     this.hasHiddenDevices = false, this.isShowingHidden = false, this.onToggleShowHidden,
     this.onAssignHome,
+    this.onAssignRoom,
+    this.onOpenSettings,
+    this.isGroup = false,
+    this.onEditGroup,
   });
 
   @override
@@ -2598,12 +2926,15 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
       mac: widget.mac,
       currentName: _formatName(),
       subtitle: 'Endpoint: ${widget.endpointKey}',
-      onOpenSettings: () => _showDeviceSettingsDialog(context, isDark),
+      // [CHUẨN HÓA] ưu tiên callback bơm từ Dashboard; null -> settings nội bộ của thẻ
+      onOpenSettings: widget.onOpenSettings ?? () => _showDeviceSettingsDialog(context, isDark),
       onRename: widget.onRename,
       isHidden: widget.isHidden,
       hideLabel: widget.isHidden ? 'Hiển thị lại công tắc này' : 'Ẩn khỏi Bảng điều khiển',
       hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
       onToggleHide: (v) => widget.onToggleHide(v),
+      onAssignRoom: widget.onAssignRoom,   // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
+      onEditGroup: widget.onEditGroup,     // [NHÓM] chỉ hiện nếu là Công tắc ảo
       onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
       onDelete: widget.onDelete,
       extraItems: [
@@ -2645,7 +2976,11 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
               child: Stack(
                 children: [
                   // Nút TỔNG (master) mang icon lưới riêng để phân biệt với kênh lẻ (bóng đèn)
-                  Positioned(top: 10, left: 10, child: Icon(offline ? Icons.cloud_off_rounded : (widget.isMaster ? Icons.grid_view_rounded : Icons.lightbulb_outline), color: offline ? Colors.grey : (isOnline ? Colors.white : tkGreen), size: 18)),
+                  // Công tắc ảo (nhóm) mang icon "category"; nút tổng -> lưới; kênh lẻ -> bóng đèn
+                  Positioned(top: 10, left: 10, child: Icon(offline ? Icons.cloud_off_rounded : (widget.isGroup ? Icons.category : (widget.isMaster ? Icons.grid_view_rounded : Icons.lightbulb_outline)), color: offline ? Colors.grey : (isOnline ? Colors.white : tkGreen), size: 18)),
+                  // [NHÓM] Badge góc phải phân biệt Công tắc ảo với thiết bị thật
+                  if (widget.isGroup && !widget.isSelected)
+                    Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.purpleAccent.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(8)), child: const Text('NHÓM', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w900)))),
                   // Nhãn "Ngoại tuyến" nhỏ ở góc phải trên khi mất kết nối
                   if (offline && !widget.isSelected) Positioned(top: 10, right: 8, child: Text('Ngoại tuyến', style: TextStyle(color: Colors.grey.withValues(alpha: 0.9), fontSize: 9, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic))),
                   if (widget.isSelected) Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.all(2), decoration: BoxDecoration(color: tkGreen, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.check, color: Colors.white, size: 14))),
@@ -2676,8 +3011,10 @@ class SmartFanCard extends StatefulWidget {
   final ValueChanged<bool>? onToggleHide;    // callback ẩn/hiện — [FIX] trước đây nút Ẩn bị liệt vì thiếu hàm này
   final Map<String, dynamic> rawDeviceData; // gói REST đầy đủ (system_data, fw_type...) cho Popup Cài đặt
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
+  final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
+  final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> settings nội bộ)
 
-  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, this.backendName, this.isOffline = false, required this.provider, required this.onRefresh, required this.onDelete, this.onRename, this.isHidden = false, this.onToggleHide, this.rawDeviceData = const {}, this.onAssignHome});
+  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, this.backendName, this.isOffline = false, required this.provider, required this.onRefresh, required this.onDelete, this.onRename, this.isHidden = false, this.onToggleHide, this.rawDeviceData = const {}, this.onAssignHome, this.onAssignRoom, this.onOpenSettings});
   @override
   State<SmartFanCard> createState() => _SmartFanCardState();
 }
@@ -2708,7 +3045,8 @@ class _SmartFanCardState extends State<SmartFanCard> {
       mac: widget.mac,
       currentName: widget.backendName ?? 'Quạt thông minh',
       headerIcon: Icons.all_out_rounded,
-      onOpenSettings: () => showDeviceSettingsPopup(
+      // [CHUẨN HÓA] ưu tiên callback bơm từ Dashboard; null -> settings nội bộ (kèm fanEndpoint)
+      onOpenSettings: widget.onOpenSettings ?? () => showDeviceSettingsPopup(
         context,
         isDark: isDark,
         mac: widget.mac,
@@ -2723,6 +3061,7 @@ class _SmartFanCardState extends State<SmartFanCard> {
       hideLabel: widget.isHidden ? 'Hiển thị lại thẻ quạt này' : 'Ẩn khỏi Bảng điều khiển',
       hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
       onToggleHide: widget.onToggleHide,
+      onAssignRoom: widget.onAssignRoom, // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
       onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
       onDelete: widget.onDelete,
     );
@@ -2810,6 +3149,8 @@ class SmartSensorCard extends StatelessWidget {
   final VoidCallback onRename;
   final VoidCallback onDelete;
   final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
+  final VoidCallback? onAssignRoom; // [PHÒNG] Chuyển/Thêm vào phòng
+  final VoidCallback? onOpenSettings; // [CHUẨN HÓA] Cài đặt thiết bị (null -> settings nội bộ)
 
   const SmartSensorCard({
     super.key,
@@ -2819,6 +3160,8 @@ class SmartSensorCard extends StatelessWidget {
     required this.provider, this.rawDeviceData = const {},
     required this.onToggleHide, required this.onRename, required this.onDelete,
     this.onAssignHome,
+    this.onAssignRoom,
+    this.onOpenSettings,
   });
 
   static const Color tkGreen = Color(0xFF00A651);
@@ -2878,12 +3221,14 @@ class SmartSensorCard extends StatelessWidget {
                       currentName: name,
                       subtitle: 'Cảm biến môi trường',
                       headerIcon: Icons.device_thermostat_rounded,
-                      onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: mac, displayName: name, rawDeviceData: rawDeviceData, provider: provider, onRename: onRename),
+                      // [CHUẨN HÓA] ưu tiên callback bơm từ Dashboard; null -> settings nội bộ
+                      onOpenSettings: onOpenSettings ?? () => showDeviceSettingsPopup(context, isDark: isDark, mac: mac, displayName: name, rawDeviceData: rawDeviceData, provider: provider, onRename: onRename),
                       onRename: onRename,
                       isHidden: isHidden,
                       hideLabel: isHidden ? 'Hiển thị lại thẻ này' : 'Ẩn khỏi Bảng điều khiển',
                       hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
                       onToggleHide: onToggleHide,
+                      onAssignRoom: onAssignRoom, // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
                       onAssignHome: onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
                       onDelete: onDelete,
                     ),
