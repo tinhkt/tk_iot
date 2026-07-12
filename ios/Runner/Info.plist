@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Ứng dụng cần dùng Camera để quét mã QR trên tem thiết bị khi bạn thêm thiết bị thông minh mới vào nhà.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ứng dụng cần truy cập Thư viện ảnh để bạn chọn ảnh đại diện cho tài khoản.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Micro chỉ dùng nếu bạn quay video khi chọn ảnh/video từ máy; tính năng quét mã QR không ghi âm.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

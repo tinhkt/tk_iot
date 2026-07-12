@@ -5,13 +5,18 @@ import 'dart:io' show Platform, Process;
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
+import 'package:permission_handler/permission_handler.dart'; // Xin quyền Camera trước khi quét QR
 import '../../widgets/glass_container.dart';
+import '../../services/lan_discovery_service.dart'; // Quét thiết bị LAN qua UDP Broadcast
 
 // ============================================================================
 // POPUP CHÍNH: THÊM THIẾT BỊ
 // ============================================================================
 class AddDeviceDialog extends StatefulWidget {
-  const AddDeviceDialog({super.key});
+  /// [LAN SCAN] "Sổ hộ khẩu" — tập MAC đã sở hữu (đã chuẩn hóa HOA + bỏ ":") do màn hình
+  /// chính truyền vào, dùng để ẩn nút "Thêm ngay" cho thiết bị đã có trong hệ thống.
+  final Set<String> ownedMacs;
+  const AddDeviceDialog({super.key, this.ownedMacs = const {}});
 
   @override
   State<AddDeviceDialog> createState() => _AddDeviceDialogState();
@@ -23,14 +28,20 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   
   final Color tkGreen = const Color(0xFF00A651);
 
-  // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động
-  int _currentView = 0; 
+  // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động, 4: Quét mạng LAN
+  int _currentView = 0;
   bool _isProcessing = false;
-  
+
   // Trạng thái cho luồng quét AP Mode
   Timer? _apDetectionTimer;
   late AnimationController _pulseController;
   bool isConnectedToHub = false;
+
+  // --- Trạng thái cho luồng QUÉT MẠNG LAN (dùng LanDiscoveryService) ---
+  final LanDiscoveryService _lanService = LanDiscoveryService();
+  StreamSubscription<List<LanDevice>>? _lanSub;
+  List<LanDevice> _lanDevices = [];
+  bool _isScanning = false;
 
   @override
   void initState() {
@@ -40,6 +51,14 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
+    // Lắng nghe kết quả quét LAN từ service (đã khử trùng MAC) -> vẽ lại UI
+    _lanSub = _lanService.devices.listen((list) {
+      if (!mounted) return;
+      setState(() {
+        _lanDevices = list;
+        _isScanning = _lanService.isScanning;
+      });
+    });
   }
 
   @override
@@ -47,8 +66,54 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     _cameraController.dispose();
     _macController.dispose();
     _stopAPDetection();
+    _lanSub?.cancel();
+    _lanService.dispose(); // đóng UDP socket + hủy timer khi thoát, tránh rò tài nguyên
     _pulseController.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // 🛰️ QUÉT MẠNG LAN — ủy quyền cho LanDiscoveryService (UDP Broadcast)
+  // ==========================================================================
+  // Chuyển sang View 4 rồi khởi động service; kết quả chảy về qua _lanSub -> setState.
+  Future<void> _startLanScan() async {
+    setState(() => _currentView = 4);
+    await _lanService.start();
+  }
+
+  // --- XIN QUYỀN CAMERA THEO CHUẨN (TRƯỚC KHI MỞ LUỒNG STREAM) ---
+  /// Trình tự chuẩn Apple/Google:
+  ///   1. Đã cấp quyền -> đi tiếp ngay.
+  ///   2. Chưa hỏi lần nào -> bật hộp thoại xin quyền của hệ điều hành.
+  ///   3. Bị từ chối VĨNH VIỄN (iOS chỉ cho hỏi 1 lần) -> hướng dẫn mở Cài đặt App.
+  /// Desktop (Windows/macOS/Linux) bỏ qua — permission_handler chỉ quản Android/iOS.
+  /// Không có bước này + thiếu NSCameraUsageDescription trong Info.plist là iOS
+  /// kill app ngay khoảnh khắc chạm vào camera (đúng hiện tượng văng về màn hình chính).
+  Future<bool> _ensureCameraPermission() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
+
+    var status = await Permission.camera.status;
+    if (status.isGranted) return true;
+
+    // Chưa có quyền -> bật hộp thoại hệ thống hỏi người dùng
+    status = await Permission.camera.request();
+    if (status.isGranted) return true;
+    if (!mounted) return false;
+
+    if (status.isPermanentlyDenied) {
+      // iOS không bao giờ hiện lại hộp thoại lần 2 — chỉ còn đường vào Cài đặt
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('Quyền Camera đang bị khóa. Hãy mở Cài đặt và bật Camera cho ứng dụng để quét mã QR.'),
+        backgroundColor: Colors.orange,
+        action: SnackBarAction(label: 'MỞ CÀI ĐẶT', textColor: Colors.white, onPressed: openAppSettings),
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Bạn cần cho phép dùng Camera để quét mã QR trên tem thiết bị.'),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+    return false;
   }
 
   // --- HÀM MỞ CÀI ĐẶT WIFI CỦA ĐIỆN THOẠI ---
@@ -145,6 +210,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             onPressed: () {
               if (_currentView == 1) _cameraController.stop();
               _stopAPDetection();
+              _lanService.stop(); // đóng socket UDP khi rời màn quét LAN
               setState(() => _currentView = 0);
             },
             splashRadius: 20,
@@ -189,7 +255,11 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           // 1. Quét QR
           GlassCard(
             padding: const EdgeInsets.all(12),
-            onTap: () {
+            onTap: () async {
+              // [FIX CRASH iOS] Xin quyền Camera xong xuôi rồi MỚI mở luồng stream;
+              // bị từ chối thì đứng lại ở menu kèm hướng dẫn, không đâm đầu vào camera
+              final bool granted = await _ensureCameraPermission();
+              if (!granted || !mounted) return;
               setState(() => _currentView = 1);
               _cameraController.start();
             },
@@ -259,6 +329,134 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               ],
             ),
           ),
+          const SizedBox(height: 10),
+
+          // 4. Quét mạng LAN (UDP Broadcast tự động tìm thiết bị cùng WiFi)
+          GlassCard(
+            padding: const EdgeInsets.all(12),
+            onTap: _startLanScan,
+            child: Row(
+              children: [
+                Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.purple.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.wifi_find_rounded, color: Colors.purple, size: 24)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Quét mạng LAN (Tự động tìm kiếm)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                      Text('Dò mọi thiết bị đang cùng mạng WiFi với bạn', style: TextStyle(color: textSub, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- VIEW 4: QUÉT MẠNG LAN — DANH SÁCH THIẾT BỊ TÌM THẤY ---
+  Widget _buildLanScanView(bool isDark, Color textMain, Color textSub) {
+    final devices = _lanDevices;
+    final bool empty = devices.isEmpty;
+    return Padding(
+      padding: const EdgeInsets.all(20.0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildHeader('Quét mạng LAN', textMain, textSub),
+          const SizedBox(height: 16),
+
+          // Dòng trạng thái: đang quét (spinner "Đang tìm kiếm...") hoặc đã xong
+          Row(
+            children: [
+              if (_isScanning)
+                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.purple))
+              else
+                Icon(empty ? Icons.error_outline_rounded : Icons.check_circle_rounded, color: empty ? Colors.redAccent : tkGreen, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _isScanning
+                      ? 'Đang tìm kiếm thiết bị trong mạng...'
+                      : (empty
+                          ? 'Không tìm thấy thiết bị nào. Đảm bảo điện thoại và thiết bị dùng chung WiFi.'
+                          : 'Đã tìm thấy ${devices.length} thiết bị.'),
+                  style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+              // Hết giờ không thấy gì -> nút "Thử lại"
+              if (!_isScanning)
+                TextButton.icon(
+                  onPressed: _startLanScan,
+                  icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.purple),
+                  label: const Text('Thử lại', style: TextStyle(color: Colors.purple, fontWeight: FontWeight.bold, fontSize: 13)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Danh sách thiết bị: mỗi hàng tên + MAC + IP (+ loại), kèm nút "Thêm ngay"
+          if (!empty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 320),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: const BouncingScrollPhysics(),
+                itemCount: devices.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final LanDevice d = devices[index];
+                  // [CHUẨN HÓA MAC] Đưa MAC quét được về cùng dạng "sổ hộ khẩu": HOA + bỏ ":"
+                  final String scannedMac = d.mac.toUpperCase().replaceAll(':', '');
+                  final bool isAlreadyAdded = widget.ownedMacs.contains(scannedMac);
+                  return GlassCard(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    child: Row(
+                      children: [
+                        Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)), child: Icon(Icons.developer_board_rounded, color: tkGreen, size: 20)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                d.deviceType.isNotEmpty ? '${d.name}  •  ${d.deviceType}' : d.name,
+                                style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold),
+                                maxLines: 1, overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 2),
+                              Text('MAC: ${d.mac}', style: TextStyle(color: textSub, fontSize: 11, fontFamily: 'monospace')),
+                              Text('IP: ${d.ip}', style: TextStyle(color: textSub, fontSize: 11, fontFamily: 'monospace')),
+                            ],
+                          ),
+                        ),
+                        // [CHECK SỔ HỘ KHẨU] Đã có trong hệ thống -> nhãn "Đã thêm" (không cho thêm lại);
+                        // chưa có -> giữ nút "Thêm ngay" như cũ (tái sử dụng _processLinkDevice).
+                        if (isAlreadyAdded)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.check_circle, color: tkGreen, size: 18),
+                              const SizedBox(width: 6),
+                              Text('Đã thêm', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+                            ],
+                          )
+                        else
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                            onPressed: _isProcessing ? null : () => _processLinkDevice(d.mac),
+                            child: const Text('Thêm ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );
@@ -467,13 +665,15 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             curve: Curves.easeInOut,
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
-              child: _currentView == 0 
+              child: _currentView == 0
                   ? _buildSelectionMenu(isDark, textMain, textSub)
-                  : _currentView == 1 
+                  : _currentView == 1
                       ? _buildScannerView(textMain, textSub)
                       : _currentView == 2
                           ? _buildManualEntryView(isDark, textMain, textSub)
-                          : _buildAPModeView(isDark, textMain, textSub), // Render View 3
+                          : _currentView == 3
+                              ? _buildAPModeView(isDark, textMain, textSub) // View 3: AP Mode
+                              : _buildLanScanView(isDark, textMain, textSub), // View 4: Quét LAN
             ),
           ),
         ),

@@ -436,11 +436,60 @@ class AuthService {
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
-        return decoded['data'] ?? [];
+        // [FIX LỆCH KEY] Backend GetNotificationsHandler trả {"success":true,"notifications":[...]}
+        // — code cũ đọc decoded['data'] nên fetchHistory LUÔN trả rỗng, panel chuông trống tuếch
+        // dù Redis có đầy lịch sử. Giữ 'data' làm fallback tương thích.
+        return decoded['notifications'] ?? decoded['data'] ?? [];
       }
     } catch (e) {
       if (kDebugMode) print("Lỗi kết nối API thông báo: $e");
     }
     return null;
+  }
+
+  // [THÔNG BÁO CAO CẤP] Đánh dấu MỘT thông báo là đã đọc trên Backend (Redis LSet),
+  // để trạng thái đã đọc còn NGUYÊN khi mở lại App trên máy khác. Trả về true nếu OK.
+  Future<bool> markNotificationRead(String id) async {
+    try {
+      final token = await getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/notifications/$id/read'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi đánh dấu đã đọc: $e");
+      return false;
+    }
+  }
+
+  // [THÔNG BÁO CAO CẤP] Đánh dấu TẤT CẢ thông báo đã đọc (nút "Đọc tất cả").
+  Future<bool> markAllNotificationsRead() async {
+    try {
+      final token = await getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/notifications/read-all'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi đánh dấu đã đọc tất cả: $e");
+      return false;
+    }
+  }
+
+  // [THÔNG BÁO CAO CẤP] Xóa hẳn MỘT thông báo khỏi lịch sử (vuốt để xóa).
+  Future<bool> deleteNotification(String id) async {
+    try {
+      final token = await getToken();
+      final response = await http.delete(
+        Uri.parse('$baseUrl/notifications/$id'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi xóa thông báo: $e");
+      return false;
+    }
   }
 }

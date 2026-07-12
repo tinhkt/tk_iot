@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/glass_container.dart';
 import '../dashboard_screen.dart';
@@ -17,22 +18,48 @@ class _LoginScreenState extends State<LoginScreen> {
   final AuthService _authService = AuthService();
   bool _isLoading = false;
 
+  /// Khóa SharedPreferences ghi nhớ Username/Email của phiên đăng nhập gần nhất.
+  /// Chỉ lưu ĐỊNH DANH (không bao giờ lưu mật khẩu) — token phiên vẫn nằm riêng
+  /// trong SecureStorage; đăng xuất xóa token nhưng giữ lại định danh này.
+  static const String _kLastIdentifierKey = 'last_login_identifier';
+
   final Color tkGreen = const Color(0xFF00A651);
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreLastIdentifier();
+  }
+
+  /// Tự điền Username/Email của phiên trước vào ô đăng nhập —
+  /// người dùng mở lại app chỉ cần gõ mật khẩu.
+  Future<void> _restoreLastIdentifier() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_kLastIdentifierKey);
+    if (saved != null && saved.isNotEmpty && mounted) {
+      setState(() => _emailController.text = saved);
+    }
+  }
 
   void _handleLogin() async {
     setState(() => _isLoading = true);
-    
+
+    final identifier = _emailController.text.trim();
     bool success = await _authService.login(
-      _emailController.text.trim(), 
+      identifier,
       _passwordController.text.trim()
     );
 
     setState(() => _isLoading = false);
 
     if (success) {
+      // Chỉ ghi nhớ định danh khi đăng nhập THÀNH CÔNG (không lưu chuỗi gõ sai)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kLastIdentifierKey, identifier);
+
       if (!mounted) return;
       Navigator.pushReplacement(
-        context, 
+        context,
         MaterialPageRoute(builder: (context) => const DashboardScreen()),
       );
     } else {
@@ -242,8 +269,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   controller: _emailController,
                   style: TextStyle(color: textMain), 
                   decoration: InputDecoration(
-                    // Đã sửa thành hintText và thêm contentPadding
-                    hintText: 'Nhập email quản trị', 
+                    // Backend chấp nhận cả username admin lẫn email thường
+                    hintText: 'Username hoặc Email',
                     hintStyle: TextStyle(color: textSub),
                     filled: true, 
                     fillColor: surfaceColor, 

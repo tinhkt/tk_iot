@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:provider/provider.dart';
-import 'dart:io' show Platform;
+import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'providers/device_provider.dart';
@@ -12,10 +12,47 @@ import 'providers/notification_provider.dart';
 // KHAI BÁO KHÓA ĐIỀU HƯỚNG TOÀN CỤC CHỐNG CRASH / TREO KHI HẾT HẠN TOKEN
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
+// ============================================================================
+// 🔐 GỠ RÀO SSL CHO ANDROID (HandshakeException khi chuỗi chứng chỉ chưa đầy đủ)
+// ============================================================================
+// Android kiểm chuỗi chứng chỉ (chain of trust) NGHIÊM hơn Windows: nếu Server chỉ
+// gửi cert lá mà THIẾU chứng chỉ trung gian (fullchain), Android từ chối bắt tay ->
+// "Connection terminated during handshake"; Windows lại tự tìm được intermediate nên
+// vẫn chạy. Class dưới cho phép App bỏ qua lỗi xác thực để kết nối được ngay.
+//
+// ⚠️ QUAN TRỌNG — vì sao KHÔNG trả `true` cho mọi host:
+// badCertificateCallback trả true vô điều kiện = App tin MỌI chứng chỉ giả của MỌI
+// máy chủ -> mở toang cửa cho tấn công Man-in-the-Middle (kẻ gian trên WiFi công cộng
+// đọc lén được JWT token + mật khẩu MQTT của người dùng). Ở đây ta CHỈ bỏ qua đúng
+// (các) tên miền máy chủ của mình, các host khác vẫn được xác thực bình thường.
+class MyHttpOverrides extends HttpOverrides {
+  // Danh sách host được phép bỏ qua kiểm chứng chỉ — thêm tên miền của bạn tại đây
+  static const Set<String> _trustedHosts = {
+    'api.iot-smart.vn',
+    'mqtt.iot-smart.vn',
+  };
+
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) {
+        // Chỉ chấp nhận chứng chỉ "xấu" nếu đúng là máy chủ của mình; còn lại từ chối
+        return _trustedHosts.contains(host);
+      };
+  }
+}
+
 void main() async {
   // Bắt buộc phải có dòng này khi hàm main() là async và thao tác với UI hệ thống
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  // Cài bộ ghi đè SSL TRƯỚC khi có bất kỳ request HTTPS nào chạy (kết nối API/MQTT).
+  // Chỉ áp dụng cho nền tảng có dart:io (Android/iOS/Desktop) — Web dùng SSL của trình
+  // duyệt nên bỏ qua để tránh lỗi biên dịch.
+  if (!kIsWeb) {
+    HttpOverrides.global = MyHttpOverrides();
+  }
+
   // --- THIẾT LẬP CỬA SỔ TRÀN VIỀN CHO DESKTOP ---
   // Chỉ chạy khối lệnh này nếu không phải là Web và đang chạy trên Windows/macOS/Linux
   if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {

@@ -3,20 +3,25 @@ import 'dart:convert';
 import 'dart:ui'; 
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
-import 'package:window_manager/window_manager.dart'; 
+import 'package:window_manager/window_manager.dart';
 import 'package:provider/provider.dart';
-import 'package:http/http.dart' as http; 
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/device_provider.dart';
 import '../providers/theme_provider.dart';
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import 'auth/login_screen.dart';
 import 'admin/role_management_view.dart';
+import 'admin/admin_system_screen.dart';
+import '../services/admin_service.dart';
 import 'devices/add_device_dialog.dart';
 import 'admin/profile_management_view.dart';
 import '../providers/notification_provider.dart';
 import 'home/home_management_screen.dart';
 import '../widgets/glass_container.dart';
+import '../widgets/device_menu_helper.dart';
 import 'dart:async';
 
 class SpinningWidget extends StatefulWidget {
@@ -48,21 +53,75 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   final String baseUrl = "https://api.iot-smart.vn/api";
   String targetMac = '', userEmail = 'Đang tải...', userRole = 'USER', currentHomeId = '';
+
+  /// [ADMIN] Nhận diện quyền cao nhất chống mọi sai lệch chuỗi từ Backend:
+  /// bỏ khoảng trắng thừa + so sánh không phân biệt hoa/thường. Chấp nhận cả
+  /// 'SUPER_USER' lẫn 'admin' để menu Quản trị luôn hiện đúng.
+  bool get _isSuperUser {
+    final r = userRole.trim().toUpperCase();
+    return r == 'SUPER_USER' || r == 'ADMIN';
+  }
   int _selectedIndex = 0, _cameraViewMode = 1; 
   bool _isLoadingDevices = true; 
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...'};
   Timer? _debounceSync;
   bool _isSelectionMode = false;
-  Set<String> _selectedDevices = {}; 
-  Set<String> _hiddenDevices = {}; // Chứa ID (MAC_Endpoint) của các công tắc bị ẩn
+  final Set<String> _selectedDevices = {}; 
+  final Set<String> _hiddenDevices = {}; // Chứa ID (MAC_Endpoint) của các công tắc bị ẩn
   bool _showHiddenFilter = false; // Bật cờ này lên để xem các thiết bị đang bị ẩn
   List<dynamic> _currentHomeDevices = [], _allHomesForSuperUser = [];
-  Map<String, dynamic>? _selectedHomeForSuperUser; 
-  final Color tkGreen = const Color(0xFF00A651); 
+
+  /// [LAN SCAN] Tập MAC đã sở hữu trong nhà đang mở (đã chuẩn hóa HOA + bỏ ":") —
+  /// truyền vào AddDeviceDialog để ẩn nút "Thêm ngay" với thiết bị đã có.
+  Set<String> get _ownedMacs => _currentHomeDevices
+      .map((d) => (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase())
+      .where((m) => m.isNotEmpty)
+      .toSet();
+  Map<String, dynamic>? _selectedHomeForSuperUser;
+  final Color tkGreen = const Color(0xFF00A651);
+
+  // [EXCLUDE LIST] Các category là MỘT khối thiết bị được điều khiển TRỌN GÓI trong
+  // một thẻ chuyên biệt (quạt, điều hòa, rèm, bơm, tủ lạnh, cảm biến). Gặp thiết bị
+  // thuộc nhóm này, lưới CHỈ vẽ thẻ chính và TUYỆT ĐỐI không nứt các endpoint con
+  // (relay tốc độ, nút tổng...) ra thành thẻ công tắc ảo rời rạc.
+  // CỐ Ý KHÔNG có 'hub': Hub V38 là bộ CHỨA nhiều thiết bị con -> các thẻ con D1..Dn
+  // của nó vẫn phải hiện đầy đủ trên lưới (khác hẳn quạt/điều hòa là 1 khối đơn).
+  static const List<String> primaryDeviceCategories = ['fan', 'sensor', 'ac', 'curtain', 'pump', 'fridge'];
 
   @override
-  void initState() { super.initState(); _initializeHome(); _fetchWeather(); WidgetsBinding.instance.addPostFrameCallback((_) { Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail); _setupRealtimeSync();}); }
+  void initState() {
+    super.initState();
+    _loadHiddenDevices();
+    _fetchWeather();
+    // [INITIAL STATE SYNC — THỨ TỰ CHUẨN KHI MỞ APP]
+    //   Bước 1: REST GET /api/homes/{id}/devices -> hydrateFromRest() nạp trạng thái
+    //           TĨNH thật (ON/OFF + online) vào kho DPS -> nút sáng đúng NGAY LẬP TỨC.
+    //   Bước 2: chỉ SAU đó mới mở kênh MQTT smarthub/{home_id}/# hứng biến động realtime,
+    //           và kênh chuông notifications/{email} (lúc này email thật đã giải mã từ token,
+    //           không còn subscribe nhầm vào placeholder "Đang tải...").
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrapSync());
+  }
+
+  Future<void> _bootstrapSync() async {
+    await _initializeHome(); // REST: danh sách + trạng thái thật -> UI tĩnh lên hình trước
+    if (!mounted) return;
+    Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail);
+    _setupRealtimeSync();    // MQTT realtime chỉ kết nối sau khi ảnh tĩnh đã hiển thị đúng
+  }
+
+  /// Nạp lại danh sách nút bị ẩn từ Local Storage — trạng thái "Ẩn khỏi Bảng điều khiển"
+  /// sống bền qua các lần đóng/mở App, không còn mất khi khởi động lại
+  Future<void> _loadHiddenDevices() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList('hidden_devices') ?? [];
+    if (mounted && saved.isNotEmpty) setState(() => _hiddenDevices.addAll(saved));
+  }
+
+  /// Ghi danh sách ẩn xuống Local Storage ngay khi có thay đổi
+  void _persistHiddenDevices() {
+    SharedPreferences.getInstance().then((p) => p.setStringList('hidden_devices', _hiddenDevices.toList()));
+  }
 
   @override
   void dispose() { _debounceSync?.cancel(); super.dispose(); }
@@ -80,6 +139,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final decoded = utf8.decode(base64Url.decode(payloadStr));
           final Map<String, dynamic> payload = jsonDecode(decoded);
           String role = payload['role'] ?? 'USER', homeId = payload['home_id'] ?? '', email = payload['email'] ?? 'Chưa xác định';
+          // [DEBUG ROLE] In NGUYÊN VĂN payload JWT + role đã parse ra console. Nếu ở đây KHÔNG phải
+          // 'SUPER_USER' nghĩa là token đang cache còn cũ (chưa đăng nhập lại) HOẶC Backend trả role
+          // khác — đây là "nguồn sự thật" để đối chiếu, không phải lỗi UI.
+          if (kDebugMode) {
+            print('🔑 [ROLE DEBUG] JWT payload = $payload');
+            print('🔑 [ROLE DEBUG] role parsed = "$role"  (email: $email)');
+          }
           setState(() { currentHomeId = homeId; userEmail = email; userRole = role; });
 
           if (role == 'SUPER_USER') {
@@ -149,11 +215,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final response = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'), headers: {'Authorization': 'Bearer $token'});
       if (response.statusCode == 200) {
         List<dynamic> devices = jsonDecode(response.body);
-        
+        final dpsProvider = Provider.of<DeviceProvider>(context, listen: false);
+
         for (var device in devices) {
-           var rawState = device['state'] ?? device['state_data'] ?? device['properties']; 
+           var rawState = device['state'] ?? device['state_data'] ?? device['properties'];
            Map<String, dynamic> stateMap = {};
-           
+
            if (rawState is String) {
              String s = rawState.trim();
              if (s.startsWith('{')) { try { stateMap = Map<String, dynamic>.from(jsonDecode(s)); } catch(_) {} }
@@ -162,10 +229,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
              stateMap = Map<String, dynamic>.from(rawState);
            }
 
+           // [INITIAL STATE SYNC] Bơm ngay ảnh trạng thái thật (Backend vừa đọc từ Redis)
+           // + cờ Trực tuyến vào kho DPS — nút công tắc/quạt sáng đúng thực tế ngay từ
+           // khung hình đầu tiên, kể cả khi thiết bị được bật từ Hass/máy khác lúc App đóng
+           final String devMac = (device['mac_address'] ?? device['mac'] ?? '').toString();
+           if (devMac.isNotEmpty) {
+             dpsProvider.hydrateFromRest(
+               devMac,
+               stateMap,
+               online: (device['status']?.toString().toLowerCase() ?? '') == 'online',
+             );
+           }
+
            // THUẬT TOÁN ÉP PHẲNG JSON ĐỂ ĐẾM SỐ NÚT KHÔNG BAO GIỜ SÓT
            Map<String, dynamic> flatMap = {};
            void flatten(Map m) {
-             m.forEach((k, v) { if (v is Map) flatten(v); else flatMap[k] = v; });
+             m.forEach((k, v) { if (v is Map) {
+               flatten(v);
+             } else {
+               flatMap[k] = v;
+             } });
            }
            flatten(stateMap);
 
@@ -178,7 +261,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               String s = v.toString().toUpperCase();
               if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) {
                  hasEp = true; totalEndpoints++;
-                 if (['ON', 'TRUE', '1'].contains(s)) onCount++; else offCount++;
+                 if (['ON', 'TRUE', '1'].contains(s)) {
+                   onCount++;
+                 } else {
+                   offCount++;
+                 }
               }
            });
            
@@ -210,32 +297,86 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) { if (kDebugMode) print("Lỗi fetch thiết bị: $e"); }
   }
 
-  // --- HÀM GỌI API XÓA THIẾT BỊ ---
-  Future<void> _deleteDevice(String mac) async {
+  // ==========================================================================
+  // ➕ LIÊN KẾT THIẾT BỊ VỪA QUÉT/NHẬP VÀO NHÀ (POST /api/homes/:id/devices)
+  // ==========================================================================
+  /// AddDeviceDialog chỉ trả về mã MAC (String) — hàm này mới là nơi GỌI API THẬT.
+  /// [FIX] Trước đây dashboard bỏ quên kết quả dialog: quét QR xong không link gì cả.
+  /// Bắt buộc có phản hồi rõ ràng cho người dùng:
+  ///   - Thành công  -> SnackBar xanh + làm mới danh sách
+  ///   - Server chê  -> SnackBar đỏ kèm ĐÚNG thông báo lỗi server trả về
+  ///                    (vd: "Thiết bị (Mã MAC: XXX) hiện không trực tuyến!")
+  ///   - Rớt mạng    -> SnackBar đỏ báo lỗi kết nối
+  Future<void> _linkScannedDevice(dynamic dialogResult) async {
+    // Dialog đóng không quét gì (null) hoặc luồng AP Mode trả bool -> không link
+    if (dialogResult is! String || dialogResult.trim().isEmpty) return;
+    final String mac = dialogResult.trim().toUpperCase();
+
+    // Nhà đích: user thường = nhà trong token; SUPER_USER = nhà đang mở trên màn hình
+    final String homeId = (userRole == 'SUPER_USER' && _selectedHomeForSuperUser != null)
+        ? _selectedHomeForSuperUser!['home_id'].toString()
+        : currentHomeId;
+    if (homeId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Chưa xác định được ngôi nhà — hãy mở một nhà cụ thể rồi thêm thiết bị.'),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+
     try {
       final token = await AuthService().getToken();
-      
-      // LƯU Ý: Giả định endpoint xóa thiết bị của backend Golang là: DELETE /api/devices/:mac
-      // Nếu route backend của bác là kiểu khác (VD: /api/homes/$currentHomeId/devices/$mac), bác sửa lại URL dưới đây nhé.
-      final response = await http.delete(
-        Uri.parse('$baseUrl/devices/${Uri.encodeComponent(mac)}'),
-        headers: {'Authorization': 'Bearer $token'},
+      final response = await http.post(
+        Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({'mac_address': mac}),
       );
+      if (!mounted) return;
 
-      if (response.statusCode == 200 || response.statusCode == 204) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Đã xóa thiết bị thành công!'), backgroundColor: Color(0xFF00A651)),
-        );
-        // Xóa xong thì bắt buộc phải gọi làm mới danh sách
-        _handleRefresh();
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ Đã thêm thiết bị $mac vào nhà thành công!'),
+          backgroundColor: const Color(0xFF00A651),
+        ));
+        _handleRefresh(); // kéo danh sách mới -> thẻ thiết bị hiện ra ngay
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lỗi xóa thiết bị trên Server: Mã ${response.statusCode}'), backgroundColor: Colors.redAccent),
-        );
+        // Moi đúng câu chữ lỗi server gửi về (MAC sai, thiết bị chưa kết nối mạng...)
+        String errMsg = 'Lỗi máy chủ (HTTP ${response.statusCode})';
+        try {
+          final body = jsonDecode(response.body);
+          if (body is Map && (body['error'] ?? '').toString().isNotEmpty) errMsg = body['error'].toString();
+        } catch (_) {}
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('❌ $errMsg'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 5),
+        ));
       }
     } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('❌ Không thể kết nối máy chủ — kiểm tra mạng rồi thử lại.'),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+  }
+
+  // --- HÀM XÓA THIẾT BỊ (đi qua DeviceProvider để đồng bộ luôn kho RAM/DPS) ---
+  Future<void> _deleteDevice(String mac) async {
+    final provider = Provider.of<DeviceProvider>(context, listen: false);
+    final bool ok = await provider.deleteDevice(mac);
+    if (!mounted) return;
+
+    if (ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không thể kết nối đến máy chủ!'), backgroundColor: Colors.redAccent),
+        const SnackBar(content: Text('Đã xóa thiết bị thành công!'), backgroundColor: Color(0xFF00A651)),
+      );
+      // Provider đã gỡ thiết bị khỏi RAM; gọi làm mới để cập nhật cả danh sách
+      // thiết bị/nhà lấy từ REST (_currentHomeDevices) cho thẻ biến mất hẳn
+      _handleRefresh();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể xóa thiết bị — kiểm tra kết nối hoặc quyền tài khoản!'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -248,13 +389,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     provider.setGlobalMqttListener((topic, message) {
       if (!mounted) return;
-      
+
+      // [TỐI ƯU TỐC ĐỘ QUẠT/CÔNG TẮC] DeviceProvider đã cập nhật kho DPS + notifyListeners()
+      // NGAY khi gói state về -> thẻ (SmartFanCard/SmartSwitchCard) tự vẽ lại tức thì (<300ms),
+      // hoàn toàn hướng sự kiện qua stream MQTT. KHÔNG re-fetch REST cho mỗi gói state nữa
+      // (trước đây làm full _initializeHome mỗi tin -> nặng + tạo trễ giả).
+      // CHỈ nạp lại danh sách REST khi xuất hiện thiết bị LẠ chưa có trong lưới (vừa Add/Link).
+      final String upperTopic = topic.toUpperCase();
+      final bool knownDevice = _currentHomeDevices.any((d) {
+        final m = (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase();
+        return m.isNotEmpty && upperTopic.contains(m);
+      });
+      if (knownDevice) return; // thiết bị đã biết -> đã cập nhật realtime qua DPS, khỏi re-fetch
+
       if (_debounceSync?.isActive ?? false) _debounceSync!.cancel();
-      
-      _debounceSync = Timer(const Duration(milliseconds: 800), () {
-         if (mounted) {
-           _initializeHome(isSilent: true); 
-         }
+      _debounceSync = Timer(const Duration(milliseconds: 500), () {
+        if (mounted) _initializeHome(isSilent: true); // chỉ để nạp thiết bị mới vào danh sách
       });
     });
   }
@@ -484,6 +634,136 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (index == 4 && !isMobile) { _showSettingsMenu(initialTab: 0); } else { setState(() => _selectedIndex = index); }
   }
 
+  // [ADMIN] Hộp thoại "Chuyển sang nhà khác" — chỉ SUPER_USER mở tới (từ menu thẻ thiết bị).
+  // Lấy danh sách nhà -> Dropdown chọn nhà đích -> Xác nhận gọi API -> đóng -> Toast -> fetch lại.
+  Future<void> _showAssignHomeDialog(String mac) async {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final admin = AdminService();
+
+    final homes = await admin.getHomes();
+    if (!mounted) return;
+    if (homes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Không lấy được danh sách nhà'), backgroundColor: Colors.redAccent));
+      return;
+    }
+
+    String? selectedHomeId = homes.first['home_id']?.toString();
+    bool submitting = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+          title: Row(children: [Icon(Icons.swap_horiz, color: tkGreen), const SizedBox(width: 10), Text('Chuyển nhà thiết bị', style: TextStyle(color: textMain))]),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('MAC: $mac', style: TextStyle(color: textSub, fontSize: 12)),
+              const SizedBox(height: 16),
+              Text('Chọn nhà đích:', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              DropdownButton<String>(
+                value: selectedHomeId,
+                isExpanded: true,
+                dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                style: TextStyle(color: textMain),
+                items: homes.map((h) => DropdownMenuItem(
+                  value: h['home_id']?.toString(),
+                  child: Text((h['home_name'] ?? h['home_id'] ?? '—').toString(), overflow: TextOverflow.ellipsis),
+                )).toList(),
+                onChanged: submitting ? null : (v) => setDialog(() => selectedHomeId = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: submitting ? null : () => Navigator.pop(ctx), child: const Text('Hủy')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
+              onPressed: (submitting || selectedHomeId == null) ? null : () async {
+                setDialog(() => submitting = true);
+                final err = await admin.assignDeviceToHome(mac, selectedHomeId!);
+                if (!mounted) return;
+                Navigator.pop(ctx);
+                if (err == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: const Text('Đã chuyển thiết bị sang nhà mới'), backgroundColor: tkGreen));
+                  _initializeHome(); // fetch lại danh sách thiết bị trên màn hình
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                }
+              },
+              child: submitting
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Xác nhận'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // [OTA_UPDATE] Hộp thoại "Bản cập nhật mới" — bật khi chạm tin OTA trên chuông (thay vì deeplink).
+  // Nút CẬP NHẬT NGAY gọi API trigger OTA (đã có sẵn) qua MQTT tới thiết bị.
+  void _showUpdateDialog(String mac, String version, String changelog) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        title: Row(children: [
+          Icon(Icons.system_update_alt, color: tkGreen, size: 28),
+          const SizedBox(width: 10),
+          Expanded(child: Text('Bản cập nhật mới', style: TextStyle(color: textMain, fontWeight: FontWeight.bold))),
+        ]),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Thiết bị: $mac', style: TextStyle(color: textSub, fontSize: 12)),
+            const SizedBox(height: 8),
+            Row(children: [
+              Text('Phiên bản mới: ', style: TextStyle(color: textSub, fontSize: 13)),
+              Text(version.isEmpty ? '—' : 'v$version', style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold)),
+            ]),
+            const SizedBox(height: 12),
+            Text('Nội dung thay đổi:', style: TextStyle(color: textMain, fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 180),
+              child: SingleChildScrollView(
+                child: Text(changelog.isEmpty ? 'Không có mô tả.' : changelog,
+                    style: TextStyle(color: textSub, fontSize: 13, height: 1.4)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Để sau')),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: const Text('CẬP NHẬT NGAY'),
+            onPressed: () async {
+              Navigator.pop(ctx); // đóng Dialog trước
+              final ok = await ApiService().triggerOtaUpdate(mac);
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(ok ? 'Đang tiến hành cập nhật...' : 'Không gửi được lệnh (thiết bị offline?)'),
+                backgroundColor: ok ? tkGreen : Colors.redAccent,
+              ));
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showNotificationPanel(Color textMain, Color textSub) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     Provider.of<NotificationProvider>(context, listen: false).clearNewBadge();
@@ -515,7 +795,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text('Thông báo hệ thống', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
-                                  Text('Tổng số: ${listNotif.length}', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
+                                  // Nút "Đọc tất cả" chỉ bật khi còn tin chưa đọc
+                                  notifProvider.unreadCount > 0
+                                      ? TextButton.icon(
+                                          onPressed: () => notifProvider.markAllRead(),
+                                          icon: Icon(Icons.done_all_rounded, size: 16, color: tkGreen),
+                                          label: Text('Đọc tất cả', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.w600)),
+                                          style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                        )
+                                      : Text('Tổng số: ${listNotif.length}', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
                                 ],
                               ),
                             ),
@@ -543,16 +831,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   separatorBuilder: (_, _) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
                                   itemBuilder: (context, index) {
                                     final notif = listNotif[index];
-                                    IconData icon = Icons.info_outline_rounded;
-                                    if (notif.type == 'ALERT') {
-                                      icon = Icons.warning_amber_rounded;
-                                    } else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
-                                    Color notifColor = Color(int.parse(notif.color));
-                                    return ListTile(
-                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), hoverColor: isDark ? Colors.white10 : Colors.grey.shade50,
-                                      leading: CircleAvatar(backgroundColor: notifColor.withValues(alpha: 0.12), child: Icon(icon, color: notifColor, size: 20)),
-                                      title: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(notif.title, style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis)), Text(notif.time, style: TextStyle(color: textSub, fontSize: 11))]),
-                                      subtitle: Padding(padding: const EdgeInsets.only(top: 4.0), child: Text(notif.message, style: TextStyle(color: textSub, height: 1.4, fontSize: 13))),
+                                    return _buildNotifRow(
+                                      notif: notif, isDark: isDark, textMain: textMain, textSub: textSub,
+                                      notifProvider: notifProvider,
+                                      onTap: notif.mac.isEmpty ? null : () {
+                                        Navigator.of(context).pop();
+                                        _openDeviceSettingsByMac(notif.mac);
+                                      },
                                     );
                                   },
                                 ),
@@ -571,17 +856,108 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // Hàng thông báo DÙNG CHUNG cho cả popup chuông lẫn tab "Tất cả thông báo":
+  //  • Chấm màu bên phải = CHƯA ĐỌC; đọc rồi thì chữ mờ đi (Opacity) đúng chuẩn Tuya/Mi Home.
+  //  • Vuốt SANG TRÁI = xóa hẳn (nền đỏ, thùng rác) — gọi provider.dismiss (xóa cả trên Redis).
+  //  • Vuốt SANG PHẢI = đánh dấu đã đọc (nền xanh) mà KHÔNG gỡ khỏi danh sách.
+  //  • Chạm vào hàng = đánh dấu đã đọc + deeplink mở Popup Cài đặt thiết bị (nếu có MAC).
+  Widget _buildNotifRow({
+    required NotificationItem notif,
+    required bool isDark,
+    required Color textMain,
+    required Color textSub,
+    required NotificationProvider notifProvider,
+    VoidCallback? onTap,
+  }) {
+    IconData icon = Icons.info_outline_rounded;
+    if (notif.type == 'ALERT') {
+      icon = Icons.warning_amber_rounded;
+    } else if (notif.type == 'SYSTEM') {
+      icon = Icons.system_security_update_good_rounded;
+    } else if (notif.type == 'DEVICE') {
+      icon = Icons.power_off_outlined;
+    }
+    final Color notifColor = Color(notif.colorValue); // parse an toàn — màu rác không sập panel
+    final bool read = notif.isRead;
+
+    final tile = ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      hoverColor: isDark ? Colors.white10 : Colors.grey.shade50,
+      leading: CircleAvatar(
+        backgroundColor: notifColor.withValues(alpha: read ? 0.06 : 0.12),
+        child: Icon(icon, color: read ? notifColor.withValues(alpha: 0.5) : notifColor, size: 20),
+      ),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              notif.title,
+              style: TextStyle(
+                color: read ? textSub : textMain,
+                fontWeight: read ? FontWeight.w500 : FontWeight.bold,
+                fontSize: 14,
+              ),
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Text(notif.time, style: TextStyle(color: textSub, fontSize: 11)),
+          // Chấm CHƯA ĐỌC nằm cuối hàng tiêu đề
+          if (!read) Padding(padding: const EdgeInsets.only(left: 6), child: Container(width: 8, height: 8, decoration: BoxDecoration(color: notifColor, shape: BoxShape.circle))),
+        ],
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 4.0),
+        child: Text(notif.message, style: TextStyle(color: textSub.withValues(alpha: read ? 0.7 : 1.0), height: 1.4, fontSize: 13)),
+      ),
+      onTap: () {
+        // Chạm là đã đọc (kể cả khi không có MAC để deeplink)
+        if (!notif.isRead) notifProvider.markAsRead(notif.id);
+        // [OTA_UPDATE] KHÔNG deeplink — mở hộp thoại cập nhật với mac/version/changelog kèm theo
+        if (notif.type == 'OTA_UPDATE') {
+          _showUpdateDialog(notif.mac, notif.version, notif.changelog);
+          return;
+        }
+        if (onTap != null) onTap();
+      },
+    );
+
+    return Dismissible(
+      key: ValueKey(notif.id.isNotEmpty ? notif.id : '${notif.title}_${notif.time}'),
+      // Vuốt sang phải (đầu->cuối) = đánh dấu đã đọc; không cho phép nếu đã đọc rồi
+      background: Container(
+        color: tkGreen.withValues(alpha: 0.85), alignment: Alignment.centerLeft, padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.done_all_rounded, color: Colors.white), SizedBox(width: 8), Text('Đã đọc', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))]),
+      ),
+      secondaryBackground: Container(
+        color: Colors.redAccent, alignment: Alignment.centerRight, padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: const Row(mainAxisSize: MainAxisSize.min, children: [Text('Xóa', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), SizedBox(width: 8), Icon(Icons.delete_outline_rounded, color: Colors.white)]),
+      ),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          // Đánh dấu đã đọc nhưng GIỮ hàng trong danh sách -> trả false
+          if (!notif.isRead) notifProvider.markAsRead(notif.id);
+          return false;
+        }
+        return true; // vuốt trái -> cho phép gỡ khỏi cây widget
+      },
+      onDismissed: (_) => notifProvider.dismiss(notif.id),
+      child: tile,
+    );
+  }
+
   Widget _buildNotificationBell(Color textMain, Color textSub) {
     return Consumer<NotificationProvider>(
       builder: (context, notifProvider, child) {
-        int count = notifProvider.list.length; 
+        // Badge chỉ đếm tin CHƯA ĐỌC (chuẩn Tuya/Mi Home) — đọc hết là chuông sạch số
+        int count = notifProvider.unreadCount;
         return Stack(
           clipBehavior: Clip.none,
           children: [
             IconButton(icon: Icon(Icons.notifications_none_rounded, color: textMain), onPressed: () => _showNotificationPanel(textMain, textSub)),
-            if (notifProvider.hasNewNotification || count > 0) 
+            if (count > 0)
               Positioned(
-                top: 8, right: 8, 
+                top: 8, right: 8,
                 child: Container(
                   padding: const EdgeInsets.all(5), decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
                   child: Text(count > 9 ? '9+' : '$count', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold, height: 1))
@@ -611,6 +987,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (notifProvider.unreadCount > 0)
+                          TextButton.icon(
+                            onPressed: () => notifProvider.markAllRead(),
+                            icon: Icon(Icons.done_all_rounded, size: 18, color: tkGreen),
+                            label: Text('Đọc tất cả', style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.w600)),
+                          ),
+                        const SizedBox(width: 8),
                         Text('Đẩy (Push)', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
                         Switch(value: _isPushEnabled, activeThumbColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
                       ],
@@ -627,15 +1010,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         separatorBuilder: (_, _) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
                         itemBuilder: (context, index) {
                           final notif = listNotif[index];
-                          IconData icon = Icons.info_outline_rounded;
-                          if (notif.type == 'ALERT') {
-                            icon = Icons.warning_amber_rounded;
-                          } else if (notif.type == 'SYSTEM') icon = Icons.system_security_update_good_rounded; else if (notif.type == 'DEVICE') icon = Icons.power_off_outlined;
-                          Color notifColor = Color(int.parse(notif.color));
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), leading: CircleAvatar(backgroundColor: notifColor.withValues(alpha: 0.12), child: Icon(icon, color: notifColor, size: 20)),
-                            title: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(notif.title, style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis)), Text(notif.time, style: TextStyle(color: textSub, fontSize: 11))]),
-                            subtitle: Padding(padding: const EdgeInsets.only(top: 4.0), child: Text(notif.message, style: TextStyle(color: textSub, height: 1.4, fontSize: 13))),
+                          return _buildNotifRow(
+                            notif: notif, isDark: isDark, textMain: textMain, textSub: textSub,
+                            notifProvider: notifProvider,
+                            onTap: notif.mac.isEmpty ? null : () => _openDeviceSettingsByMac(notif.mac),
                           );
                         },
                       ),
@@ -677,8 +1055,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   icon: Icon(_showHiddenFilter ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.orange), 
                   onPressed: () {
                     setState(() { 
-                      if (_showHiddenFilter) _hiddenDevices.removeAll(_selectedDevices); 
-                      else _hiddenDevices.addAll(_selectedDevices); 
+                      if (_showHiddenFilter) {
+                        _hiddenDevices.removeAll(_selectedDevices);
+                      } else {
+                        _hiddenDevices.addAll(_selectedDevices);
+                      } 
                       _isSelectionMode = false; _selectedDevices.clear(); 
                     });
                   }
@@ -727,9 +1108,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 IconButton(
                   icon: Icon(Icons.add_circle_outline_rounded, color: textMain),
                   onPressed: () async {
-                    // ĐÃ SỬA: Ép buộc làm mới ngay sau khi đóng Dialog
-                    await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
-                    _handleRefresh(); 
+                    // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
+                    // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                    final result = await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => AddDeviceDialog(ownedMacs: _ownedMacs));
+                    await _linkScannedDevice(result);
+                    _handleRefresh();
                   },
                 ),
                 _buildNotificationBell(textMain, textSub), const SizedBox(width: 8),
@@ -748,9 +1131,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (!isMobile) _buildDesktopFloatingSidebar(isDark, textMain, textSub),
                 Expanded(
                   child: SafeArea(
-                    child: _selectedIndex == 6 ? const RoleManagementView()
+                    // [ADMIN] index 7 = Quản trị hệ thống, nhúng thẳng vào body (giữ sidebar + header)
+                    child: _selectedIndex == 7 ? const AdminSystemScreen()
+                         : _selectedIndex == 6 ? const RoleManagementView()
                          : _selectedIndex == 3 ? Padding(padding: const EdgeInsets.all(16.0), child: _buildFullNotificationView(isDark, textMain, textSub))
-                         : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole) 
+                         : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole)
                          : _selectedIndex == 4 && isMobile ? _buildMobileSettingsView(isDark, textMain, textSub) 
                          : isMobile 
                             ? RefreshIndicator(color: tkGreen, backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, onRefresh: _handleRefresh, child: _buildMobileContent(isDark, surfaceLight, textMain, textSub))
@@ -791,6 +1176,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     case 0: Navigator.push(context, MaterialPageRoute(builder: (context) => Scaffold(appBar: AppBar(title: const Text('Hồ sơ tài khoản'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: ProfileManagementView(currentRole: userRole, currentEmail: userEmail))))); break;
                     case 1: _showChangePasswordDialog(); break;
                     case 2: Navigator.push(context, MaterialPageRoute(builder: (context) => Scaffold(appBar: AppBar(title: const Text('Phân quyền'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: const SafeArea(child: RoleManagementView())))); break;
+                    // [ADMIN DASHBOARD] Chỉ SUPER_USER thấy mục này (item chỉ được render khi đủ quyền)
+                    case 4: Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminSystemScreen())); break;
                     case 3: _performLogout(context); break;
                   }
                 },
@@ -798,6 +1185,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.account_circle_outlined, color: textMain), const SizedBox(width: 12), Text('Hồ sơ tài khoản', style: TextStyle(color: textMain))])),
                   PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.lock_reset, color: textMain), const SizedBox(width: 12), Text('Đổi mật khẩu', style: TextStyle(color: textMain))])),
                   PopupMenuItem(value: 2, child: Row(children: [Icon(Icons.security, color: textMain), const SizedBox(width: 12), Text('Quản lý phân quyền', style: TextStyle(color: textMain))])),
+                  // [PHÂN QUYỀN] Mục 'Quản trị Hệ thống' chỉ hiển thị cho tài khoản admin (SUPER_USER)
+                  if (_isSuperUser)
+                    PopupMenuItem(value: 4, child: Row(children: [Icon(Icons.admin_panel_settings_outlined, color: tkGreen), const SizedBox(width: 12), Text('Quản trị Hệ thống', style: TextStyle(color: textMain, fontWeight: FontWeight.w600))])),
                   const PopupMenuDivider(),
                   PopupMenuItem(value: 3, child: Row(children: [Icon(Icons.logout, color: Colors.redAccent), const SizedBox(width: 12), Text('Đăng xuất', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))])),
                 ],
@@ -809,6 +1199,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
           buildSettingGroup([ListTile(leading: Icon(Icons.palette_outlined, color: textMain), title: Text('Giao diện màu sắc', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showThemeDialog())]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('BẢO MẬT', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text('Đổi mật khẩu', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
+          // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)
+          if (_isSuperUser) ...[
+            Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('QUẢN TRỊ', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+            buildSettingGroup([ListTile(
+              leading: Icon(Icons.admin_panel_settings_outlined, color: tkGreen),
+              title: Text('Quản trị Hệ thống', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+              subtitle: Text('Whitelist thiết bị & Cập nhật OTA', style: TextStyle(color: textSub, fontSize: 12)),
+              trailing: Icon(Icons.chevron_right, color: textSub),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminSystemScreen())),
+            )]),
+          ],
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('HỆ THỐNG', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([
             ListTile(leading: Icon(Icons.dns_outlined, color: textMain), title: Text('Máy chủ', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('Armbian OS', style: TextStyle(color: textSub))),
@@ -866,7 +1267,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng ban', txtMain, txtSub),
                   _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub),
                   _buildMenuItem(3, Icons.notifications_active_rounded, 'Thông báo', txtMain, txtSub), 
-                  _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub), 
+                  _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub),
+                  // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
+                  if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub),
                   _buildMenuItem(4, Icons.settings_rounded, 'Cài đặt', txtMain, txtSub),
                 ],
               ),
@@ -902,7 +1305,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _buildMenuItem(5, Icons.maps_home_work_rounded, 'Quản lý Nhà', txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng ban', txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub, isFromDrawer: true),
-                _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub, isFromDrawer: true), 
+                _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub, isFromDrawer: true),
+                // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
+                if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub, isFromDrawer: true),
                 _buildMenuItem(4, Icons.settings_rounded, 'Cài đặt', txtMain, txtSub, isFromDrawer: true),
               ],
             ),
@@ -932,10 +1337,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // Index dành riêng cho màn Quản trị hệ thống (nhúng trong body qua _selectedIndex).
+  static const int kAdminIndex = 7;
+
+  // [ADMIN] Nút Sidebar "Quản trị hệ thống" — nhúng qua _selectedIndex (KHÔNG Navigator.push nữa
+  // để không đè lên sidebar/header). isSelected sáng xanh như các mục menu khác.
+  Widget _buildAdminMenuItem(Color txtMain, Color txtSub, {bool isFromDrawer = false}) {
+    final bool isSelected = _selectedIndex == kAdminIndex;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          leading: Icon(Icons.admin_panel_settings, color: isSelected ? tkGreen : txtSub, size: 22),
+          title: Text('Quản trị hệ thống',
+              style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600)),
+          onTap: () {
+            if (isFromDrawer) Navigator.of(context).pop(); // đóng Drawer trượt (Mobile) trước khi đổi tab
+            setState(() => _selectedIndex = kAdminIndex);
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildBottomNav(Color surface, Color txtSub) {
     return BottomNavigationBar(
       backgroundColor: surface, selectedItemColor: tkGreen, unselectedItemColor: txtSub, type: BottomNavigationBarType.fixed,
-      currentIndex: _selectedIndex, onTap: (index) => _onMenuTapped(index), 
+      // [FIX CRASH] BottomNav chỉ có 5 item (0-4); các tab nhúng ngoài dải (5 Quản lý Nhà,
+      // 6 Phân quyền, 7 Quản trị) sẽ vượt currentIndex -> assert. Kẹp về 0 để an toàn.
+      currentIndex: _selectedIndex < 5 ? _selectedIndex : 0, onTap: (index) => _onMenuTapped(index),
       items: const [
         BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Điều khiển'),
         BottomNavigationBarItem(icon: Icon(Icons.meeting_room_rounded), label: 'Phòng'),
@@ -956,7 +1394,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(children: [Text('Xin chào, ', style: TextStyle(color: textSub, fontSize: 16)), Text(userEmail.split('@')[0], style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold))]),
+                // [DEBUG ROLE] Hiện role ngay cạnh tên để kiểm chứng App nhận diện quyền gì
+                // (vd: 'Xin chào, tinhkt.ipca (SUPER_USER)'). Role lấy nguyên văn từ JWT.
+                // KHÔNG dùng Flexible/Expanded ở đây: Row này nằm trong ngữ cảnh chiều rộng
+                // vô hạn (Column trong Row) -> Flexible sẽ vỡ layout ("never laid out").
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text('Xin chào, ', style: TextStyle(color: textSub, fontSize: 16)),
+                  Text(userEmail.split('@')[0], style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text(' ($userRole)', style: TextStyle(color: _isSuperUser ? tkGreen : textSub, fontSize: 14, fontWeight: FontWeight.w600)),
+                ]),
                 Text('Tổng quan Hệ thống', style: TextStyle(color: textMain, fontSize: 28, fontWeight: FontWeight.w900)),
               ],
             ),
@@ -1003,8 +1449,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               style: ElevatedButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), foregroundColor: tkGreen, elevation: 0, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
                               icon: const Icon(Icons.add, size: 20), label: const Text('Thêm', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               onPressed: () async {
-                                // ĐÃ SỬA: Bỏ if (result != null), ép buộc gọi _handleRefresh()
-                                await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => const AddDeviceDialog());
+                                // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
+                                // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                                final result = await showDialog(context: context, barrierColor: Colors.black.withValues(alpha: 0.6), builder: (context) => AddDeviceDialog(ownedMacs: _ownedMacs));
+                                await _linkScannedDevice(result);
                                 _handleRefresh();
                               },
                             ),
@@ -1269,7 +1717,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
-    final provider = Provider.of<DeviceProvider>(context, listen: false);
+    // listen: true — mỗi notifyListeners() từ DeviceProvider (sóng MQTT đổ vào kho DPS)
+    // sẽ tự kích hoạt vẽ lại lưới này NGAY LẬP TỨC, không cần kéo lại HTTP API.
+    final provider = Provider.of<DeviceProvider>(context);
 
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
@@ -1318,173 +1768,577 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
-    // VIEW 2: TẤT CẢ THIẾT BỊ 
+    // ==========================================================================
+    // VIEW 2: TẤT CẢ THIẾT BỊ — NGUỒN SỰ THẬT: KHO DPS CỦA DeviceProvider
+    // REST chỉ cung cấp DANH SÁCH thiết bị + ảnh trạng thái ban đầu; trạng thái
+    // sống (realtime) luôn được ƯU TIÊN lấy từ provider.devices (sóng MQTT).
+    // ==========================================================================
     if (_currentHomeDevices.isEmpty) return _buildEmptyState(isDark, textSub, "Khu vực này chưa kết nối với thiết bị/Hub nào.");
 
-    List<Map<String, dynamic>> allFans = [];
-    List<Map<String, dynamic>> allSwitches = [];
+    // Chụp kho thiết bị sống MỘT LẦN cho cả lượt vẽ này
+    final liveDevices = provider.devices;
 
-    // TỪ ĐIỂN DỊCH TÊN CHUẨN HASS
-    String translateName(String key) {
-      String k = key.toLowerCase();
-      if (k == 'all') return 'Bật/Tắt Tất Cả';
-      if (k.startsWith('relay')) return 'Relay ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
-      if (k.startsWith('power') && k != 'power') return 'Relay ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
-      if (k.startsWith('swa') || k.startsWith('s_')) return 'Công tắc ${k.replaceAll(RegExp(r'[^0-9]'), '')}';
-      return 'Công tắc ${key.toUpperCase()}';
+    // QUY TẮC ĐẶT TÊN TỰ ĐỘNG (khớp từng ký tự với bộ dịch ở Backend Go, dùng khi
+    // thiết bị chưa được đặt tên trong database):
+    //   1 cổng: "sw-{4 cuối MAC}" | đa kênh: "sw-{4 cuối}-N" | nút tổng ảo: "sw-tog-{4 cuối}"
+    String last4Of(String mac) =>
+        (mac.length > 4 ? mac.substring(mac.length - 4) : mac).toLowerCase();
+
+    String translateName(String mac, String key, {required bool isMulti}) {
+      final last4 = last4Of(mac);
+      final k = key.toLowerCase();
+      // Kênh vật lý lẻ: S_{MAC}_N, relayN, powerN, hay số trần đều moi ra chỉ số cuối
+      // (nút tổng ảo "sw-tog" đã bị TRIỆT TIÊU hoàn toàn — không còn được đặt tên/tạo thẻ)
+      final m = RegExp(r'(\d+)$').firstMatch(k);
+      if (isMulti && m != null) return 'sw-$last4-${m.group(1)}';
+      return 'sw-$last4';
+    }
+
+    // Moi số kênh ở CUỐI khóa endpoint: "S_ABCD_2" -> 2, "power3" -> 3, "2" -> 2 (null nếu không có)
+    int? channelOf(String key) {
+      final m = RegExp(r'(\d+)$').firstMatch(key);
+      return m == null ? null : int.tryParse(m.group(1)!);
+    }
+
+    // Khóa master (nút tổng) — dùng để xếp nút tổng đứng trước các kênh lẻ trong lưới
+    bool isMasterKey(String key) {
+      final k = key.toLowerCase();
+      return k == 'all' || RegExp(r'^s_[0-9a-f]{12}$').hasMatch(k);
     }
 
     final ignoredKeys = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping', 'type', 'id'];
 
-    // BÓC TÁCH THÔNG MINH
+    final List<Map<String, dynamic>> allFans = [];
+    final List<Map<String, dynamic>> allSwitches = [];
+    final List<Map<String, dynamic>> allSensors = [];
+
+    // ==========================================================================
+    // BÓC TÁCH THÔNG MINH: REST làm nền, DPS realtime đè lên trên
+    // ==========================================================================
     for (var device in _currentHomeDevices) {
-      String mac = device['mac_address'] ?? device['mac'] ?? 'UNKNOWN';
+      String mac = (device['mac_address'] ?? device['mac'] ?? 'UNKNOWN').toString().replaceAll(':', '').toUpperCase();
       String deviceName = device['name'] ?? device['home_name'] ?? 'Thiết bị $mac';
-      
-      var rawState = device['state'] ?? device['state_data'] ?? device['properties']; 
+
+      // ---------- LỚP 1: ẢNH TRẠNG THÁI BAN ĐẦU TỪ REST ----------
+      var rawState = device['state'] ?? device['state_data'] ?? device['properties'];
       Map<String, dynamic> stateMap = {};
       if (rawState is String) {
         String s = rawState.trim();
-        if (s.startsWith('{')) { try { stateMap = Map<String, dynamic>.from(jsonDecode(s)); } catch(_) {} }
+        if (s.startsWith('{')) { try { stateMap = Map<String, dynamic>.from(jsonDecode(s)); } catch (_) {} }
         else { stateMap = {'state': s}; }
       } else if (rawState is Map) {
         stateMap = Map<String, dynamic>.from(rawState);
       }
 
-      // TRẢI PHẲNG JSON: Dù mạch gửi dạng {"switch":{"power1": "ON"}} hay gộp chung thì đều moi ra được hết!
-      Map<String, String> flatEndpoints = {};
+      // TRẢI PHẲNG JSON: bóc được cả dạng lồng {"switch":{"power1":"ON"}} lẫn map endpoint mới
+      final Map<String, String> endpointStates = {};
+      final Map<String, String> endpointNames = {};
+      final Map<String, String> endpointTypes = {};  // "fan" | "switch" | "sensor" do Backend gắn
+      final Map<String, int> endpointSpeeds = {};    // tốc độ quạt đi kèm endpoint
+      final Map<String, bool> endpointSwings = {};   // trạng thái đảo gió (túp năng)
+      final Map<String, String> endpointTemps = {};  // nhiệt độ (°C) của endpoint cảm biến
+      final Map<String, String> endpointHums = {};   // độ ẩm (%) của endpoint cảm biến
       void flatten(Map m) {
         m.forEach((k, v) {
           if (v is Map) {
-             if (v.containsKey('state') || v.containsKey('value')) {
+            // Object mô tả endpoint: có state/value (công tắc, quạt) HOẶC có số đo
+            // (cảm biến DHT11 chỉ gửi temperature/humidity, KHÔNG có khóa state)
+            final bool isEndpointObj = v.containsKey('state') || v.containsKey('value') ||
+                v.containsKey('temperature') || v.containsKey('humidity');
+            if (isEndpointObj) {
+              if (v.containsKey('state') || v.containsKey('value')) {
                 String s = (v['state'] ?? v['value']).toString().toUpperCase();
-                if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) flatEndpoints[k] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
-             } else { flatten(v); }
+                if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) {
+                  endpointStates[k.toString()] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
+                }
+              }
+              if (v['name'] != null) endpointNames[k.toString()] = v['name'].toString();
+              if (v['type'] != null) endpointTypes[k.toString()] = v['type'].toString();
+              final spd = v['speed'] ?? v['fan_speed'];
+              if (spd != null) endpointSpeeds[k.toString()] = int.tryParse(spd.toString()) ?? 0;
+              if (v.containsKey('swing') || v.containsKey('oscillate')) {
+                endpointSwings[k.toString()] = v['swing'] == true || v['oscillate'] == true;
+              }
+              if (v['temperature'] != null) endpointTemps[k.toString()] = v['temperature'].toString();
+              if (v['humidity'] != null) endpointHums[k.toString()] = v['humidity'].toString();
+            } else {
+              flatten(v);
+            }
           } else {
-             String s = v.toString().toUpperCase();
-             if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) flatEndpoints[k] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
+            String s = v.toString().toUpperCase();
+            if (['ON', 'OFF', 'TRUE', 'FALSE', '1', '0'].contains(s)) {
+              endpointStates[k.toString()] = ['ON', 'TRUE', '1'].contains(s) ? 'ON' : 'OFF';
+            }
           }
         });
       }
       flatten(stateMap);
 
-      // Nhận diện Quạt
-      List<String> eps = flatEndpoints.keys.map((e) => e.toLowerCase()).toList();
-      bool isFan = deviceName.toLowerCase().contains('quạt') || deviceName.toLowerCase().contains('fan') ||
-                   eps.contains('sw') || eps.contains('swing') || eps.contains('tupnang') ||
-                   eps.any((e) => e.contains('speed')) || 
-                   (eps.contains('1') && eps.contains('2') && eps.contains('3'));
-
-      // --- NẾU LÀ QUẠT ---
-      if (isFan) {
-        int speed = 0; bool swing = false;
-        bool checkOn(String t) => flatEndpoints.entries.any((entry) => entry.key.toLowerCase() == t && entry.value == 'ON');
-
-        if (checkOn('3') || checkOn('speed3')) speed = 3;
-        else if (checkOn('2') || checkOn('speed2')) speed = 2;
-        else if (checkOn('1') || checkOn('speed1')) speed = 1;
-        else if (checkOn('power') || checkOn('power0') || checkOn('fan_power') || checkOn('state')) speed = 1;
-
-        if (checkOn('sw') || checkOn('swing') || checkOn('tupnang')) swing = true;
-
-        allFans.add({
-          'mac': mac, 'endpoint': 'fan', 'data': {'speed': speed, 'swing': swing, 'name': deviceName}, 'rawDevice': device
+      // ---------- LỚP 2: ĐÈ TRẠNG THÁI SỐNG TỪ KHO DPS (ƯU TIÊN TUYỆT ĐỐI) ----------
+      final live = liveDevices[mac];
+      if (live != null) {
+        for (final id in live.endpointIds) {
+          final s = live.dps[id]?.toString().toUpperCase();
+          if (s != null && (s == 'ON' || s == 'OFF')) endpointStates[id] = s;
+          final n = live.nameOf(id);
+          if (n != null) endpointNames[id] = n;
+          final t = live.typeOf(id);
+          if (t != null) endpointTypes[id] = t;
+          if (live.dps.containsKey('${id}_speed')) endpointSpeeds[id] = live.speedOf(id);
+          if (live.dps.containsKey('${id}_swing')) endpointSwings[id] = live.isSwinging(id);
+        }
+        // Endpoint cảm biến không có dps trần (không state) nên không lọt vào endpointIds
+        // — quét thẳng các khóa số đo/tên/loại để sóng MQTT realtime đè lên ảnh REST
+        live.dps.forEach((k, v) {
+          if (k.endsWith('_temperature')) endpointTemps[k.substring(0, k.length - 12)] = v.toString();
+          if (k.endsWith('_humidity')) endpointHums[k.substring(0, k.length - 9)] = v.toString();
+          if (k.endsWith('_name')) endpointNames.putIfAbsent(k.substring(0, k.length - 5), () => v.toString());
+          if (k.endsWith('_type')) endpointTypes.putIfAbsent(k.substring(0, k.length - 5), () => v.toString());
         });
-        continue; 
       }
 
-      // --- NẾU LÀ CÔNG TẮC ĐA KÊNH ---
-      if (flatEndpoints.isEmpty) {
+      // ---------- TRẠNG THÁI KẾT NỐI (LWT): sóng availability sống thắng ảnh REST ----------
+      final bool deviceOnline = live?.online ??
+          ((device['status']?.toString().toLowerCase() ?? '') == 'online');
+
+      // ---------- CATEGORY CHÍNH CHỦ (nguồn: Backend Schema-Driven UI) ----------
+      // Ưu tiên tuyệt đối trường category do Backend gắn; chỉ khi trống mới đoán
+      // heuristic bên dưới. Đây là "chìa khóa" của cổng loại trừ endpoint tích hợp.
+      String deviceCategory = (device['category'] ?? '').toString().toLowerCase();
+
+      // ---------- NHẬN DIỆN CẢM BIẾN (DHT11...) ----------
+      // Nhận diện qua 3 dấu hiệu: type "sensor" Backend gắn cho endpoint, endpoint có
+      // số đo (temperature/humidity), hoặc dòng firmware/category thiết bị tự khai.
+      // Cảm biến lên thẻ SmartSensorCard riêng — KHÔNG nứt thẻ công tắc chờ vô nghĩa.
+      final sensorEndpoints = <String>{
+        ...endpointTypes.entries.where((e) => e.value == 'sensor').map((e) => e.key),
+        ...endpointTemps.keys,
+        ...endpointHums.keys,
+      };
+      final bool isSensorDevice = sensorEndpoints.isNotEmpty ||
+          (device['fw_type'] ?? '').toString().toUpperCase().contains('SENSOR') ||
+          (device['category'] ?? '').toString().toLowerCase() == 'sensor';
+      if (isSensorDevice) {
+        // Chưa có gói số đo nào (vừa cắm điện): vẫn dựng thẻ chờ với endpoint chuẩn SENS_{mac}
+        final ids = sensorEndpoints.isNotEmpty ? sensorEndpoints : {'SENS_$mac'};
+        for (final id in ids) {
+          allSensors.add({
+            'mac': mac,
+            'endpoint': id,
+            'name': endpointNames[id] ?? 'Sensor-${last4Of(mac)}',
+            'temp': endpointTemps[id],
+            'hum': endpointHums[id],
+            'online': deviceOnline,
+            'rawDevice': device,
+          });
+        }
+        continue; // cảm biến không có relay — dừng tại đây
+      }
+
+      // ---------- NHẬN DIỆN QUẠT ----------
+      final lowerKeys = endpointStates.keys.map((e) => e.toLowerCase()).toList();
+      // Endpoint dạng quạt: F1/F2 trên Hub V38, endpoint được Backend gắn type "fan"
+      // (Fan_Control đi qua bridge), hoặc endpoint có chỉ số tốc độ đi kèm
+      final fanEndpoints = endpointStates.keys.where((k) =>
+          RegExp(r'^[Ff]\d+$').hasMatch(k) ||
+          endpointTypes[k] == 'fan' ||
+          endpointSpeeds.containsKey(k)).toSet();
+
+      if (fanEndpoints.isNotEmpty) {
+        // Mỗi endpoint dạng quạt -> đúng MỘT thẻ SmartFanCard tích hợp (icon cánh quạt
+        // quay theo tốc độ thật); speed/swing đã được đè lớp sống từ dps ở trên.
+        for (final f in fanEndpoints) {
+          allFans.add({
+            'mac': mac,
+            'endpoint': f,
+            'speed': endpointSpeeds[f] ?? (endpointStates[f] == 'ON' ? 1 : 0),
+            'swing': endpointSwings[f] ?? false,
+            'name': endpointNames[f] ?? 'Fan-${last4Of(mac)}',
+            'online': deviceOnline,
+            'rawDevice': device,
+          });
+        }
+        if (deviceCategory.isEmpty) deviceCategory = 'fan'; // Backend chưa gắn -> tự suy
+      } else {
+        // Không có endpoint gắn type quạt -> đoán theo tên/khóa cũ (Fan_Control đời đầu
+        // chưa qua bridge): GOM 3 relay tốc độ + relay đảo gió thành MỘT thẻ duy nhất
+        final bool isLegacyFanBox =
+            deviceName.toLowerCase().contains('quạt') || deviceName.toLowerCase().contains('fan') ||
+            lowerKeys.contains('sw') || lowerKeys.contains('swing') || lowerKeys.contains('tupnang') ||
+            lowerKeys.any((e) => e.contains('speed')) ||
+            (lowerKeys.contains('1') && lowerKeys.contains('2') && lowerKeys.contains('3'));
+        if (isLegacyFanBox) {
+          int speed = 0;
+          bool swing = false;
+          bool isOnWhere(bool Function(String lk, int? ch) test) => endpointStates.entries.any((e) {
+            final lk = e.key.toLowerCase();
+            return e.value == 'ON' && test(lk, channelOf(lk));
+          });
+          if (isOnWhere((lk, ch) => ch == 3 || lk == 'speed3')) {
+            speed = 3;
+          } else if (isOnWhere((lk, ch) => ch == 2 || lk == 'speed2')) {
+            speed = 2;
+          } else if (isOnWhere((lk, ch) => ch == 1 || lk == 'speed1')) {
+            speed = 1;
+          } else if (isOnWhere((lk, ch) => ['power', 'power0', 'fan_power', 'state'].contains(lk))) {
+            speed = 1;
+          }
+          if (isOnWhere((lk, ch) => ch == 4 || ['sw', 'swing', 'tupnang'].contains(lk))) swing = true;
+
+          allFans.add({'mac': mac, 'endpoint': 'fan', 'speed': speed, 'swing': swing, 'name': 'Fan-${last4Of(mac)}', 'online': deviceOnline, 'rawDevice': device});
+          if (deviceCategory.isEmpty) deviceCategory = 'fan';
+        }
+      }
+
+      // ======================================================================
+      // [EXCLUDE LIST] CỔNG LOẠI TRỪ ENDPOINT ĐÃ TÍCH HỢP
+      // ======================================================================
+      // Thiết bị thuộc category "chính chủ" (quạt/điều hòa/rèm/bơm...) đã được điều
+      // khiển TRỌN GÓI trong thẻ chuyên biệt vừa dựng ở trên -> DỪNG NGAY, tuyệt đối
+      // không nứt relay tốc độ/nút tổng nội bộ ra thành công tắc ảo rời rạc.
+      // Hub ('hub') KHÔNG nằm trong list nên vẫn chảy xuống để hiện đủ thiết bị con.
+      if (primaryDeviceCategories.contains(deviceCategory)) continue;
+
+      // ---------- CÔNG TẮC: NỨT MỖI ENDPOINT THÀNH MỘT THẺ ĐỘC LẬP ----------
+      // LỌC NỘI BỘ: chỉ giữ endpoint là RELAY THẬT, loại sạch các khóa "thông báo/
+      // cấu hình" (đã lọc quạt ở trên). Không chỉ so khớp chính xác như trước mà bắt
+      // cả biến thể chứa từ khóa (vd "wifi_signal", "ota_status", "config_x").
+      bool isVirtualEndpoint(String key) {
+        final k = key.toLowerCase();
+        if (fanEndpoints.contains(key)) return true; // đã lên thẻ quạt
+        // Bất kỳ khóa nào MANG một trong các từ hệ thống này đều là dữ liệu phụ, không phải relay
+        for (final w in ignoredKeys) {
+          if (k == w || k.contains(w)) return true;
+        }
+        return false;
+      }
+      final controllable = endpointStates.keys.where((k) => !isVirtualEndpoint(k)).toList();
+
+      if (controllable.isEmpty) {
+        if (fanEndpoints.isNotEmpty) continue; // thiết bị thuần quạt (Fan_Control qua bridge)
+        // Thiết bị chưa có tín hiệu nào: dựng thẻ chờ theo quy tắc đặt tên tự động
         String dLow = deviceName.toLowerCase();
         if (dLow.contains('4b') || dLow.contains('4ch') || dLow.contains('4 nút') || dLow.contains('công tắc 4')) {
-          ['power1', 'power2', 'power3', 'power4'].forEach((ep) => allSwitches.add({'mac': mac, 'endpoint': ep, 'data': {'state': 'OFF', 'name': 'Relay ${ep.replaceAll("power", "")}'}, 'rawDevice': device}));
+          for (var i = 1; i <= 4; i++) {
+            allSwitches.add({'mac': mac, 'endpoint': 'power$i', 'state': 'OFF', 'name': 'sw-${last4Of(mac)}-$i', 'online': deviceOnline, 'rawDevice': device});
+          }
+          // Nút TỔNG cho thẻ chờ 4 kênh (thiết bị chưa gửi state) — vẫn bấm điều khiển được
+          allSwitches.add({'mac': mac, 'endpoint': 'all', 'state': 'OFF', 'name': 'Tất cả (4 kênh)', 'online': deviceOnline, 'rawDevice': device, 'isMaster': true});
         } else {
-          allSwitches.add({'mac': mac, 'endpoint': 'power1', 'data': {'state': 'OFF', 'name': deviceName}, 'rawDevice': device});
+          allSwitches.add({'mac': mac, 'endpoint': 'power1', 'state': 'OFF', 'name': 'sw-${last4Of(mac)}', 'online': deviceOnline, 'rawDevice': device});
         }
       } else {
-        flatEndpoints.forEach((key, state) {
-          if (!ignoredKeys.contains(key.toLowerCase())) {
-             allSwitches.add({'mac': mac, 'endpoint': key, 'data': {'state': state, 'name': translateName(key)}, 'rawDevice': device});
-          }
-        });
+        final bool isMulti = controllable.length > 1;
+
+        // ====================================================================
+        // [DIỆT CÔNG TẮC MA — BẢN BẤT KHẢ XÂM PHẠM] GIỮ ĐÚNG KÊNH VẬT LÝ
+        // ====================================================================
+        // Thiết bị đa kênh (SSW04) trả về CẢ key gốc (relay / S_{mac} / sw_{mac}) LẪN các key
+        // phân kênh (relay1..4, S_{mac}_1..4, sw-{last4}-1..4). Bản cũ cố NHẬN DIỆN key gốc
+        // (channelOf==null) nhưng LỌT LƯỚI khi MAC kết thúc bằng chữ số (S_9d78..00 bị hiểu
+        // nhầm là "có số kênh"). Nay ĐẢO NGƯỢC: chỉ GIỮ key CÓ hậu tố kênh rõ ràng + LUÔN loại
+        // nút tổng ảo (S_{mac}/all). Hậu tố kênh hợp lệ:
+        //   • '..._N' hoặc '...-N'  (S_9d78_2, sw-9d78-3, power_1)
+        //   • 'chữ+số' liền nhau     (relay1, power4, ch2)
+        bool hasChannelSuffix(String key) {
+          final k = key.toLowerCase();
+          if (RegExp(r'[_-]\d+$').hasMatch(k)) return true;    // S_mac_1 / sw-1234-1 / power_2
+          if (RegExp(r'^[a-z]+\d+$').hasMatch(k)) return true; // relay1 / power3 / ch2
+          return false;
+        }
+        // Nhóm CÓ ít nhất 1 kênh đánh số -> ném bỏ mọi key gốc; nhóm toàn tên tùy biến
+        // (kitchen/bedroom, không số) -> giữ nguyên để không xóa nhầm.
+        final bool groupHasNumberedChannels = controllable.any(hasChannelSuffix);
+        final List<String> childKeys = isMulti
+            ? controllable.where((k) {
+                if (isMasterKey(k)) return false; // LUÔN loại nút tổng ảo S_{mac}/all
+                if (groupHasNumberedChannels && !hasChannelSuffix(k)) return false; // loại key gốc relay/sw_{mac}
+                return true;
+              }).toList()
+            : controllable;
+
+        // Log để soi đúng key thực tế nếu ghost còn sống (đối chiếu controllable vs childKeys)
+        if (kDebugMode && isMulti) {
+          print('🧹 [DIỆT MA] mac=$mac | controllable=$controllable -> childKeys=$childKeys (giữ ${childKeys.length} kênh)');
+        }
+
+        for (final key in childKeys) {
+          allSwitches.add({
+            'mac': mac,
+            'endpoint': key,
+            'state': endpointStates[key],
+            'name': endpointNames[key] ?? translateName(mac, key, isMulti: isMulti),
+            'online': deviceOnline,
+            'rawDevice': device,
+          });
+        }
+
+        // [MASTER SWITCH] Thiết bị đa kênh -> thêm MỘT nút TỔNG CHỦ ĐỘNG (endpoint "all").
+        // Khác hẳn nút ma "sw-tog" bị loại ở trên: nút này khi bấm GỬI LỆNH thật tới endpoint
+        // "all" — firmware SSW04 đã xử lý sẵn (bật/tắt cả 4 relay cùng lúc). Trạng thái hiển
+        // thị = "sáng nếu CÓ kênh nào đang bật" (khớp cách Hass hiển thị nhóm); bấm khi đang
+        // sáng -> tắt tất cả, bấm khi tắt hết -> bật tất cả.
+        if (childKeys.length > 1) {
+          final bool anyOn = childKeys.any((k) => endpointStates[k] == 'ON');
+          allSwitches.add({
+            'mac': mac,
+            'endpoint': 'all',
+            'state': anyOn ? 'ON' : 'OFF',
+            'name': 'Tất cả (${childKeys.length} kênh)',
+            'online': deviceOnline,
+            'rawDevice': device,
+            'isMaster': true,
+          });
+        }
       }
     }
 
-    List<Map<String, dynamic>> visibleSwitches = allSwitches.where((item) => !_hiddenDevices.contains("${item['mac']}_${item['endpoint']}") || _showHiddenFilter).toList();
+    // Sắp thứ tự ổn định: theo MAC, nút tổng đứng trước, rồi đến từng kênh —
+    // lưới không nhảy vị trí lung tung mỗi khi có sóng trạng thái mới đổ về
+    allSwitches.sort((a, b) {
+      final c = (a['mac'] as String).compareTo(b['mac'] as String);
+      if (c != 0) return c;
+      int rank(Map<String, dynamic> it) => isMasterKey(it['endpoint']) ? -1 : (channelOf(it['endpoint']) ?? 999);
+      return rank(a).compareTo(rank(b));
+    });
+
+    final visibleSwitches = allSwitches.where((item) => !_hiddenDevices.contains("${item['mac']}_${item['endpoint']}") || _showHiddenFilter).toList();
+    // Quạt và cảm biến cũng tôn trọng danh sách ẩn — trước đây thẻ quạt không lọc
+    // nên nút "Ẩn khỏi Bảng điều khiển" có gọi được cũng không thấy tác dụng
+    final visibleFans = allFans.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
+    final visibleSensors = allSensors.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. VẼ THẺ QUẠT LỚN NẰM TRÊN CÙNG
-        if (allFans.isNotEmpty) Padding(
+        // ====================================================================
+        // 0. DẢI TRẠNG THÁI KÊNH REALTIME: MQTT đứt (PC ngủ mạng, broker timeout)
+        //    là hiện ngay "Đang kết nối lại máy chủ..." — người dùng biết vì sao
+        //    nút chưa phản hồi thay vì tưởng App đơ; tự biến mất khi nối lại xong.
+        // ====================================================================
+        if (!provider.brokerOnline)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16.0),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orange)),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text('Đang kết nối lại máy chủ... Lệnh điều khiển sẽ hoạt động ngay khi kênh realtime hồi phục.', style: TextStyle(color: Colors.orange.shade800, fontSize: 12, fontWeight: FontWeight.w600))),
+                ],
+              ),
+            ),
+          ),
+
+        // ====================================================================
+        // 1. KHỐI TRÊN: THẺ QUẠT LỚN (mỗi quạt đúng MỘT thẻ)
+        // ====================================================================
+        if (visibleFans.isNotEmpty) Padding(
           padding: const EdgeInsets.only(bottom: 24.0),
           child: Wrap(
-            spacing: 16, runSpacing: 16, 
-            children: allFans.map((e) => SmartFanCard(
-              key: ValueKey("${e['mac']}_fan_${e['data']['speed']}_${e['data']['swing']}"), 
-              mac: e['mac'], endpoint: e['endpoint'], initialSpeed: e['data']['speed'] ?? 0, 
-              initialSwing: e['data']['swing'] == true, provider: provider, onRefresh: _handleRefresh,
-              
-              // KÍCH HOẠT HÀM XÓA CHO QUẠT
-              onDelete: () => _deleteDevice(e['mac']),
-            )).toList()
+            spacing: 16, runSpacing: 16,
+            children: visibleFans.map((e) {
+              final String hideKey = "${e['mac']}_${e['endpoint']}";
+              // status gói tốc độ + đảo gió + online: đổi bất kỳ chỉ số nào là key đổi,
+              // ép Flutter dựng lại thẻ -> vòng quay/màu sắc/trạng thái xám cập nhật tức thì
+              final String status = "${e['speed']}_${e['swing']}_${e['online']}";
+              // Endpoint dùng để LƯU TÊN: hộp quạt rời gom thẻ ("fan") vẫn phải trỏ về
+              // endpoint thật S_{MAC} mà Backend dùng trong Redis hash device_names
+              final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
+                  ? e['endpoint'] : 'S_${e['mac']}';
+              return SmartFanCard(
+                key: ValueKey("${hideKey}_$status"),
+                mac: e['mac'],
+                endpoint: e['endpoint'],
+                initialSpeed: e['speed'] ?? 0,
+                initialSwing: e['swing'] == true,
+                backendName: e['name'],
+                isOffline: e['online'] != true,
+                isHidden: _hiddenDevices.contains(hideKey),
+                provider: provider,
+                rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+                onRefresh: _handleRefresh,
+                onDelete: () => _deleteDevice(e['mac']),
+                onRename: () => _showRenameDialog("${e['mac']}_$renameEndpoint", e['name']),
+                // [FIX NÚT ẨN BỊ LIỆT] nối thẳng vào kho _hiddenDevices + lưu bền
+                onToggleHide: (hide) => setState(() {
+                  hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                  _persistHiddenDevices();
+                }),
+                // [ADMIN] Chuyển nhà — đồng loạt cho mọi loại thẻ (chỉ SUPER_USER)
+                onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(e['mac']) : null,
+              );
+            }).toList(),
           ),
         ),
 
-        // 2. VẼ LƯỚI CÔNG TẮC Ở BÊN DƯỚI
-        if (visibleSwitches.isNotEmpty) LayoutBuilder(
-            builder: (context, constraints) {
-              int crossAxisCount; double ratio;
-              if (constraints.maxWidth < 500) { crossAxisCount = 3; ratio = 1.0; } 
-              else { crossAxisCount = (constraints.maxWidth / 120).floor(); if (crossAxisCount < 4) crossAxisCount = 4; ratio = 1.0; }
-              
-              return GridView.builder(
-                shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: visibleSwitches.length, 
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio), 
-                itemBuilder: (context, index) { 
-                  var item = visibleSwitches[index]; 
-                  String mac = item['mac']; String ep = item['endpoint']; String deviceKey = "${mac}_$ep";
-                  bool isOnline = item['data']['state'] == 'ON'; 
-                  
-                  return SmartSwitchCard(
-                    key: ValueKey("${deviceKey}_$isOnline"), 
-                    mac: mac, endpointKey: ep, backendName: item['data']['name'], 
-                    initialStatus: isOnline, provider: provider, onRefresh: _handleRefresh,
-                    rawDeviceData: item['rawDevice'], 
-                    isHidden: _hiddenDevices.contains(deviceKey), isSelectionMode: _isSelectionMode, isSelected: _selectedDevices.contains(deviceKey),
-                    hasHiddenDevices: _hiddenDevices.isNotEmpty, isShowingHidden: _showHiddenFilter,
-                    onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
-                    onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
-                    onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
-                    onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); }),
-                    
-                    // KÍCH HOẠT HÀM XÓA CHO CÔNG TẮC
-                    onDelete: () => _deleteDevice(mac),
-                    
-                    onRename: () => _showRenameDialog(deviceKey, item['data']['name']),
-                  ); 
-                }
+        // ====================================================================
+        // 1b. KHỐI CẢM BIẾN MÔI TRƯỜNG (DHT11...): Nhiệt độ °C + Độ ẩm %
+        // ====================================================================
+        if (visibleSensors.isNotEmpty) Padding(
+          padding: const EdgeInsets.only(bottom: 24.0),
+          child: Wrap(
+            spacing: 16, runSpacing: 16,
+            children: visibleSensors.map((e) {
+              final String hideKey = "${e['mac']}_${e['endpoint']}";
+              return SmartSensorCard(
+                // key chứa cả số đo + online: sóng MQTT đổi nhiệt/ẩm là thẻ vẽ lại ngay
+                key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
+                mac: e['mac'],
+                endpoint: e['endpoint'],
+                name: e['name'],
+                temperature: e['temp'],
+                humidity: e['hum'],
+                isOffline: e['online'] != true,
+                isHidden: _hiddenDevices.contains(hideKey),
+                provider: provider,
+                rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+                onToggleHide: (hide) => setState(() {
+                  hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                  _persistHiddenDevices();
+                }),
+                onRename: () => _showRenameDialog(hideKey, e['name']),
+                onDelete: () => _deleteDevice(e['mac']),
+                // [ADMIN] Chuyển nhà — đồng loạt cho mọi loại thẻ (chỉ SUPER_USER)
+                onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(e['mac']) : null,
               );
-            }
+            }).toList(),
           ),
+        ),
+
+        // ====================================================================
+        // 2. KHỐI DƯỚI: LƯỚI CÔNG TẮC (mỗi kênh một thẻ độc lập)
+        // ====================================================================
+        if (visibleSwitches.isNotEmpty) LayoutBuilder(
+          builder: (context, constraints) {
+            int crossAxisCount; double ratio;
+            if (constraints.maxWidth < 500) { crossAxisCount = 3; ratio = 1.0; }
+            else { crossAxisCount = (constraints.maxWidth / 120).floor(); if (crossAxisCount < 4) crossAxisCount = 4; ratio = 1.0; }
+
+            return GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: visibleSwitches.length,
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio),
+              itemBuilder: (context, index) {
+                final item = visibleSwitches[index];
+                final String mac = item['mac'];
+                final String ep = item['endpoint'];
+                final String deviceKey = "${mac}_$ep";
+                final bool isDevOnline = item['online'] == true;
+                final String status = "${item['state']}_$isDevOnline";
+                final bool isOn = item['state'] == 'ON';
+
+                return SmartSwitchCard(
+                  // Key chứa cả trạng thái + online: sóng MQTT đổi ON/OFF hay LWT báo
+                  // Ngoại tuyến là thẻ dựng lại ngay -> màu sắc không bao giờ trễ nhịp
+                  key: ValueKey("${mac}_${ep}_$status"),
+                  mac: mac,
+                  endpointKey: ep,
+                  backendName: item['name'],
+                  initialStatus: isOn,
+                  isOffline: !isDevOnline,
+                  isMaster: item['isMaster'] == true, // nút TỔNG (endpoint "all") — icon + nhãn riêng
+                  provider: provider,
+                  onRefresh: _handleRefresh,
+                  rawDeviceData: item['rawDevice'],
+                  isHidden: _hiddenDevices.contains(deviceKey),
+                  isSelectionMode: _isSelectionMode,
+                  isSelected: _selectedDevices.contains(deviceKey),
+                  hasHiddenDevices: _hiddenDevices.isNotEmpty,
+                  isShowingHidden: _showHiddenFilter,
+                  onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
+                  onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
+                  onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
+                  onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
+                  onDelete: () => _deleteDevice(mac),
+                  onRename: () => _showRenameDialog(deviceKey, item['name']),
+                  // [ADMIN] Chuyển nhà — CHỈ SUPER_USER thấy (callback null = ẩn tùy chọn trong menu)
+                  onAssignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
+                );
+              },
+            );
+          },
+        ),
       ],
+    );
+  }
+
+  // ==========================================================================
+  // 🔗 DEEPLINK TỪ CHUÔNG THÔNG BÁO: MAC -> mở thẳng Popup Cài đặt thiết bị
+  // ==========================================================================
+  /// Tìm thiết bị theo MAC trong danh sách nhà đang mở rồi bật Popup Cài đặt của nó,
+  /// đồng thời tự chạy luôn một lượt check firmware để nút "Cập nhật" hiện ra ngay.
+  void _openDeviceSettingsByMac(String mac) {
+    final cleanMac = mac.replaceAll(':', '').toUpperCase();
+    Map<String, dynamic>? raw;
+    for (final d in _currentHomeDevices) {
+      final dMac = (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase();
+      if (dMac == cleanMac) { raw = Map<String, dynamic>.from(d); break; }
+    }
+    if (raw == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Thiết bị $cleanMac không nằm trong khu vực đang mở — hãy chuyển đúng nhà rồi thử lại.'),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+    final Map<String, dynamic> deviceData = raw;
+
+    final provider = Provider.of<DeviceProvider>(context, listen: false);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Nếu là hộp quạt rời (Fan_Control) thì popup mở kèm cụm nút chỉnh tốc độ/đảo gió
+    final String fwType = (deviceData['fw_type'] ?? '').toString();
+    String? fanEndpoint;
+    if (fwType.contains('FAN')) fanEndpoint = 'S_$cleanMac';
+
+    final String deviceName = (deviceData['name'] ?? 'Thiết bị $cleanMac').toString();
+    showDeviceSettingsPopup(
+      context,
+      isDark: isDark,
+      mac: cleanMac,
+      displayName: deviceName,
+      rawDeviceData: deviceData,
+      provider: provider,
+      fanEndpoint: fanEndpoint,
+      autoCheckFirmware: true, // người dùng đến từ tin "có bản mới" -> check ngay cho họ bấm
+      onRename: () => _showRenameDialog('${cleanMac}_${fanEndpoint ?? "S_$cleanMac"}', deviceName),
     );
   }
 
   void _showRenameDialog(String deviceKey, String currentName) {
     TextEditingController controller = TextEditingController(text: currentName);
+    // deviceKey = "{MAC 12 hex}_{endpointID}" — MAC chuẩn hóa luôn đúng 12 ký tự
+    final String mac = deviceKey.length > 12 ? deviceKey.substring(0, 12) : deviceKey;
+    final String endpoint = deviceKey.length > 13 ? deviceKey.substring(13) : '';
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Đổi tên thiết bị', style: TextStyle(fontWeight: FontWeight.bold)),
-        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nhập tên mới...')),
+        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nhập tên mới (để trống = tên tự động)...')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A651)),
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã lưu tên mới: ${controller.text}')));
+              // LƯU THẬT vào database qua Backend; tên user đặt được ưu tiên
+              // tuyệt đối trước tên tự sinh sw-/Fan- ở mọi màn hình
+              final ok = await ApiService().renameDeviceEndpoint(mac, endpoint, controller.text.trim());
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(ok ? 'Đã lưu tên mới: ${controller.text.trim().isEmpty ? "(tên tự động)" : controller.text.trim()}' : 'Không thể lưu tên — kiểm tra kết nối!'),
+                backgroundColor: ok ? const Color(0xFF00A651) : Colors.redAccent,
+              ));
+              if (ok) _handleRefresh();
             },
             child: const Text('Lưu thay đổi', style: TextStyle(color: Colors.white)),
           )
@@ -1651,6 +2505,7 @@ class SmartSwitchCard extends StatefulWidget {
   final String mac;
   final String endpointKey;
   final bool initialStatus;
+  final bool isOffline; // LWT báo Ngoại tuyến -> xám mờ + khóa điều khiển
   final DeviceProvider provider;
   final Function onRefresh;
   final String? backendName;
@@ -1659,25 +2514,30 @@ class SmartSwitchCard extends StatefulWidget {
   final bool isSelectionMode;
   final bool isSelected;
   final bool isHidden;
+  final bool isMaster; // nút TỔNG (endpoint "all") — bấm bật/tắt cả cụm relay
   final VoidCallback onToggleSelect;
   final VoidCallback onEnterSelectionMode;
-  final Function(bool) onToggleHide; 
+  final Function(bool) onToggleHide;
   final VoidCallback onDelete;
   final VoidCallback onRename;
   final bool hasHiddenDevices;
   final bool isShowingHidden;
   final VoidCallback? onToggleShowHidden;
+  final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
 
   const SmartSwitchCard({
-    Key? key,
+    super.key,
     required this.mac, required this.endpointKey, required this.initialStatus,
+    this.isOffline = false,
+    this.isMaster = false,
     required this.provider, required this.onRefresh, this.backendName,
     required this.rawDeviceData,
     this.isSelectionMode = false, this.isSelected = false, this.isHidden = false,
     required this.onToggleSelect, required this.onEnterSelectionMode,
     required this.onToggleHide, required this.onDelete, required this.onRename,
     this.hasHiddenDevices = false, this.isShowingHidden = false, this.onToggleShowHidden,
-  }) : super(key: key);
+    this.onAssignHome,
+  });
 
   @override
   State<SmartSwitchCard> createState() => _SmartSwitchCardState();
@@ -1697,12 +2557,17 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
   }
 
   void _handleTap() {
-    if (widget.isSelectionMode) widget.onToggleSelect(); 
-    else {
-      bool oldState = isOnline;
-      setState(() => isOnline = !isOnline); 
-      widget.provider.toggleDevice(widget.mac, widget.endpointKey, oldState);
+    if (widget.isSelectionMode) {
+      widget.onToggleSelect();
+      return;
     }
+    // Thiết bị Ngoại tuyến: khóa hẳn điều khiển (vẫn cho long-press mở menu để xóa/ẩn)
+    if (widget.isOffline) return;
+
+    // [REAL-STATE] KHÔNG lật màu ngay (bỏ Optimistic UI): chỉ bắn lệnh qua Bridge,
+    // icon chỉ sáng khi rơ-le đóng cắt thật và state ngược về qua MQTT —
+    // nhờ đó PC và Điện thoại cùng sáng ĐỒNG THỜI theo trạng thái thật.
+    widget.provider.toggleDevice(widget.mac, widget.endpointKey, isOnline);
   }
 
   String _formatName() {
@@ -1712,227 +2577,80 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 
   // --- MÀN HÌNH CÀI ĐẶT CHI TIẾT (POPUP GIỮA MÀN HÌNH - KÍNH MỜ CHUẨN) ---
   void _showDeviceSettingsDialog(BuildContext context, bool isDark) {
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
-
-    // BÓC TÁCH CẢM BIẾN (DIAGNOSTICS) CỰC KỲ CHI TIẾT
-    Map<String, dynamic> raw = widget.rawDeviceData;
-    var stateData = raw['state'] ?? raw['state_data'] ?? raw['properties'] ?? {};
-    if (stateData is String) stateData = jsonDecode(stateData) ?? {};
-    
-    // Hàm Helper thông minh: Lục lọi các key có thể chứa dữ liệu
-    String findValue(List<String> keys, String fallback) {
-      for (var k in keys) {
-        if (raw.containsKey(k) && raw[k] != null && raw[k].toString().isNotEmpty) return raw[k].toString();
-        if (stateData.containsKey(k) && stateData[k] != null && stateData[k].toString().isNotEmpty) return stateData[k].toString();
-      }
-      return fallback;
-    }
-
-    // Quét lấy các thông số thật từ thiết bị
-    String ipStr = findValue(['ip', 'ip_address', 'ipAddress', 'wifi_ip'], 'Không xác định');
-    String rssiStr = findValue(['rssi', 'wifi_signal', 'signal', 'wifi'], '-');
-    String serialStr = findValue(['serial', 'mac', 'mac_address', 'macAddress'], widget.mac);
-    String fwStr = findValue(['fw', 'version', 'firmware', 'sw_version'], '1.0.0');
-
-    showDialog(
-      context: context, 
-      barrierColor: Colors.black.withValues(alpha: 0.5), // Nền làm mờ tối lại
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent, // Bắt buộc transparent để hiện hiệu ứng kính mờ
-        elevation: 0, 
-        insetPadding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420), // Khung giới hạn vừa vặn ở giữa màn hình
-          child: GlassContainer(
-            padding: const EdgeInsets.all(0), 
-            child: Material(
-              color: Colors.transparent,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // --- HEADER ---
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(Icons.tune_rounded, color: tkGreen, size: 28),
-                            const SizedBox(width: 12),
-                            Text('Cài đặt thiết bị', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        IconButton(icon: Icon(Icons.close, color: textSub), onPressed: () => Navigator.pop(ctx), padding: EdgeInsets.zero, constraints: const BoxConstraints())
-                      ],
-                    ),
-                  ),
-                  Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12),
-                  
-                  // --- NỘI DUNG CHI TIẾT ---
-                  Flexible(
-                    child: SingleChildScrollView(
-                      physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // BLOCK 1: THÔNG TIN CHUNG
-                          Text('THÔNG TIN CHUNG', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                          const SizedBox(height: 12),
-                          Container(
-                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
-                            child: Column(
-                              children: [
-                                ListTile(title: Text('Tên thiết bị', style: TextStyle(color: textMain, fontSize: 14)), trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(_formatName(), style: TextStyle(color: textSub, fontSize: 14)), const SizedBox(width: 8), Icon(Icons.edit, color: tkGreen, size: 18)]), onTap: () { Navigator.pop(ctx); widget.onRename(); }),
-                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
-                                ListTile(title: Text('Nhà sản xuất', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text('Tuan Kiet Smart Home', style: TextStyle(color: textSub, fontSize: 14))),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-
-                          // BLOCK 2: CẤU HÌNH
-                          Text('CẤU HÌNH', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                          const SizedBox(height: 12),
-                          Container(
-                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
-                            child: Column(
-                              children: [
-                                ListTile(leading: Icon(Icons.system_update_alt, color: textSub, size: 20), title: Text('Cập nhật Firmware', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text('Mới nhất', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.bold))),
-                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
-                                ListTile(leading: Icon(Icons.wifi_password, color: textSub, size: 20), title: Text('Reset Factory WiFi', style: TextStyle(color: textMain, fontSize: 14)), trailing: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)), child: Text('Nhấn', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)))),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-
-                          // BLOCK 3: CHẨN ĐOÁN HỆ THỐNG
-                          Text('CHẨN ĐOÁN HỆ THỐNG', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                          const SizedBox(height: 12),
-                          Container(
-                            decoration: BoxDecoration(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(16)),
-                            child: Column(
-                              children: [
-                                ListTile(leading: Icon(Icons.lan_outlined, color: textSub, size: 20), title: Text('IP Address', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(ipStr, style: TextStyle(color: textSub, fontFamily: 'monospace', fontSize: 13))),
-                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
-                                ListTile(leading: Icon(Icons.qr_code_2, color: textSub, size: 20), title: Text('Số Serial (MAC)', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(serialStr, style: TextStyle(color: textSub, fontFamily: 'monospace', fontSize: 13))),
-                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
-                                ListTile(leading: Icon(Icons.wifi, color: textSub, size: 20), title: Text('Cường độ WiFi (RSSI)', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(rssiStr != '-' ? '$rssiStr dBm' : rssiStr, style: TextStyle(color: textSub, fontSize: 13))),
-                                Divider(height: 1, indent: 16, color: isDark ? Colors.white10 : Colors.black12),
-                                ListTile(leading: Icon(Icons.memory, color: textSub, size: 20), title: Text('Phiên bản lõi', style: TextStyle(color: textMain, fontSize: 14)), trailing: Text(fwStr, style: TextStyle(color: textSub, fontSize: 13))),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      )
+    // Popup Cài đặt được tách thành hàm dùng chung showDeviceSettingsPopup —
+    // cùng một giao diện cho thẻ công tắc, thẻ quạt và deeplink từ chuông thông báo
+    showDeviceSettingsPopup(
+      context,
+      isDark: isDark,
+      mac: widget.mac,
+      displayName: _formatName(),
+      rawDeviceData: widget.rawDeviceData,
+      provider: widget.provider,
+      onRename: widget.onRename,
     );
   }
 
+  // [REFACTOR] Menu ngữ cảnh nay DÙNG CHUNG qua DeviceMenuHelper — không còn code lặp cục bộ.
+  // Các mục đặc thù công tắc (Chọn nhiều, Xem thiết bị ẩn) truyền qua extraItems.
   void _showDeviceOptions(BuildContext context, bool isDark) {
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
-
-    showDialog(
-      context: context, barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent, elevation: 0, insetPadding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: GlassContainer(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            child: Material(
-              color: Colors.transparent,
-              child: Column(
-                mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(Icons.settings_input_component_rounded, color: tkGreen, size: 30), const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(_formatName(), style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5), maxLines: 1, overflow: TextOverflow.ellipsis),
-                            const SizedBox(height: 6), Text('MAC: ${widget.mac}', style: TextStyle(color: textSub, fontSize: 12)),
-                            const SizedBox(height: 2), Text('Endpoint: ${widget.endpointKey}', style: TextStyle(color: textSub, fontSize: 12)),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  // GỌI MENU CÀI ĐẶT (CHẨN ĐOÁN) Ở ĐÂY
-                  _buildMenuItem(Icons.settings_rounded, 'Cài đặt thiết bị', textMain, () { Navigator.pop(ctx); _showDeviceSettingsDialog(context, isDark); }),
-                  _buildMenuItem(Icons.edit_rounded, 'Sửa tên thiết bị', textMain, () { Navigator.pop(ctx); widget.onRename(); }),
-                  _buildMenuItem(widget.isHidden ? Icons.visibility_rounded : Icons.visibility_off_rounded, widget.isHidden ? 'Hiển thị lại công tắc này' : 'Ẩn khỏi Bảng điều khiển', textMain, () { Navigator.pop(ctx); widget.onToggleHide(!widget.isHidden); }, subtitle: widget.isHidden ? null : 'Vẫn hiển thị trong danh sách thiết bị'),
-                  _buildMenuItem(Icons.checklist_rtl_rounded, 'Chọn nhiều thiết bị', textMain, () { Navigator.pop(ctx); widget.onEnterSelectionMode(); }),
-                  if (widget.hasHiddenDevices) _buildMenuItem(widget.isShowingHidden ? Icons.filter_alt_off_rounded : Icons.filter_alt_rounded, widget.isShowingHidden ? 'Đóng chế độ xem thiết bị ẩn' : 'Hiển thị các thiết bị đã ẩn', Colors.orange, () { Navigator.pop(ctx); if (widget.onToggleShowHidden != null) widget.onToggleShowHidden!(); }),
-                  Padding(padding: const EdgeInsets.symmetric(vertical: 8.0), child: Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1, thickness: 1)),
-                  _buildMenuItem(Icons.delete_outline_rounded, 'Xóa thiết bị', Colors.redAccent, () { Navigator.pop(ctx); _confirmDeleteDevice(context, isDark, textMain, textSub); }, isDestructive: true),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMenuItem(IconData icon, String title, Color color, VoidCallback onTap, {String? subtitle, bool isDestructive = false}) {
-    return ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), hoverColor: isDestructive ? Colors.redAccent.withValues(alpha: 0.1) : Colors.white10, leading: Icon(icon, color: color, size: 24), title: Text(title, style: TextStyle(color: color, fontSize: 15, fontWeight: isDestructive ? FontWeight.bold : FontWeight.w600)), subtitle: subtitle != null ? Text(subtitle, style: TextStyle(color: Colors.grey.shade500, fontSize: 12, height: 1.2)) : null, onTap: onTap);
-  }
-
-  void _confirmDeleteDevice(BuildContext context, bool isDark, Color textMain, Color textSub) {
-    showDialog(
+    DeviceMenuHelper.showGenericDeviceMenu(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        title: Text('Xóa ${_formatName()}?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
-        content: Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); widget.onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))
-        ],
-      )
+      mac: widget.mac,
+      currentName: _formatName(),
+      subtitle: 'Endpoint: ${widget.endpointKey}',
+      onOpenSettings: () => _showDeviceSettingsDialog(context, isDark),
+      onRename: widget.onRename,
+      isHidden: widget.isHidden,
+      hideLabel: widget.isHidden ? 'Hiển thị lại công tắc này' : 'Ẩn khỏi Bảng điều khiển',
+      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+      onToggleHide: (v) => widget.onToggleHide(v),
+      onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
+      onDelete: widget.onDelete,
+      extraItems: [
+        DeviceMenuItem(icon: Icons.checklist_rtl_rounded, title: 'Chọn nhiều thiết bị', onTap: widget.onEnterSelectionMode),
+        if (widget.hasHiddenDevices)
+          DeviceMenuItem(
+            icon: widget.isShowingHidden ? Icons.filter_alt_off_rounded : Icons.filter_alt_rounded,
+            title: widget.isShowingHidden ? 'Đóng chế độ xem thiết bị ẩn' : 'Hiển thị các thiết bị đã ẩn',
+            color: Colors.orange,
+            onTap: () { if (widget.onToggleShowHidden != null) widget.onToggleShowHidden!(); },
+          ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color bgColor = isOnline ? tkGreen : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6));
-    final Color textColor = isOnline ? Colors.white : (isDark ? Colors.white : Colors.black87);
-    final Color powerIconColor = isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400);
+    final bool offline = widget.isOffline;
+    // Ngoại tuyến: ép toàn thẻ về tông xám mờ (Greyscale), bỏ qua màu bật/tắt
+    final Color bgColor = offline
+        ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200)
+        : (isOnline ? tkGreen : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)));
+    final Color textColor = offline ? Colors.grey : (isOnline ? Colors.white : (isDark ? Colors.white : Colors.black87));
+    final Color powerIconColor = offline ? Colors.grey.withValues(alpha: 0.4) : (isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400));
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16), 
+      borderRadius: BorderRadius.circular(16),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           foregroundDecoration: widget.isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
-          decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: widget.isSelected ? tkGreen : (isOnline ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white)), width: widget.isSelected ? 3.0 : 1.5), boxShadow: [if (!isDark && !isOnline) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
+          decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: widget.isSelected ? tkGreen : (offline ? Colors.grey.withValues(alpha: 0.3) : (isOnline ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white))), width: widget.isSelected ? 3.0 : 1.5), boxShadow: [if (!isDark && !isOnline && !offline) BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 6))]),
           child: Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: _handleTap, onLongPress: () { if (!widget.isSelectionMode) _showDeviceOptions(context, isDark); }, 
+              onTap: _handleTap, onLongPress: () { if (!widget.isSelectionMode) _showDeviceOptions(context, isDark); },
               child: Stack(
                 children: [
-                  Positioned(top: 10, left: 10, child: Icon(Icons.lightbulb_outline, color: isOnline ? Colors.white : tkGreen, size: 18)),
+                  // Nút TỔNG (master) mang icon lưới riêng để phân biệt với kênh lẻ (bóng đèn)
+                  Positioned(top: 10, left: 10, child: Icon(offline ? Icons.cloud_off_rounded : (widget.isMaster ? Icons.grid_view_rounded : Icons.lightbulb_outline), color: offline ? Colors.grey : (isOnline ? Colors.white : tkGreen), size: 18)),
+                  // Nhãn "Ngoại tuyến" nhỏ ở góc phải trên khi mất kết nối
+                  if (offline && !widget.isSelected) Positioned(top: 10, right: 8, child: Text('Ngoại tuyến', style: TextStyle(color: Colors.grey.withValues(alpha: 0.9), fontSize: 9, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic))),
                   if (widget.isSelected) Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.all(2), decoration: BoxDecoration(color: tkGreen, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.check, color: Colors.white, size: 14))),
-                  Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 36))),
+                  // Nút tổng: icon "power" viền tròn nổi bật; kênh lẻ: power thường
+                  Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Icon(widget.isMaster ? Icons.settings_power_rounded : Icons.power_settings_new_rounded, color: powerIconColor, size: 36))),
                   Positioned(bottom: 8, left: 6, right: 6, child: Text(_formatName(), textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), maxLines: 2, overflow: TextOverflow.ellipsis)),
                 ],
               ),
@@ -1949,10 +2667,17 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 // ============================================================================
 class SmartFanCard extends StatefulWidget {
   final String mac, endpoint; final int initialSpeed; final bool initialSwing; final DeviceProvider provider;
+  final String? backendName;  // Tên từ Backend theo quy tắc "Fan-{4 cuối MAC}" (hoặc tên user tự đặt)
+  final bool isOffline;       // LWT báo Ngoại tuyến -> xám mờ + khóa điều khiển
   final VoidCallback onRefresh;
   final VoidCallback onDelete;
+  final VoidCallback? onRename;
+  final bool isHidden;                       // đang nằm trong danh sách ẩn của Bảng điều khiển
+  final ValueChanged<bool>? onToggleHide;    // callback ẩn/hiện — [FIX] trước đây nút Ẩn bị liệt vì thiếu hàm này
+  final Map<String, dynamic> rawDeviceData; // gói REST đầy đủ (system_data, fw_type...) cho Popup Cài đặt
+  final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
 
-  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, required this.provider, required this.onRefresh, required this.onDelete});
+  const SmartFanCard({super.key, required this.mac, required this.endpoint, required this.initialSpeed, required this.initialSwing, this.backendName, this.isOffline = false, required this.provider, required this.onRefresh, required this.onDelete, this.onRename, this.isHidden = false, this.onToggleHide, this.rawDeviceData = const {}, this.onAssignHome});
   @override
   State<SmartFanCard> createState() => _SmartFanCardState();
 }
@@ -1970,112 +2695,88 @@ class _SmartFanCardState extends State<SmartFanCard> {
     if (oldWidget.initialSpeed != widget.initialSpeed) speed = widget.initialSpeed;
   }
 
-  void _changeSpeed(int newSpeed) { setState(() => speed = newSpeed); widget.provider.setFanSpeed(widget.mac, widget.endpoint, speed, swing); }
-  void _toggleSwing() { if (speed == 0) return; setState(() => swing = !swing); widget.provider.setFanSpeed(widget.mac, widget.endpoint, speed, swing); }
+  // [REAL-STATE] KHÔNG setState đổi giao diện ngay (bỏ Optimistic UI): chỉ bắn lệnh
+  // qua Bridge; nút số và vòng quay chỉ đổi khi mạch quạt báo tốc độ THẬT ngược về
+  // (state mới -> key thẻ đổi -> thẻ dựng lại) — PC và Điện thoại đồng bộ tuyệt đối.
+  void _changeSpeed(int newSpeed) { if (widget.isOffline) return; widget.provider.setFanSpeed(widget.mac, newSpeed, endpoint: widget.endpoint, swing: swing); }
+  void _toggleSwing() { if (widget.isOffline || speed == 0) return; widget.provider.setFanSpeed(widget.mac, speed, endpoint: widget.endpoint, swing: !swing); }
 
+  // [REFACTOR] Menu quạt nay DÙNG CHUNG DeviceMenuHelper — hết code lặp _showDeviceOptions/_confirmDeleteFan.
   void _showDeviceOptions(BuildContext context, bool isDark) {
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
-
-    showDialog(
+    DeviceMenuHelper.showGenericDeviceMenu(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent, elevation: 0, insetPadding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: GlassContainer(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.all_out_rounded, color: tkGreen, size: 28),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text('Quạt thông minh', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text('MAC: ${widget.mac}', style: TextStyle(color: textSub, fontSize: 12)),
-                const SizedBox(height: 24),
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  leading: Icon(Icons.settings_rounded, color: textMain),
-                  title: Text('Cài đặt', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                  onTap: () { Navigator.pop(ctx); },
-                ),
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  leading: Icon(Icons.visibility_off_rounded, color: textMain),
-                  title: Text('Ẩn khỏi Bảng điều khiển', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                  onTap: () { Navigator.pop(ctx); },
-                ),
-                Divider(color: isDark ? Colors.white10 : Colors.black12),
-                ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  leading: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
-                  title: const Text('Xóa thiết bị', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                  onTap: () { Navigator.pop(ctx); _confirmDeleteFan(context, isDark, textMain, textSub); },
-                ),
-              ],
-            ),
-          ),
-        ),
+      mac: widget.mac,
+      currentName: widget.backendName ?? 'Quạt thông minh',
+      headerIcon: Icons.all_out_rounded,
+      onOpenSettings: () => showDeviceSettingsPopup(
+        context,
+        isDark: isDark,
+        mac: widget.mac,
+        displayName: widget.backendName ?? 'Quạt thông minh',
+        rawDeviceData: widget.rawDeviceData,
+        provider: widget.provider,
+        fanEndpoint: widget.endpoint,
+        onRename: widget.onRename,
       ),
-    );
-  }
-
-  void _confirmDeleteFan(BuildContext context, bool isDark, Color textMain, Color textSub) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        title: Text('Xóa Quạt thông minh?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
-        content: Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); widget.onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))
-        ],
-      )
+      onRename: widget.onRename,
+      isHidden: widget.isHidden,
+      hideLabel: widget.isHidden ? 'Hiển thị lại thẻ quạt này' : 'Ẩn khỏi Bảng điều khiển',
+      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+      onToggleHide: widget.onToggleHide,
+      onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
+      onDelete: widget.onDelete,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    bool isOnline = speed > 0, isSwingActive = swing && isOnline;
+    final bool offline = widget.isOffline;
+    bool isOnline = speed > 0 && !offline, isSwingActive = swing && isOnline;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A), textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
     return Container(
-      width: double.infinity, constraints: const BoxConstraints(maxWidth: 450), 
+      width: double.infinity, constraints: const BoxConstraints(maxWidth: 450),
       child: GlassContainer(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12), 
-                  decoration: BoxDecoration(color: isOnline ? tkGreen.withValues(alpha: 0.15) : (isDark ? Colors.white10 : Colors.white.withValues(alpha: 0.6)), shape: BoxShape.circle), 
-                  // Sử dụng icon all_out_rounded ở đây
-                  child: SpinningWidget(isSpinning: isOnline, speedLevel: speed, child: Icon(Icons.all_out_rounded, color: isOnline ? tkGreen : textSub, size: 28))
+        // Ngoại tuyến: toàn thẻ mờ xám (Greyscale); đang ẩn (xem qua bộ lọc thiết bị ẩn):
+        // mờ nhẹ để phân biệt — nút menu (...) vẫn bấm được để hiện lại/xóa
+        child: Opacity(
+          opacity: offline ? 0.45 : (widget.isHidden ? 0.55 : 1.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: isOnline ? tkGreen.withValues(alpha: 0.15) : (isDark ? Colors.white10 : Colors.white.withValues(alpha: 0.6)), shape: BoxShape.circle),
+                    // Icon quay theo tốc độ THẬT từ mạch; offline thì đứng im + xám
+                    child: SpinningWidget(isSpinning: isOnline, speedLevel: speed, child: Icon(offline ? Icons.cloud_off_rounded : Icons.all_out_rounded, color: isOnline ? tkGreen : (offline ? Colors.grey : textSub), size: 28))
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(widget.backendName ?? 'Quạt thông minh', style: TextStyle(color: offline ? Colors.grey : textMain, fontSize: 16, fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 4),
+                    Text(offline ? 'Ngoại tuyến' : (isOnline ? 'Đang bật • Số $speed' : 'Đã tắt'), style: TextStyle(color: offline ? Colors.grey : (isOnline ? tkGreen : textSub), fontSize: 13, fontWeight: FontWeight.w600, fontStyle: offline ? FontStyle.italic : FontStyle.normal))
+                  ])),
+                  IconButton(icon: Icon(Icons.more_vert, color: textSub, size: 22), onPressed: () => _showDeviceOptions(context, isDark), splashRadius: 20)
+                ],
+              ),
+              const SizedBox(height: 20),
+              // Khóa cứng hàng nút điều khiển khi Ngoại tuyến
+              IgnorePointer(
+                ignoring: offline,
+                child: Row(
+                  children: [
+                    _buildBtn(0, 'OFF', speed == 0 && !offline, isDark), const SizedBox(width: 8), _buildBtn(1, '1', speed == 1 && !offline, isDark), const SizedBox(width: 8), _buildBtn(2, '2', speed == 2 && !offline, isDark), const SizedBox(width: 8), _buildBtn(3, '3', speed == 3 && !offline, isDark), const SizedBox(width: 12),
+                    Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300), const SizedBox(width: 12),
+                    Material(color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : Colors.white.withValues(alpha: 0.6)), borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))))
+                  ],
                 ),
-                const SizedBox(width: 16),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Quạt thông minh', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.w900)), const SizedBox(height: 4), Text(isOnline ? 'Đang bật • Số $speed' : 'Đã tắt', style: TextStyle(color: isOnline ? tkGreen : textSub, fontSize: 13, fontWeight: FontWeight.w600))])),
-                IconButton(icon: Icon(Icons.more_vert, color: textSub, size: 22), onPressed: () => _showDeviceOptions(context, isDark), splashRadius: 20)
-              ],
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                _buildBtn(0, 'OFF', speed == 0, isDark), const SizedBox(width: 8), _buildBtn(1, '1', speed == 1, isDark), const SizedBox(width: 8), _buildBtn(2, '2', speed == 2, isDark), const SizedBox(width: 8), _buildBtn(3, '3', speed == 3, isDark), const SizedBox(width: 12),
-                Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300), const SizedBox(width: 12),
-                Material(color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : Colors.white.withValues(alpha: 0.6)), borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))))
-              ],
-            )
-          ],
+              )
+            ],
+          ),
         ),
       ),
     );
@@ -2086,5 +2787,583 @@ class _SmartFanCardState extends State<SmartFanCard> {
     Color bgColor = isActive ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85)) : (isDark ? Colors.white10 : Colors.white.withValues(alpha: 0.6));
     Color textColor = isActive ? Colors.white : (isDark ? Colors.white : Colors.black87);
     return Expanded(child: Material(color: bgColor, borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: () => _changeSpeed(btnSpeed), child: Container(height: 40, alignment: Alignment.center, child: Text(label, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w900))))));
+  }
+}
+
+// ============================================================================
+// 🌡️ THẺ CẢM BIẾN MÔI TRƯỜNG (DHT11...) — HIỂN THỊ NHIỆT ĐỘ °C + ĐỘ ẨM %
+// Cảm biến không có relay nên thẻ chỉ trưng số đo (realtime qua key của Wrap:
+// sóng MQTT đổi nhiệt/ẩm là dashboard dựng lại thẻ với số mới ngay lập tức).
+// Menu (…) dùng chung Popup Cài đặt với công tắc/quạt: đủ MAC/IP/RSSI/SSID/Firmware.
+// ============================================================================
+class SmartSensorCard extends StatelessWidget {
+  final String mac;
+  final String endpoint;       // endpoint chuẩn của cảm biến: SENS_{MAC}
+  final String name;
+  final String? temperature;   // °C — null khi chưa nhận được gói đo nào
+  final String? humidity;      // %  — null khi chưa nhận được gói đo nào
+  final bool isOffline;
+  final bool isHidden;
+  final DeviceProvider provider;
+  final Map<String, dynamic> rawDeviceData;
+  final ValueChanged<bool> onToggleHide;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+  final VoidCallback? onAssignHome; // [ADMIN] Chuyển nhà — non-null CHỈ khi user là SUPER_USER
+
+  const SmartSensorCard({
+    super.key,
+    required this.mac, required this.endpoint, required this.name,
+    this.temperature, this.humidity,
+    this.isOffline = false, this.isHidden = false,
+    required this.provider, this.rawDeviceData = const {},
+    required this.onToggleHide, required this.onRename, required this.onDelete,
+    this.onAssignHome,
+  });
+
+  static const Color tkGreen = Color(0xFF00A651);
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    Widget reading(IconData icon, String? value, String unit, Color color) => Expanded(
+      child: Column(
+        children: [
+          Icon(icon, color: isOffline ? Colors.grey : color, size: 22),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value == null ? '--$unit' : '$value$unit',
+              style: TextStyle(color: isOffline ? Colors.grey : textMain, fontSize: 22, fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Container(
+      width: double.infinity, constraints: const BoxConstraints(maxWidth: 450),
+      child: GlassContainer(
+        padding: const EdgeInsets.all(20),
+        child: Opacity(
+          opacity: isOffline ? 0.45 : (isHidden ? 0.55 : 1.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: isOffline ? (isDark ? Colors.white10 : Colors.grey.shade200) : Colors.blueAccent.withValues(alpha: 0.12), shape: BoxShape.circle),
+                    child: Icon(isOffline ? Icons.cloud_off_rounded : Icons.device_thermostat_rounded, color: isOffline ? Colors.grey : Colors.blueAccent, size: 28),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(name, style: TextStyle(color: isOffline ? Colors.grey : textMain, fontSize: 16, fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 4),
+                    Text(isOffline ? 'Ngoại tuyến' : 'Cảm biến môi trường', style: TextStyle(color: isOffline ? Colors.grey : tkGreen, fontSize: 13, fontWeight: FontWeight.w600, fontStyle: isOffline ? FontStyle.italic : FontStyle.normal)),
+                  ])),
+                  // [REFACTOR] Nút 3 chấm nay gọi DeviceMenuHelper dùng chung (đủ Cài đặt/Đổi tên/
+                  // Ẩn/Chuyển nhà/Xóa) — cảm biến tự có full tính năng Admin mà không chép menu.
+                  IconButton(
+                    icon: Icon(Icons.more_vert, color: textSub, size: 22),
+                    splashRadius: 20,
+                    onPressed: () => DeviceMenuHelper.showGenericDeviceMenu(
+                      context: context,
+                      mac: mac,
+                      currentName: name,
+                      subtitle: 'Cảm biến môi trường',
+                      headerIcon: Icons.device_thermostat_rounded,
+                      onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: mac, displayName: name, rawDeviceData: rawDeviceData, provider: provider, onRename: onRename),
+                      onRename: onRename,
+                      isHidden: isHidden,
+                      hideLabel: isHidden ? 'Hiển thị lại thẻ này' : 'Ẩn khỏi Bảng điều khiển',
+                      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+                      onToggleHide: onToggleHide,
+                      onAssignHome: onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
+                      onDelete: onDelete,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  reading(Icons.thermostat_rounded, temperature, '°C', Colors.orange),
+                  Container(width: 1, height: 44, color: isDark ? Colors.white10 : Colors.grey.shade300),
+                  reading(Icons.water_drop_rounded, humidity, '%', Colors.blue),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// ⚙️ POPUP CÀI ĐẶT THIẾT BỊ DÙNG CHUNG
+// Một giao diện duy nhất cho cả 3 lối vào: thẻ công tắc, thẻ quạt (Fan_Control/F1 Hub)
+// và deeplink từ quả chuông thông báo. Hiển thị ĐẦY ĐỦ và ĐỒNG BỘ:
+//   - Trạng thái Trực tuyến/Ngoại tuyến sống (LWT qua kho DPS)
+//   - Cụm nút chỉnh tốc độ + đảo gió realtime (khi thiết bị là quạt)
+//   - Thông số kỹ thuật thật: MAC, IP LAN, RSSI, "Mạng Wi-Fi kết nối: {SSID}", dòng firmware
+//   - Vùng Firmware OTA: check thủ công / nút "Cập nhật ngay" / thanh % nạp realtime
+// ============================================================================
+Future<void> showDeviceSettingsPopup(
+  BuildContext context, {
+  required bool isDark,
+  required String mac,
+  required String displayName,
+  required Map<String, dynamic> rawDeviceData,
+  required DeviceProvider provider,
+  VoidCallback? onRename,
+  String? fanEndpoint,          // != null khi thiết bị là quạt -> hiện cụm nút tốc độ/đảo gió
+  bool autoCheckFirmware = false, // true khi đến từ tin "có bản mới" -> tự check ngay
+}) {
+  return showDialog(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.5),
+    builder: (ctx) => DeviceSettingsPopup(
+      isDark: isDark,
+      mac: mac,
+      displayName: displayName,
+      rawDeviceData: rawDeviceData,
+      provider: provider,
+      onRename: onRename,
+      fanEndpoint: fanEndpoint,
+      autoCheckFirmware: autoCheckFirmware,
+    ),
+  );
+}
+
+class DeviceSettingsPopup extends StatelessWidget {
+  final bool isDark;
+  final String mac;
+  final String displayName;
+  final Map<String, dynamic> rawDeviceData;
+  final DeviceProvider provider;
+  final VoidCallback? onRename;
+  final String? fanEndpoint;
+  final bool autoCheckFirmware;
+
+  const DeviceSettingsPopup({
+    super.key,
+    required this.isDark, required this.mac, required this.displayName,
+    required this.rawDeviceData, required this.provider,
+    this.onRename, this.fanEndpoint, this.autoCheckFirmware = false,
+  });
+
+  static const Color tkGreen = Color(0xFF00A651);
+
+  Map<String, dynamic> _asMap(dynamic v) =>
+      v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    // ---- BÓC GÓI SYSTEM THẬT TỪ REST (device_system:{mac} do firmware tự khai) ----
+    final sysWrap = _asMap(rawDeviceData['system_data']);
+    final sys = sysWrap.containsKey('system') ? _asMap(sysWrap['system']) : sysWrap;
+    final network = _asMap(sys['network']);
+    final metadata = _asMap(sys['metadata']);
+    final String ip = (network['ip'] ?? network['local_ip'] ?? network['ip_address'] ?? '—').toString();
+    final String ssid = (network['ssid'] ?? '').toString();
+    final dynamic rssiRaw = network['rssi'] ?? network['wifi_signal'] ?? network['signal'];
+    final String rssi = rssiRaw == null ? '—' : '$rssiRaw dBm';
+    final String fwType = (rawDeviceData['fw_type'] ?? metadata['type'] ?? '').toString();
+    final String fwVersion = (rawDeviceData['fw_version'] ?? metadata['fw_ver'] ?? '—').toString();
+
+    Widget specRow(IconData icon, String label, String value) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: textSub),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(color: textSub, fontSize: 13)),
+          const Spacer(),
+          Flexible(child: Text(value, textAlign: TextAlign.right, style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+    );
+
+    return Dialog(
+      backgroundColor: Colors.transparent, elevation: 0, insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: GlassContainer(
+          padding: const EdgeInsets.all(24),
+          child: Material(
+            color: Colors.transparent,
+            // Nghe kho DPS: trạng thái online, tốc độ quạt, % OTA... đổi là popup vẽ lại tức thì
+            child: ListenableBuilder(
+              listenable: provider,
+              builder: (context, _) {
+                final live = provider.deviceOf(mac);
+                final bool online = live?.online ??
+                    ((rawDeviceData['status']?.toString().toLowerCase() ?? '') == 'online');
+
+                return SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // ---------- TIÊU ĐỀ + TRẠNG THÁI SỐNG ----------
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), shape: BoxShape.circle),
+                            child: Icon(fanEndpoint != null ? Icons.all_out_rounded : Icons.settings_input_component_rounded, color: tkGreen, size: 26),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(displayName, style: TextStyle(color: textMain, fontSize: 19, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                const SizedBox(height: 4),
+                                Row(children: [
+                                  Container(width: 8, height: 8, decoration: BoxDecoration(color: online ? tkGreen : Colors.grey, shape: BoxShape.circle)),
+                                  const SizedBox(width: 6),
+                                  Text(online ? 'Trực tuyến' : 'Ngoại tuyến', style: TextStyle(color: online ? tkGreen : Colors.grey, fontSize: 12, fontWeight: FontWeight.w700)),
+                                ]),
+                              ],
+                            ),
+                          ),
+                          IconButton(icon: Icon(Icons.close, color: textSub, size: 22), onPressed: () => Navigator.pop(context), splashRadius: 18),
+                        ],
+                      ),
+
+                      // ---------- CỤM ĐIỀU KHIỂN QUẠT (đồng bộ hệt thẻ ngoài lưới) ----------
+                      if (fanEndpoint != null) ...[
+                        const SizedBox(height: 20),
+                        Text('ĐIỀU KHIỂN QUẠT', style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        const SizedBox(height: 10),
+                        Builder(builder: (context) {
+                          final int speed = live?.speedOf(fanEndpoint!) ?? 0;
+                          final bool swing = live?.isSwinging(fanEndpoint!) ?? false;
+                          final bool fanOn = speed > 0;
+
+                          Widget speedBtn(int s, String label) {
+                            final bool active = (speed == s) && online;
+                            final bool isOffBtn = s == 0;
+                            return Expanded(
+                              child: Material(
+                                color: active ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85)) : (isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05)),
+                                borderRadius: BorderRadius.circular(10),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: online ? () => provider.setFanSpeed(mac, s, endpoint: fanEndpoint!, swing: swing) : null,
+                                  child: Container(height: 40, alignment: Alignment.center, child: Text(label, style: TextStyle(color: active ? Colors.white : textMain, fontSize: 13, fontWeight: FontWeight.w900))),
+                                ),
+                              ),
+                            );
+                          }
+
+                          final bool swingActive = swing && fanOn && online;
+                          return Row(
+                            children: [
+                              speedBtn(0, 'OFF'), const SizedBox(width: 8),
+                              speedBtn(1, '1'), const SizedBox(width: 8),
+                              speedBtn(2, '2'), const SizedBox(width: 8),
+                              speedBtn(3, '3'), const SizedBox(width: 12),
+                              Material(
+                                color: swingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05)),
+                                borderRadius: BorderRadius.circular(10),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: (online && fanOn) ? () => provider.setFanSpeed(mac, speed, endpoint: fanEndpoint!, swing: !swing) : null,
+                                  child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: swingActive ? Colors.white : textMain, size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: swingActive ? Colors.white : textMain, fontSize: 12, fontWeight: FontWeight.w800))])),
+                                ),
+                              ),
+                            ],
+                          );
+                        }),
+                      ],
+
+                      // ---------- THÔNG SỐ KỸ THUẬT THẬT (không mock) ----------
+                      const SizedBox(height: 20),
+                      Text('THÔNG SỐ KỸ THUẬT', style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      const SizedBox(height: 6),
+                      specRow(Icons.qr_code_2_rounded, 'Địa chỉ MAC / Serial', mac),
+                      specRow(Icons.lan_rounded, 'Địa chỉ IP LAN', ip),
+                      specRow(Icons.network_check_rounded, 'Cường độ sóng (RSSI)', rssi),
+                      specRow(Icons.wifi_rounded, 'Mạng Wi-Fi kết nối', ssid.isEmpty ? '—' : ssid),
+                      if (fwType.isNotEmpty) specRow(Icons.memory_rounded, 'Dòng firmware', fwType),
+
+                      // ---------- TRẠNG THÁI KHI CÓ ĐIỆN (chỉ thiết bị có relay) ----------
+                      // Cảm biến không có relay, Hub điều khiển thiết bị RF (tự nhớ qua LittleFS)
+                      // -> hai dòng đó không hiện mục này
+                      if (!fwType.contains('SENSOR') && !fwType.contains('HUB')) ...[
+                        const SizedBox(height: 14),
+                        Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1),
+                        PowerBehaviorSection(
+                          mac: mac,
+                          initialMode: int.tryParse(_asMap(rawDeviceData['settings'])['power_behavior']?.toString() ?? '') ?? 1,
+                          isDark: isDark,
+                        ),
+                      ],
+
+                      // ---------- VÙNG FIRMWARE OTA ----------
+                      const SizedBox(height: 14),
+                      Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1),
+                      DeviceFirmwareSection(
+                        mac: mac,
+                        fwType: fwType,
+                        currentVersion: fwVersion,
+                        provider: provider,
+                        isDark: isDark,
+                        autoCheck: autoCheckFirmware,
+                      ),
+
+                      // ---------- HÀNG NÚT DƯỚI ----------
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (onRename != null)
+                            TextButton.icon(
+                              onPressed: () { Navigator.pop(context); onRename!(); },
+                              icon: Icon(Icons.edit_rounded, size: 18, color: textSub),
+                              label: Text('Sửa tên', style: TextStyle(color: textSub, fontWeight: FontWeight.w600)),
+                            ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Đóng', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 🔌 KHỐI CÀI ĐẶT "TRẠNG THÁI KHI CÓ ĐIỆN" (nhúng trong Popup Cài đặt thiết bị)
+// Chỉ hiện với thiết bị có relay (công tắc, quạt). Chọn 1 trong 3 chế độ:
+//   0 = Nhớ trạng thái cũ | 1 = Luôn Tắt (mặc định xuất xưởng) | 2 = Luôn Bật
+// Chọn xong -> PUT /api/devices/{mac}/power-behavior -> Backend lưu Redis + đẩy
+// cấu hình xuống mạch qua MQTT (mạch ghi vào EEPROM, áp dụng từ lần có điện kế tiếp).
+// ============================================================================
+class PowerBehaviorSection extends StatefulWidget {
+  final String mac;
+  final int initialMode; // giá trị đã lưu trên server (settings.power_behavior)
+  final bool isDark;
+
+  const PowerBehaviorSection({super.key, required this.mac, required this.initialMode, required this.isDark});
+
+  @override
+  State<PowerBehaviorSection> createState() => _PowerBehaviorSectionState();
+}
+
+class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
+  final Color tkGreen = const Color(0xFF00A651);
+  late int _mode;
+  bool _saving = false;
+
+  static const Map<int, String> _labels = {
+    0: 'Nhớ trạng thái cũ',
+    1: 'Luôn Tắt',
+    2: 'Luôn Bật',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _mode = (widget.initialMode >= 0 && widget.initialMode <= 2) ? widget.initialMode : 1;
+  }
+
+  Future<void> _change(int? newMode) async {
+    if (newMode == null || newMode == _mode || _saving) return;
+    final int oldMode = _mode;
+    // Đổi giao diện trước cho mượt, nhưng LƯU THẬT qua API — thất bại thì trả về như cũ
+    setState(() { _mode = newMode; _saving = true; });
+    final ok = await ApiService().setPowerBehavior(widget.mac, newMode);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Đã lưu "Khi có điện lại: ${_labels[newMode]}" — mạch áp dụng từ lần mất điện kế tiếp.'),
+        backgroundColor: const Color(0xFF00A651),
+      ));
+    } else {
+      setState(() => _mode = oldMode);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Không lưu được cài đặt — kiểm tra kết nối hoặc quyền tài khoản!'),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      leading: Icon(Icons.power_rounded, color: textSub, size: 20),
+      title: Text('Khi có điện lại', style: TextStyle(color: textMain, fontSize: 14)),
+      subtitle: Text('Trạng thái relay sau khi mất điện', style: TextStyle(color: textSub, fontSize: 11)),
+      trailing: _saving
+          ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+          : DropdownButton<int>(
+              value: _mode,
+              underline: const SizedBox.shrink(),
+              borderRadius: BorderRadius.circular(12),
+              dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
+              style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
+              items: _labels.entries
+                  .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
+                  .toList(),
+              onChanged: _change,
+            ),
+    );
+  }
+}
+
+// ============================================================================
+// 📦 KHỐI QUẢN LÝ FIRMWARE OTA (nhúng trong Popup Cài đặt thiết bị)
+// Luồng thật 3 tầng: [Kiểm tra cập nhật] -> GET /api/firmware/check (200 = có bản mới,
+// 304 = mới nhất) -> [Cập nhật ngay vX] -> POST /api/devices/{mac}/ota -> Backend bắn
+// MQTT xuống chip -> chip tự tải .bin + kiểm SHA256 + báo % qua ota/progress -> thanh
+// tiến trình realtime (đọc từ kho DPS của DeviceProvider, không mock).
+// ============================================================================
+class DeviceFirmwareSection extends StatefulWidget {
+  final String mac;
+  final String fwType;         // dòng firmware học từ heartbeat (SMART_SWITCH, SMART_FAN_CTRL...)
+  final String currentVersion; // phiên bản đang chạy, đọc từ gói system thật
+  final DeviceProvider provider;
+  final bool isDark;
+  final bool autoCheck;        // true khi mở từ deeplink chuông thông báo -> tự check ngay
+
+  const DeviceFirmwareSection({super.key, required this.mac, required this.fwType, required this.currentVersion, required this.provider, required this.isDark, this.autoCheck = false});
+
+  @override
+  State<DeviceFirmwareSection> createState() => _DeviceFirmwareSectionState();
+}
+
+class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
+  final Color tkGreen = const Color(0xFF00A651);
+  bool _checking = false;
+  bool _updating = false;
+  String? _newVersion;   // != null khi kho có bản mới hơn
+  String? _statusNote;   // thông báo ngắn dưới nút
+
+  @override
+  void initState() {
+    super.initState();
+    // Người dùng đến từ tin "Có bản cập nhật Firmware": check luôn để nút
+    // "Cập nhật ngay (vX)" hiện ra ngay, khỏi phải bấm thêm một lần
+    if (widget.autoCheck) {
+      WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _checkUpdate(); });
+    }
+  }
+
+  Future<void> _checkUpdate() async {
+    if (widget.fwType.isEmpty) {
+      setState(() => _statusNote = 'Chưa nhận diện dòng firmware (chờ heartbeat)');
+      return;
+    }
+    setState(() { _checking = true; _statusNote = null; });
+    final meta = await ApiService().checkFirmwareUpdate(widget.fwType, widget.currentVersion);
+    if (!mounted) return;
+    setState(() {
+      _checking = false;
+      if (meta != null && (meta['version'] ?? '').toString().isNotEmpty) {
+        _newVersion = meta['version'].toString();
+        _statusNote = null;
+      } else {
+        _newVersion = null;
+        _statusNote = 'Đang ở phiên bản mới nhất';
+      }
+    });
+  }
+
+  Future<void> _startUpdate() async {
+    setState(() { _updating = true; _statusNote = null; });
+    final ok = await ApiService().triggerOtaUpdate(widget.mac);
+    if (!mounted) return;
+    if (!ok) setState(() { _updating = false; _statusNote = 'Không ra lệnh được — thiết bị Ngoại tuyến?'; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+
+    // Nghe kho DPS realtime: thiết bị báo % nạp qua smarthub/{home}/{mac}/ota/progress
+    return ListenableBuilder(
+      listenable: widget.provider,
+      builder: (context, _) {
+        final int? progress = widget.provider.deviceOf(widget.mac)?.otaProgress;
+        final bool inProgress = _updating && progress != null && progress >= 0 && progress < 100;
+        final bool done = progress == 100;
+        final bool failed = progress == -1;
+
+        Widget trailing;
+        if (done) {
+          trailing = Text('Hoàn tất ✓', style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold));
+        } else if (_updating && !failed) {
+          trailing = Text('${progress ?? 0}%', style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold));
+        } else if (_checking) {
+          trailing = SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen));
+        } else if (_newVersion != null) {
+          trailing = TextButton(
+            onPressed: _startUpdate,
+            style: TextButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+            child: Text('Cập nhật ngay (v$_newVersion)', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+          );
+        } else {
+          trailing = TextButton(
+            onPressed: _checkUpdate,
+            style: TextButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+            child: Text('Kiểm tra cập nhật', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+          );
+        }
+
+        return Column(
+          children: [
+            ListTile(
+              leading: Icon(Icons.system_update_alt, color: textSub, size: 20),
+              title: Text('Firmware v${widget.currentVersion}', style: TextStyle(color: textMain, fontSize: 14)),
+              subtitle: failed
+                  ? const Text('Nạp thất bại — thiết bị vẫn chạy bản cũ an toàn', style: TextStyle(color: Colors.redAccent, fontSize: 11))
+                  : (_statusNote != null ? Text(_statusNote!, style: TextStyle(color: textSub, fontSize: 11)) : null),
+              trailing: trailing,
+            ),
+            if (inProgress)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: progress / 100.0,
+                    minHeight: 6,
+                    color: tkGreen,
+                    backgroundColor: widget.isDark ? Colors.white10 : Colors.black12,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
   }
 }
