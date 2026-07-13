@@ -52,25 +52,35 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Logo thương hiệu — Hero để sẵn hiệu ứng chuyển cảnh về sau (tag dùng chung
-            // nếu màn Đăng nhập đặt cùng tag 'app_logo'); ClipRRect bo góc mềm.
+            // Icon ĐẠI DIỆN của App (launcher icon) — bo góc 22 mô phỏng hình dáng icon
+            // iOS/Android + đổ bóng nhẹ cho nổi khối. Hero sẵn cho hiệu ứng chuyển cảnh
+            // (dùng chung tag 'app_logo' nếu màn Đăng nhập đặt cùng tag).
             Hero(
               tag: 'app_logo',
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(28),
-                child: Image.asset(
-                  'assets/images/logo.png',
-                  width: 120,
-                  height: 120,
-                  fit: BoxFit.contain,
-                  // Lưới an toàn: thiếu/hỏng asset thì hiện icon nhà thay vì ô vỡ đỏ
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    width: 120, height: 120,
-                    decoration: BoxDecoration(
-                      color: _tkGreen.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(28),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: isDark ? 0.45 : 0.18),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
                     ),
-                    child: const Icon(Icons.home_rounded, color: _tkGreen, size: 64),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: Image.asset(
+                    'assets/images/icon_app.png',
+                    width: 100,
+                    height: 100,
+                    fit: BoxFit.cover,
+                    // Lưới an toàn: thiếu/hỏng asset thì hiện icon nhà thay vì ô vỡ đỏ
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      width: 100, height: 100,
+                      color: _tkGreen.withValues(alpha: 0.15),
+                      child: const Icon(Icons.home_rounded, color: _tkGreen, size: 56),
+                    ),
                   ),
                 ),
               ),
