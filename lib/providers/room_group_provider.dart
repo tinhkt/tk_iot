@@ -11,12 +11,14 @@ import '../services/secure_storage_service.dart';
 class Room {
   final String id;
   String name;
+  int orderIndex; // thứ tự hiển thị do user kéo-thả (nhỏ đứng trước)
   final DateTime? createdAt;
-  Room({required this.id, required this.name, this.createdAt});
+  Room({required this.id, required this.name, this.orderIndex = 0, this.createdAt});
 
   factory Room.fromJson(Map<String, dynamic> json) => Room(
         id: (json['id'] ?? '').toString(),
         name: (json['name'] ?? '').toString(),
+        orderIndex: (json['order_index'] as num?)?.toInt() ?? 0,
         createdAt: DateTime.tryParse((json['created_at'] ?? '').toString()),
       );
 }
@@ -160,11 +162,52 @@ class RoomGroupProvider extends ChangeNotifier {
       if (res.statusCode != 201) return _errorFrom(res, 'Không tạo được phòng');
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
-      _rooms.insert(0, Room.fromJson(Map<String, dynamic>.from(body['room'] ?? {})));
+      // Backend gán order_index = max+1 nên phòng mới nằm CUỐI danh sách -> chèn cuối cho khớp
+      _rooms.add(Room.fromJson(Map<String, dynamic>.from(body['room'] ?? {})));
       notifyListeners();
       return null;
     } catch (e) {
       if (kDebugMode) print('❌ [ROOMS] Lỗi tạo phòng: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
+  /// Kéo-thả sắp lại thứ tự phòng — Optimistic UI: đảo vị trí trong _rooms NGAY cho
+  /// giao diện mượt, gán lại orderIndex tuần tự rồi mới PUT /api/rooms/reorder ngầm.
+  /// API lỗi -> revert nguyên trạng danh sách cũ + trả câu báo lỗi.
+  /// [newIndex] đã được ReorderableListView (onReorderItem) chỉnh sẵn cho item bị gỡ.
+  Future<String?> reorderRooms(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex || oldIndex < 0 || oldIndex >= _rooms.length) return null;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex >= _rooms.length) newIndex = _rooms.length - 1;
+
+    final List<Room> backup = List.of(_rooms); // ảnh chụp để revert khi lỗi
+    final moved = _rooms.removeAt(oldIndex);
+    _rooms.insert(newIndex, moved);
+    // Gán lại orderIndex theo vị trí mới (0..n-1) — nguồn sự thật gửi lên server
+    for (int i = 0; i < _rooms.length; i++) {
+      _rooms[i].orderIndex = i;
+    }
+    notifyListeners();
+
+    try {
+      final res = await http.put(
+        Uri.parse('$_apiBase/rooms/reorder'),
+        headers: await _authHeaders(),
+        body: jsonEncode({
+          'orders': [for (final r in _rooms) {'id': r.id, 'order_index': r.orderIndex}],
+        }),
+      );
+      if (res.statusCode != 200) {
+        _rooms = backup; // revert
+        notifyListeners();
+        return _errorFrom(res, 'Không lưu được thứ tự phòng');
+      }
+      return null;
+    } catch (e) {
+      _rooms = backup;
+      notifyListeners();
+      if (kDebugMode) print('❌ [ROOMS] Lỗi sắp xếp phòng: $e');
       return 'Lỗi kết nối máy chủ';
     }
   }
