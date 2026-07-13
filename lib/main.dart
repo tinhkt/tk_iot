@@ -15,45 +15,37 @@ import 'providers/automation_provider.dart';
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 // ============================================================================
-// 🔐 GỠ RÀO SSL CHO ANDROID (HandshakeException khi chuỗi chứng chỉ chưa đầy đủ)
+// 🔐 GỠ RÀO SSL (HandshakeException khi ra mạng ngoài qua Nginx Proxy Manager)
 // ============================================================================
-// Android kiểm chuỗi chứng chỉ (chain of trust) NGHIÊM hơn Windows: nếu Server chỉ
-// gửi cert lá mà THIẾU chứng chỉ trung gian (fullchain), Android từ chối bắt tay ->
-// "Connection terminated during handshake"; Windows lại tự tìm được intermediate nên
-// vẫn chạy. Class dưới cho phép App bỏ qua lỗi xác thực để kết nối được ngay.
+// Server sau NPM có thể gửi chuỗi chứng chỉ THIẾU intermediate (fullchain): Android/iOS
+// kiểm chain of trust nghiêm nên từ chối bắt tay -> "Connection terminated during
+// handshake" trên 4G, còn WiFi/Windows tự tìm được intermediate nên vẫn chạy.
 //
-// ⚠️ QUAN TRỌNG — vì sao KHÔNG trả `true` cho mọi host:
-// badCertificateCallback trả true vô điều kiện = App tin MỌI chứng chỉ giả của MỌI
-// máy chủ -> mở toang cửa cho tấn công Man-in-the-Middle (kẻ gian trên WiFi công cộng
-// đọc lén được JWT token + mật khẩu MQTT của người dùng). Ở đây ta CHỈ bỏ qua đúng
-// (các) tên miền máy chủ của mình, các host khác vẫn được xác thực bình thường.
+// [BYPASS TOÀN CỤC — TẠM THỜI] badCertificateCallback trả `true` VÔ ĐIỀU KIỆN cho MỌI
+// host, để chắc chắn REST API (qua NPM) không bao giờ bị chặn dù allowlist theo host
+// trước đó không khớp (redirect/subdomain/CDN...).
+//
+// ⚠️ CẢNH BÁO BẢO MẬT: chấp nhận mọi chứng chỉ = App tin cả cert giả -> lộ cửa cho tấn
+// công Man-in-the-Middle (đọc lén JWT/mật khẩu trên WiFi công cộng). Đây là giải pháp
+// TẠM để hệ thống chạy; FIX GỐC là cài đúng Intermediate Certificate (fullchain) trên
+// NPM cho api.iot-smart.vn, sau đó siết lại thành allowlist theo host.
 class MyHttpOverrides extends HttpOverrides {
-  // Danh sách host được phép bỏ qua kiểm chứng chỉ — thêm tên miền của bạn tại đây
-  static const Set<String> _trustedHosts = {
-    'api.iot-smart.vn',
-    'mqtt.iot-smart.vn',
-  };
-
   @override
   HttpClient createHttpClient(SecurityContext? context) {
     return super.createHttpClient(context)
-      ..badCertificateCallback = (X509Certificate cert, String host, int port) {
-        // Chỉ chấp nhận chứng chỉ "xấu" nếu đúng là máy chủ của mình; còn lại từ chối
-        return _trustedHosts.contains(host);
-      };
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
   }
 }
 
 void main() async {
-  // Bắt buộc phải có dòng này khi hàm main() là async và thao tác với UI hệ thống
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // Cài bộ ghi đè SSL TRƯỚC khi có bất kỳ request HTTPS nào chạy (kết nối API/MQTT).
-  // Chỉ áp dụng cho nền tảng có dart:io (Android/iOS/Desktop) — Web dùng SSL của trình
-  // duyệt nên bỏ qua để tránh lỗi biên dịch.
+  // [SSL BYPASS] Cài override NGAY đầu main(), TRƯỚC mọi request HTTPS (API/MQTT).
+  // Chỉ áp dụng nền tảng có dart:io (Android/iOS/Desktop) — Web dùng SSL trình duyệt.
   if (!kIsWeb) {
     HttpOverrides.global = MyHttpOverrides();
   }
+
+  // Bắt buộc khi main() là async và thao tác với UI hệ thống
+  WidgetsFlutterBinding.ensureInitialized();
 
   // --- THIẾT LẬP CỬA SỔ TRÀN VIỀN CHO DESKTOP ---
   // Chỉ chạy khối lệnh này nếu không phải là Web và đang chạy trên Windows/macOS/Linux

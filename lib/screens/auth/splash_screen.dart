@@ -44,62 +44,52 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
-    // Nền LẤY THEO scaffoldBackgroundColor của theme -> tự đồng bộ Sáng/Tối
+    // MINIMALIST: chỉ icon launcher + vòng xoay. Nền LẤY THEO scaffoldBackgroundColor
+    // của theme -> tự đồng bộ Sáng/Tối.
     return Scaffold(
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Icon ĐẠI DIỆN của App (launcher icon) — bo góc 22 mô phỏng hình dáng icon
-            // iOS/Android + đổ bóng nhẹ cho nổi khối. Hero sẵn cho hiệu ứng chuyển cảnh
-            // (dùng chung tag 'app_logo' nếu màn Đăng nhập đặt cùng tag).
-            Hero(
-              tag: 'app_logo',
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(22),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: isDark ? 0.45 : 0.18),
-                      blurRadius: 20,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(22),
-                  child: Image.asset(
-                    'assets/images/icon_app.png',
-                    width: 100,
-                    height: 100,
-                    fit: BoxFit.cover,
-                    // Lưới an toàn: thiếu/hỏng asset thì hiện icon nhà thay vì ô vỡ đỏ
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      width: 100, height: 100,
-                      color: _tkGreen.withValues(alpha: 0.15),
-                      child: const Icon(Icons.home_rounded, color: _tkGreen, size: 56),
-                    ),
+            // Icon ĐẠI DIỆN của App (launcher icon): Container đổ bóng nhẹ (nổi 3D) ->
+            // ClipRRect bo góc 22 mô phỏng icon iOS/Android -> ảnh vuông 100x100.
+            Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.45 : 0.18),
+                    blurRadius: 22,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: Image.asset(
+                  'assets/images/icon_app.png',
+                  width: 100,
+                  height: 100,
+                  fit: BoxFit.cover,
+                  // Lưới an toàn: thiếu/hỏng asset thì hiện icon nhà thay vì ô vỡ đỏ
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    width: 100, height: 100,
+                    color: _tkGreen.withValues(alpha: 0.15),
+                    child: const Icon(Icons.home_rounded, color: _tkGreen, size: 56),
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-            Text(
-              'TK_IOT CloudPlatform',
-              style: TextStyle(
-                color: isDark ? Colors.white : const Color(0xFF0F172A),
-                fontSize: 20, fontWeight: FontWeight.w900, letterSpacing: 0.5,
+            const SizedBox(height: 48),
+            // Vòng xoay lấy màu chủ đạo hệ thống qua primaryColor
+            SizedBox(
+              width: 30, height: 30,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).primaryColor),
               ),
             ),
-            const SizedBox(height: 32),
-            const SizedBox(
-              width: 28, height: 28,
-              child: CircularProgressIndicator(color: _tkGreen, strokeWidth: 3),
-            ),
-            const SizedBox(height: 16),
-            Text('Đang khởi động...', style: TextStyle(color: textSub, fontSize: 13)),
           ],
         ),
       ),
