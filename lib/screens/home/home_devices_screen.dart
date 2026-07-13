@@ -77,8 +77,9 @@ class _HomeDevicesScreenState extends State<HomeDevicesScreen> {
         body: jsonEncode({"mac_address": macAddress}),
       );
 
-      // Đóng loading
-      if (mounted) Navigator.pop(context);
+      // Đóng loading (guard mounted TRƯỚC mọi lần đụng context sau await)
+      if (!mounted) return;
+      Navigator.pop(context);
 
       final resData = jsonDecode(response.body);
 
@@ -89,7 +90,8 @@ class _HomeDevicesScreenState extends State<HomeDevicesScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(resData['error'] ?? 'Lỗi khi thêm thiết bị'), backgroundColor: Colors.orange));
       }
     } catch (e) {
-      if (mounted) Navigator.pop(context);
+      if (!mounted) return;
+      Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi kết nối: $e'), backgroundColor: Colors.redAccent));
     }
   }

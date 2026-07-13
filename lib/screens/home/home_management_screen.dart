@@ -418,12 +418,14 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                                 })
                               );
 
+                              if (!context.mounted) return; // dialog đã đóng trong lúc chờ API
                               if (response.statusCode == 200 || response.statusCode == 201) {
                                 _fetchHomesFromAPI();
                               } else {
                                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi: ${response.body}'), backgroundColor: Colors.redAccent));
                               }
                             } catch (e) {
+                              if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi kết nối: $e'), backgroundColor: Colors.redAccent));
                             }
                           },
@@ -461,10 +463,10 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
       )
     ) ?? false;
 
-    if (!confirm) return;
+    if (!confirm || !mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang xóa hệ thống: $homeName'), backgroundColor: Colors.orange));
-    
+
     try {
       final token = await AuthService().getToken();
       final response = await http.delete(
@@ -472,12 +474,14 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
         headers: {'Authorization': 'Bearer $token'}
       );
 
+      if (!mounted) return; // màn hình đã đóng trong lúc chờ API
       if (response.statusCode == 200) {
         _fetchHomesFromAPI();
       } else {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi xóa nhà: ${response.body}'), backgroundColor: Colors.redAccent));
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi kết nối: $e'), backgroundColor: Colors.redAccent));
     }
   }

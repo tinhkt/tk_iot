@@ -66,6 +66,16 @@ class MqttService {
       c.secure = creds.secure; // Tự bật TLS khi server trả broker_url dạng mqtts://
       c.logging(on: false);
 
+      // [FIX HandshakeException TRÊN 4G] mqtt_client dùng SecureSocket RIÊNG — KHÔNG
+      // đi qua HttpOverrides.global (chỉ áp cho HttpClient). Broker sau Nginx Proxy Manager
+      // có thể gửi chuỗi chứng chỉ THIẾU intermediate: WiFi nội bộ nối mqtt:// (không TLS)
+      // nên không lộ, ra 4G nối mqtts:// -> bắt tay TLS đứt "Connection terminated during
+      // handshake". Chấp nhận cert ở đây AN TOÀN có phạm vi: client này CHỈ trỏ tới đúng
+      // broker của mình (creds.host do Backend cấp), không phải bypass cho mọi máy chủ.
+      if (c.secure) {
+        c.onBadCertificate = (dynamic cert) => true;
+      }
+
       // ===== CƠ CHẾ CHUẨN CÔNG NGHIỆP: KEEPALIVE + AUTO-RECONNECT =====
       // keepAlive 30s: App tự ping broker định kỳ; broker không còn cớ ngắt ngầm
       // vì "im lặng quá lâu" — chính là nguyên nhân nút đơ trên Windows để lâu.

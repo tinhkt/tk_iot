@@ -23,6 +23,7 @@ class _SplashScreenState extends State<SplashScreen> {
     // Đợi 1 chút để màn hình Splash hiện ra (giúp trải nghiệm mượt hơn)
     await Future.delayed(const Duration(seconds: 1));
 
+    if (!mounted) return; // widget đã bị gỡ trong lúc chờ -> không điều hướng nữa
     if (token != null && token.isNotEmpty) {
       // Nếu có token, vào thẳng Dashboard
       Navigator.pushReplacement(

@@ -6,7 +6,11 @@ import '../../services/admin_service.dart';
 /// Tab 1: Cấp phép thiết bị (Whitelist) + công tắc Chế độ nghiêm ngặt.
 /// Tab 2: Quản lý kho Firmware OTA (upload .bin + danh sách + xóa).
 class AdminSystemScreen extends StatelessWidget {
-  const AdminSystemScreen({super.key});
+  /// [embedded]=true khi NHÚNG làm tab body của Dashboard (giữ sidebar/header, KHÔNG AppBar).
+  /// [embedded]=false (mặc định) khi Navigator.push riêng trên Mobile: PHẢI bọc Scaffold +
+  /// AppBar (nút Back) + SafeArea — trước đây push widget trần (không Scaffold) làm vỡ layout.
+  final bool embedded;
+  const AdminSystemScreen({super.key, this.embedded = false});
 
   // Danh mục loại thiết bị dùng chung cho cả Whitelist lẫn Upload firmware.
   // label hiển thị cho người, value là fw_type khớp firmware của thiết bị.
@@ -30,23 +34,28 @@ class AdminSystemScreen extends StatelessWidget {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
 
-    return DefaultTabController(
+    final Widget content = DefaultTabController(
       length: 2,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Tiêu đề thay cho AppBar đã gỡ
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
-            child: Row(
-              children: [
-                const Icon(Icons.admin_panel_settings, color: tkGreen, size: 28),
-                const SizedBox(width: 12),
-                Text('Quản trị Hệ thống',
-                    style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
-              ],
+          // Tiêu đề trong body CHỈ khi nhúng (đứng riêng đã có AppBar, tránh double tiêu đề)
+          if (embedded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.admin_panel_settings, color: tkGreen, size: 28),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text('Quản trị Hệ thống',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
             ),
-          ),
           TabBar(
             indicatorColor: tkGreen,
             labelColor: tkGreen,
@@ -67,6 +76,20 @@ class AdminSystemScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+
+    if (embedded) return content;
+
+    // Đứng riêng (Mobile push): Scaffold + AppBar Back + SafeArea đầy đủ
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
+      appBar: AppBar(
+        title: const Text('Quản trị Hệ thống'),
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        foregroundColor: textMain,
+        elevation: 0,
+      ),
+      body: SafeArea(child: content),
     );
   }
 }

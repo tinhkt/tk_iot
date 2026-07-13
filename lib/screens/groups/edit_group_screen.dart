@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/room_group_provider.dart';
+import '../../widgets/glass_popup.dart';
 
 /// EditGroupScreen — Chỉnh sửa Nhóm công tắc ảo: xem thành viên (xóa khỏi nhóm) + Thêm thiết bị.
 /// [availableDevices] là danh sách công tắc thật đang có (mỗi phần tử {mac, name}) để chọn thêm.
@@ -96,38 +97,34 @@ class EditGroupScreen extends StatelessWidget {
     );
   }
 
-  // Bottom sheet chọn thêm công tắc CHƯA thuộc nhóm
+  // Picker chọn thêm công tắc CHƯA thuộc nhóm — [KÍNH MỜ ĐỒNG BỘ] qua showGlassPopup
+  // (PC: dialog giữa màn hình; Mobile: sheet; màu chữ do panel kính ép tương phản)
   void _pickDevices(BuildContext context, RoomGroupProvider provider, DeviceGroup group) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final candidates = availableDevices.where((d) {
       final mac = (d['mac'] ?? '').toString().toUpperCase();
       return mac.isNotEmpty && !group.memberMacs.contains(mac) && !mac.startsWith('GROUP_');
     }).toList();
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(
-        child: candidates.isEmpty
-            ? Padding(padding: const EdgeInsets.all(24), child: Text('Không còn thiết bị nào để thêm.', style: TextStyle(color: textMain)))
-            : ListView(
-                shrinkWrap: true,
-                children: candidates.map((d) {
-                  final mac = (d['mac'] ?? '').toString();
-                  return ListTile(
-                    leading: Icon(Icons.add_circle_outline, color: tkGreen),
-                    title: Text((d['name'] ?? mac).toString(), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                    subtitle: Text(mac, style: TextStyle(color: textMain.withValues(alpha: 0.5), fontSize: 11)),
-                    onTap: () {
-                      provider.addToGroup(group.mac, mac);
-                      Navigator.pop(ctx);
-                    },
-                  );
-                }).toList(),
-              ),
-      ),
+    showGlassPopup(
+      context,
+      title: 'Thêm thiết bị vào nhóm',
+      body: (ctx) => candidates.isEmpty
+          ? const Padding(padding: EdgeInsets.fromLTRB(24, 8, 24, 16), child: Text('Không còn thiết bị nào để thêm.'))
+          : ListView(
+              shrinkWrap: true,
+              children: candidates.map((d) {
+                final mac = (d['mac'] ?? '').toString();
+                return ListTile(
+                  leading: const Icon(Icons.add_circle_outline, color: tkGreen),
+                  title: Text((d['name'] ?? mac).toString(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                  onTap: () {
+                    provider.addToGroup(group.mac, mac);
+                    Navigator.pop(ctx);
+                  },
+                );
+              }).toList(),
+            ),
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/automation_provider.dart';
+import '../../widgets/adaptive_navigation.dart';
 import 'create_automation_screen.dart';
 
 /// AutomationScreen — Ngữ cảnh: 2 tab 'Chạm để chạy' + 'Tự động'. [embedded]=true khi nhúng
@@ -29,7 +30,8 @@ class AutomationScreen extends StatelessWidget {
           foregroundColor: Colors.white,
           icon: const Icon(Icons.add),
           label: const Text('Thêm ngữ cảnh'),
-          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateAutomationScreen())),
+          // [RESPONSIVE NAV] PC: dialog lớn giữ nguyên Sidebar; Mobile: push như cũ
+          onPressed: () => openAdaptiveScreen(context, const CreateAutomationScreen()),
         ),
         body: SafeArea(
           child: Column(
@@ -85,6 +87,10 @@ class _SceneList extends StatelessWidget {
     return Consumer<AutomationProvider>(
       builder: (context, provider, _) {
         final scenes = type == SceneType.tapToRun ? provider.tapToRun : provider.automations;
+        // Đang tải lần đầu từ server -> spinner thay vì chớp màn trống
+        if (provider.isLoading && scenes.isEmpty) {
+          return const Center(child: CircularProgressIndicator(color: tkGreen));
+        }
         if (scenes.isEmpty) {
           return Center(child: Text('Chưa có ngữ cảnh nào.\nBấm "Thêm ngữ cảnh" để tạo.', textAlign: TextAlign.center, style: TextStyle(color: textSub)));
         }
@@ -102,19 +108,37 @@ class _SceneList extends StatelessWidget {
               decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(16)),
               child: ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                // Bấm cả thẻ (không phải Switch/nút Chạy) -> mở màn SỬA ngữ cảnh với dữ liệu đổ sẵn
+                onTap: () => openAdaptiveScreen(context, CreateAutomationScreen(editScene: s)),
                 leading: CircleAvatar(radius: 24, backgroundColor: tkGreen.withValues(alpha: 0.15), child: Icon(s.icon, color: tkGreen, size: 26)),
-                title: Text(s.name, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+                title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
                 subtitle: Padding(padding: const EdgeInsets.only(top: 4), child: Text(summary, style: TextStyle(color: textSub, fontSize: 12))),
                 trailing: type == SceneType.tapToRun
-                    // Chạm để chạy -> nút "Chạy"
+                    // Chạm để chạy -> nút "Chạy" gọi API execute thật
                     ? ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         icon: const Icon(Icons.play_arrow_rounded, size: 18),
                         label: const Text('Chạy'),
-                        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang chạy ngữ cảnh "${s.name}"'), backgroundColor: tkGreen)),
+                        onPressed: () async {
+                          final err = await provider.executeScene(s.id);
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text(err ?? 'Đang chạy ngữ cảnh "${s.name}"'),
+                              backgroundColor: err == null ? tkGreen : Colors.redAccent));
+                        },
                       )
-                    // Tự động -> Switch bật/tắt
-                    : Switch(value: s.enabled, activeThumbColor: tkGreen, onChanged: (v) => provider.toggleEnabled(s.id, v)),
+                    // Tự động -> Switch bật/tắt (optimistic — provider tự hoàn tác khi lỗi)
+                    : Switch(
+                        value: s.enabled,
+                        activeThumbColor: tkGreen,
+                        onChanged: (v) async {
+                          final err = await provider.toggleEnabled(s.id, v);
+                          if (err != null && context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                          }
+                        },
+                      ),
               ),
             );
           },

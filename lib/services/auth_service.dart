@@ -24,7 +24,8 @@ class AuthService {
     
     // 2. Dùng navigatorKey lấy Context hiện tại mà không cần truyền biến lằng nhằng
     final context = navigatorKey.currentContext;
-    if (context != null) {
+    // context lấy SAU await logout() nên phải kiểm mounted trước khi dùng
+    if (context != null && context.mounted) {
       // 3. Hiển thị thông báo (Popup nhỏ phía dưới)
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

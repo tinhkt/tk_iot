@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/automation_provider.dart';
+import '../../widgets/glass_popup.dart';
+import '../../widgets/scene_step_pickers.dart';
 
 /// CreateAutomationScreen — Tạo/Sửa Ngữ cảnh theo chuẩn IFTTT (NẾU... THÌ...).
+/// [editScene] != null -> CHẾ ĐỘ SỬA: form đổ sẵn tên/icon/loại/điều kiện/hành động
+/// của ngữ cảnh đó, nút Lưu gọi AutomationProvider.updateScene (giữ nguyên id).
 class CreateAutomationScreen extends StatefulWidget {
   final SceneType initialType;
-  const CreateAutomationScreen({super.key, this.initialType = SceneType.automation});
+  final SceneItem? editScene;
+  const CreateAutomationScreen({super.key, this.initialType = SceneType.automation, this.editScene});
 
   @override
   State<CreateAutomationScreen> createState() => _CreateAutomationScreenState();
@@ -19,11 +24,24 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
   late SceneType _type;
   final List<SceneStep> _conditions = [];
   final List<SceneStep> _actions = [];
+  bool _saving = false; // đang chờ API lưu — khóa nút + hiện spinner
+
+  bool get _isEditing => widget.editScene != null;
 
   @override
   void initState() {
     super.initState();
-    _type = widget.initialType;
+    final scene = widget.editScene;
+    if (scene != null) {
+      // Chế độ SỬA: đổ sẵn toàn bộ nội dung ngữ cảnh vào form
+      _nameCtrl.text = scene.name;
+      _iconCodePoint = scene.iconCodePoint;
+      _type = scene.type;
+      _conditions.addAll(scene.conditions);
+      _actions.addAll(scene.actions);
+    } else {
+      _type = widget.initialType;
+    }
   }
 
   @override
@@ -42,21 +60,26 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       appBar: AppBar(
-        title: const Text('Tạo ngữ cảnh'),
+        title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),
         backgroundColor: cardColor,
         foregroundColor: textMain,
         elevation: 0,
         actions: [
           TextButton(
-            onPressed: _save,
-            child: const Text('Lưu', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
+            onPressed: _saving ? null : _save,
+            child: _saving
+                // Loading mượt ngay trên nút Lưu trong lúc chờ server
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+                : const Text('Lưu', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
           ),
         ],
       ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 640), // responsive: không kéo dài trên PC
+            // [RESPONSIVE PC] Form ghim giữa màn hình, trần 800px — không phóng to
+            // tràn hết chiều ngang trên desktop/web
+            constraints: const BoxConstraints(maxWidth: 800),
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -69,7 +92,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
                       child: Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(14)),
-                        child: Icon(IconData(_iconCodePoint, fontFamily: 'MaterialIcons'), color: tkGreen, size: 28),
+                        child: Icon(sceneIconFor(_iconCodePoint), color: tkGreen, size: 28),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -150,81 +173,76 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
         ),
       );
 
-  // ---------- Bottom sheets chọn điều kiện / hành động ----------
-  void _pickCondition() {
-    _showPicker('Chọn điều kiện (NẾU)', const [
-      SceneStep(Icons.access_time, 'Hẹn giờ (Thời gian)'),
-      SceneStep(Icons.toggle_on, 'Thiết bị thay đổi trạng thái'),
-      SceneStep(Icons.cloud, 'Thời tiết thay đổi'),
-    ], (step) => setState(() => _conditions.add(step)));
+  // ---------- Bộ picker THẬT (scene_step_pickers.dart) ----------
+  // Điều kiện: Theo thời gian -> TimePicker + ngày lặp -> params {"time","repeat"}.
+  Future<void> _pickCondition() async {
+    final step = await showConditionPicker(context);
+    if (step != null && mounted) setState(() => _conditions.add(step));
   }
 
-  void _pickAction() {
-    _showPicker('Chọn hành động (THÌ)', const [
-      SceneStep(Icons.settings_remote, 'Điều khiển thiết bị'),
-      SceneStep(Icons.notifications_active_outlined, 'Gửi thông báo'),
-      SceneStep(Icons.timelapse, 'Chờ (Delay)'),
-    ], (step) => setState(() => _actions.add(step)));
-  }
-
-  void _showPicker(String title, List<SceneStep> options, ValueChanged<SceneStep> onPick) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(padding: const EdgeInsets.all(16), child: Text(title, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))),
-            ...options.map((o) => ListTile(
-                  leading: Icon(o.icon, color: tkGreen),
-                  title: Text(o.label, style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                  onTap: () { onPick(o); Navigator.pop(ctx); },
-                )),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
+  // Hành động: thiết bị THẬT từ kho DPS -> endpoint -> BẬT/TẮT
+  // -> params {"mac","endpoint","command"} đúng khuôn Backend Fan-out MQTT.
+  Future<void> _pickAction() async {
+    final step = await showActionPicker(context);
+    if (step != null && mounted) setState(() => _actions.add(step));
   }
 
   void _pickIcon() {
-    const icons = [Icons.auto_awesome, Icons.movie_creation_outlined, Icons.nightlight_round, Icons.wb_sunny_outlined, Icons.home_rounded, Icons.umbrella, Icons.local_cafe_outlined, Icons.directions_run];
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Wrap(
-            spacing: 14, runSpacing: 14,
-            children: icons.map((ic) => InkWell(
-                  onTap: () { setState(() => _iconCodePoint = ic.codePoint); Navigator.pop(ctx); },
-                  child: Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(ic, color: tkGreen, size: 26)),
-                )).toList(),
-          ),
+    // Dùng chung bảng icon CONST với provider (kSceneIcons) — codePoint lưu ra luôn tra ngược được.
+    // [KÍNH MỜ ĐỒNG BỘ] Qua showGlassPopup: PC = dialog giữa màn hình, Mobile = sheet.
+    const icons = kSceneIcons;
+    showGlassPopup(
+      context,
+      title: 'Chọn biểu tượng',
+      body: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+        child: Wrap(
+          spacing: 14, runSpacing: 14,
+          children: icons.map((ic) => InkWell(
+                onTap: () { setState(() => _iconCodePoint = ic.codePoint); Navigator.pop(ctx); },
+                child: Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(ic, color: tkGreen, size: 26)),
+              )).toList(),
         ),
       ),
     );
   }
 
-  void _save() {
+  Future<void> _save() async {
     if (_actions.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Hãy thêm ít nhất 1 hành động (THÌ...)'), backgroundColor: Colors.redAccent));
       return;
     }
-    Provider.of<AutomationProvider>(context, listen: false).addScene(
-      name: _nameCtrl.text,
-      iconCodePoint: _iconCodePoint,
-      type: _type,
-      conditions: List.of(_conditions),
-      actions: List.of(_actions),
-    );
+    final provider = Provider.of<AutomationProvider>(context, listen: false);
+    setState(() => _saving = true);
+
+    // API thật (upsert): sửa -> giữ id cũ; tạo mới -> server tự sinh id.
+    // null = thành công, chuỗi = câu báo lỗi tiếng Việt từ Backend.
+    final String? err = _isEditing
+        ? await provider.updateScene(
+            widget.editScene!.id,
+            name: _nameCtrl.text,
+            iconCodePoint: _iconCodePoint,
+            type: _type,
+            conditions: List.of(_conditions),
+            actions: List.of(_actions),
+          )
+        : await provider.addScene(
+            name: _nameCtrl.text,
+            iconCodePoint: _iconCodePoint,
+            type: _type,
+            conditions: List.of(_conditions),
+            actions: List.of(_actions),
+          );
+
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+      return; // giữ nguyên form cho user sửa/thử lại — không mất dữ liệu đã nhập
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_isEditing ? 'Đã lưu thay đổi ngữ cảnh' : 'Đã tạo ngữ cảnh mới'),
+        backgroundColor: tkGreen));
     Navigator.pop(context);
   }
 }

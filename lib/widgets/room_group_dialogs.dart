@@ -1,57 +1,51 @@
 import 'dart:ui'; // BackdropFilter / ImageFilter.blur cho hiệu ứng kính mờ
 import 'package:flutter/material.dart';
 import '../providers/room_group_provider.dart';
+import 'glass_popup.dart';
 
 const Color _tkGreen = Color(0xFF00A651);
 
 // ============================================================================
 // DIALOG CHỌN PHÒNG (RoomSelectionDialog) — trả về Room được chọn (hoặc null nếu hủy)
+// [KÍNH MỜ ĐỒNG BỘ] Đi qua showGlassPopup: PC = dialog giữa màn hình, Mobile = sheet;
+// hết cảnh AlertDialog nền đặc "trắng trơn cục mịch".
 // ============================================================================
 Future<Room?> showRoomSelectionDialog(BuildContext context, RoomGroupProvider provider) {
-  return showDialog<Room>(
-    context: context,
-    builder: (ctx) {
-      final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
-      final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-      return StatefulBuilder(
-        builder: (ctx, setDialog) => AlertDialog(
-          backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-          title: Row(children: [
-            const Icon(Icons.meeting_room, color: _tkGreen),
-            const SizedBox(width: 10),
-            Text('Chọn phòng', style: TextStyle(color: textMain)),
-          ]),
-          content: SizedBox(
-            width: 320,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Danh sách phòng hiện có
-                ...provider.rooms.map((r) => ListTile(
-                      leading: const Icon(Icons.chair_alt_outlined, color: _tkGreen),
-                      title: Text(r.name, style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                      onTap: () => Navigator.pop(ctx, r),
-                    )),
-                const Divider(),
-                // Nút tạo phòng mới -> popup nhập tên -> thêm vào provider -> refresh danh sách
-                ListTile(
-                  leading: const Icon(Icons.add_circle_outline, color: Colors.blueAccent),
-                  title: const Text('Tạo phòng mới', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold)),
-                  onTap: () async {
-                    final name = await _promptText(ctx, 'Tên phòng mới', 'vd: Phòng làm việc');
-                    if (name != null && name.trim().isNotEmpty) {
-                      provider.createRoom(name);
-                      setDialog(() {}); // vẽ lại danh sách có phòng vừa tạo
-                    }
-                  },
-                ),
-              ],
-            ),
+  return showGlassPopup<Room>(
+    context,
+    title: 'Chọn phòng',
+    body: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialog) => ListView(
+        shrinkWrap: true,
+        children: [
+          // Danh sách phòng hiện có (màu chữ kế thừa DefaultTextStyle của panel kính)
+          ...provider.rooms.map((r) => ListTile(
+                leading: const Icon(Icons.chair_alt_outlined, color: _tkGreen),
+                title: Text(r.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                onTap: () => Navigator.pop(ctx, r),
+              )),
+          const Divider(),
+          // Nút tạo phòng mới -> popup nhập tên -> gọi API -> refresh danh sách
+          ListTile(
+            leading: const Icon(Icons.add_circle_outline, color: Colors.blueAccent),
+            title: const Text('Tạo phòng mới', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold)),
+            onTap: () async {
+              final name = await _promptText(ctx, 'Tên phòng mới', 'vd: Phòng làm việc');
+              if (name != null && name.trim().isNotEmpty) {
+                // createRoom là API thật -> PHẢI await xong mới vẽ lại danh sách,
+                // lỗi thì báo ngay thay vì thêm "phòng ma"
+                final err = await provider.createRoom(name);
+                if (!ctx.mounted) return;
+                if (err != null) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                }
+                setDialog(() {}); // vẽ lại danh sách có phòng vừa tạo
+              }
+            },
           ),
-          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy'))],
-        ),
-      );
-    },
+        ],
+      ),
+    ),
   );
 }
 
@@ -166,30 +160,31 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context) {
   );
 }
 
-// Popup nhập text đơn giản dùng chung (tên phòng mới...)
+// Popup nhập text đơn giản dùng chung (tên phòng mới...) — [KÍNH MỜ ĐỒNG BỘ]
 Future<String?> _promptText(BuildContext context, String title, String hint) {
   final TextEditingController ctrl = TextEditingController();
-  final bool isDark = Theme.of(context).brightness == Brightness.dark;
-  final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-  return showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-      title: Text(title, style: TextStyle(color: textMain)),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        style: TextStyle(color: textMain),
-        decoration: InputDecoration(hintText: hint, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(backgroundColor: _tkGreen, foregroundColor: Colors.white),
-          onPressed: () => Navigator.pop(ctx, ctrl.text),
-          child: const Text('Lưu'),
+  return showGlassPopup<String>(
+    context,
+    title: title,
+    body: (ctx) => Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(hintText: hint, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
         ),
-      ],
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: _tkGreen, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(ctx, ctrl.text),
+            child: const Text('Lưu'),
+          ),
+        ]),
+      ]),
     ),
   );
 }

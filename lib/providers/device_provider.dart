@@ -1,7 +1,7 @@
 import 'dart:collection';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
@@ -332,7 +332,7 @@ class DeviceProvider with ChangeNotifier {
       // Cùng một bộ dịch với hydrateFromRest — sóng MQTT và ảnh REST không bao giờ lệch khuôn.
       changed = device.mergeDps(endpointJsonToDps(json));
       if (kDebugMode && parts.last == 'state') {
-        print('📥 [STATE FEEDBACK] $cleanMac nhận state realtime -> ${json.keys.toList()} (đổi: $changed)');
+        debugPrint('📥 [STATE FEEDBACK] $cleanMac nhận state realtime -> ${json.keys.toList()} (đổi: $changed)');
       }
     } else {
       // ---------- DẠNG 2: PAYLOAD TRẦN ("ON", "2", "swing") ----------

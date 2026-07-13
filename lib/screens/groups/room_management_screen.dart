@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/room_group_provider.dart';
+import '../../widgets/adaptive_navigation.dart';
+import '../../widgets/glass_popup.dart';
+import 'room_detail_screen.dart';
 
 /// RoomManagementScreen — Quản lý Phòng: list phòng, VUỐT để xóa, BẤM để sửa tên, FAB thêm phòng.
 /// [embedded]=true khi NHÚNG làm tab body của Dashboard: BỎ AppBar (nút Back) để tránh double
@@ -49,6 +52,10 @@ class RoomManagementScreen extends StatelessWidget {
               child: Consumer<RoomGroupProvider>(
           builder: (context, provider, _) {
             final rooms = provider.rooms;
+            // Đang tải lần đầu từ server -> spinner thay vì chớp màn "Chưa có phòng nào"
+            if (provider.isLoading && rooms.isEmpty) {
+              return const Center(child: CircularProgressIndicator(color: tkGreen));
+            }
             if (rooms.isEmpty) {
               return Center(child: Text('Chưa có phòng nào.\nBấm "Thêm phòng" để tạo mới.', textAlign: TextAlign.center, style: TextStyle(color: textSub)));
             }
@@ -69,17 +76,32 @@ class RoomManagementScreen extends StatelessWidget {
                     child: const Row(mainAxisSize: MainAxisSize.min, children: [Text('Xóa', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), SizedBox(width: 8), Icon(Icons.delete_outline, color: Colors.white)]),
                   ),
                   confirmDismiss: (_) async => await _confirmDeleteRoom(context, room.name),
-                  onDismissed: (_) => provider.deleteRoom(room.id),
+                  // API lỗi -> provider tự fetch lại để khôi phục list; ở đây chỉ báo SnackBar
+                  onDismissed: (_) async {
+                    final err = await provider.deleteRoom(room.id);
+                    if (err != null && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                    }
+                  },
                   child: Material(
                     color: cardColor,
                     borderRadius: BorderRadius.circular(14),
                     child: ListTile(
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       leading: CircleAvatar(backgroundColor: tkGreen.withValues(alpha: 0.15), child: const Icon(Icons.meeting_room, color: tkGreen)),
-                      title: Text(room.name, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.w600)),
-                      subtitle: Text('$devCount thiết bị', style: TextStyle(color: textSub, fontSize: 12)),
-                      trailing: Icon(Icons.edit_outlined, color: textSub, size: 20),
-                      onTap: () => _renameRoom(context, provider, room), // bấm -> sửa tên
+                      title: Text(room.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.w600)),
+                      subtitle: Text('$devCount thiết bị • Chạm để xem chi tiết', style: TextStyle(color: textSub, fontSize: 12)),
+                      // Icon bút = sửa tên; chevron gợi ý cả khối bấm được để vào chi tiết
+                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        IconButton(
+                          tooltip: 'Sửa tên phòng',
+                          icon: Icon(Icons.edit_outlined, color: textSub, size: 20),
+                          onPressed: () => _renameRoom(context, provider, room),
+                        ),
+                        Icon(Icons.chevron_right, color: textSub, size: 20),
+                      ]),
+                      // Bấm cả khối -> mở chi tiết phòng (PC: dialog lớn giữ Sidebar; Mobile: push)
+                      onTap: () => openAdaptiveScreen(context, RoomDetailScreen(roomId: room.id)),
                     ),
                   ),
                 );
@@ -97,49 +119,73 @@ class RoomManagementScreen extends StatelessWidget {
   Future<void> _addRoom(BuildContext context) async {
     final name = await _promptRoomName(context, 'Thêm phòng mới', '');
     if (name == null || name.trim().isEmpty || !context.mounted) return;
-    Provider.of<RoomGroupProvider>(context, listen: false).createRoom(name);
+    // API thật: null = thành công, chuỗi = câu báo lỗi từ Backend
+    final err = await Provider.of<RoomGroupProvider>(context, listen: false).createRoom(name);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+    }
   }
 
   Future<void> _renameRoom(BuildContext context, RoomGroupProvider provider, Room room) async {
     final name = await _promptRoomName(context, 'Sửa tên phòng', room.name);
     if (name == null || name.trim().isEmpty || !context.mounted) return;
-    provider.renameRoom(room.id, name);
+    final err = await provider.renameRoom(room.id, name);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+    }
   }
 
+  // [KÍNH MỜ ĐỒNG BỘ] Popup xác nhận xóa — qua showGlassPopup (PC: dialog giữa
+  // màn hình; Mobile: sheet), không còn AlertDialog nền đặc
   Future<bool> _confirmDeleteRoom(BuildContext context, String name) async {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final res = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        title: Text('Xóa phòng "$name"?'),
-        content: const Text('Thiết bị trong phòng KHÔNG bị xóa, chỉ gỡ khỏi phòng này.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white), onPressed: () => Navigator.pop(ctx, true), child: const Text('Xóa')),
-        ],
+    final res = await showGlassPopup<bool>(
+      context,
+      title: 'Xóa phòng "$name"?',
+      body: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Thiết bị trong phòng KHÔNG bị xóa, chỉ gỡ khỏi phòng này.'),
+          const SizedBox(height: 16),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Xóa'),
+            ),
+          ]),
+        ]),
       ),
     );
     return res ?? false;
   }
 
+  // [KÍNH MỜ ĐỒNG BỘ] Popup nhập tên phòng — TextField an toàn bàn phím nhờ
+  // showGlassPopup tự đệm viewInsets ở chế độ sheet
   Future<String?> _promptRoomName(BuildContext context, String title, String initial) {
     final ctrl = TextEditingController(text: initial);
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        title: Text(title, style: TextStyle(color: textMain)),
-        content: TextField(
-          controller: ctrl, autofocus: true, style: TextStyle(color: textMain),
-          decoration: InputDecoration(hintText: 'Tên phòng', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white), onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('Lưu')),
-        ],
+    return showGlassPopup<String>(
+      context,
+      title: title,
+      body: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: ctrl, autofocus: true,
+            decoration: InputDecoration(hintText: 'Tên phòng', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+          ),
+          const SizedBox(height: 16),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx, ctrl.text),
+              child: const Text('Lưu'),
+            ),
+          ]),
+        ]),
       ),
     );
   }

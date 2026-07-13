@@ -99,7 +99,8 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
 
       // Gọi API Upload ảnh thật lên server Golang
       String? uploadedUrl = await _authService.uploadAvatar(_selectedImage!);
-      
+
+      if (!mounted) return; // màn hình đã đóng trong lúc chờ upload
       setState(() { _isUploading = false; });
 
       if (uploadedUrl != null) {
@@ -126,6 +127,7 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
       avatarUrl: _avatarUrl.isNotEmpty ? _avatarUrl : null,
     );
 
+    if (!mounted) return; // màn hình đã đóng trong lúc chờ API
     setState(() => _isSaving = false);
 
     if (error == null) {
