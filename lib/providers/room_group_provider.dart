@@ -147,6 +147,28 @@ class RoomGroupProvider extends ChangeNotifier {
     }
   }
 
+  /// Nạp phòng từ payload SINGLE-FETCH (dashboard/sync) — KHÔNG gọi HTTP riêng, tránh
+  /// N+1. [roomsJson] là mảng room lồng trong 1 nhà: [{id,name,order_index,device_macs}].
+  void ingestRooms(String homeId, List<dynamic> roomsJson) {
+    _homeId = homeId;
+    _rooms = roomsJson
+        .whereType<Map>()
+        .map((e) => Room.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+    _deviceRoom.clear();
+    for (final e in roomsJson) {
+      if (e is! Map) continue;
+      final roomId = (e['id'] ?? '').toString();
+      for (final mac in (e['device_macs'] as List? ?? const [])) {
+        _deviceRoom[mac.toString().toUpperCase()] = roomId;
+      }
+    }
+    if (_selectedRoomId != null && !_rooms.any((r) => r.id == _selectedRoomId)) {
+      _selectedRoomId = null;
+    }
+    notifyListeners();
+  }
+
   /// POST /api/rooms — tạo phòng mới. Giữ chữ ký cũ createRoom(name); [homeId] tùy chọn
   /// (mặc định dùng nhà đã fetchRooms). Thành công: chèn phòng server trả về lên ĐẦU list
   /// (khớp thứ tự "mới nhất trước" của Backend).

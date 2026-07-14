@@ -172,6 +172,15 @@ class DeviceProvider with ChangeNotifier {
     _globalListener = callback;
   }
 
+  /// Hook do Dashboard đăng ký (trỏ tới _initializeHome) để các nơi KHÔNG giữ context
+  /// (vd AutomationProvider sau khi chạy Scene) có thể "ép" App kéo lại trạng thái thật
+  /// từ REST — lưới an toàn khi sóng MQTT state feedback về trễ/rớt.
+  Future<void> Function()? onRefreshRequested;
+
+  /// Chủ động yêu cầu Dashboard nạp lại trạng thái thiết bị từ Server (no-op nếu chưa
+  /// đăng ký hook, vd đang ở màn Login).
+  Future<void> requestRefresh() async => onRefreshRequested?.call();
+
   /// Dashboard gọi sau khi đăng nhập thành công: lúc app khởi động chưa có token
   /// nên kết nối trong constructor bị bỏ qua, cần kích hoạt lại với credentials mới.
   Future<void> connectMqtt() => _mqttService.connect();
@@ -416,6 +425,23 @@ class DeviceProvider with ChangeNotifier {
       return;
     }
     _mqttService.publishCommand(mac, endpoint, !currentStatus ? 'ON' : 'OFF');
+  }
+
+  /// Gửi lệnh TUYỆT ĐỐI bật/tắt (KHÔNG lật như toggleSwitch) — dùng cho ĐIỀU KHIỂN NHÓM:
+  /// nút nhóm cần ép TẤT CẢ thành viên về cùng một trạng thái, không phụ thuộc trạng thái
+  /// hiện tại của từng cái. Bỏ qua thiết bị Ngoại tuyến.
+  void setSwitchState(String mac, String endpoint, bool on) {
+    final device = _devices[_cleanMac(mac)];
+    if (device != null && !device.online) return;
+    _mqttService.publishCommand(mac, endpoint, on ? 'ON' : 'OFF');
+  }
+
+  /// Thiết bị có BẤT KỲ endpoint nào đang bật không — để nút nhóm sáng khi ít nhất
+  /// một thành viên đang bật (và chỉ tắt khi TẤT CẢ đều tắt).
+  bool anyEndpointOn(String mac) {
+    final d = _devices[_cleanMac(mac)];
+    if (d == null) return false;
+    return d.endpointIds.any((ep) => d.isOn(ep));
   }
 
   /// Chỉnh tốc độ quạt (0 = tắt, 1-3 = các cấp gió) — cũng theo Real-State:

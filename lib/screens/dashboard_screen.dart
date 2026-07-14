@@ -12,6 +12,7 @@ import '../providers/device_provider.dart';
 import '../providers/theme_provider.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/dashboard_sync_service.dart';
 import 'auth/login_screen.dart';
 import 'admin/role_management_view.dart';
 import 'admin/admin_system_screen.dart';
@@ -115,6 +116,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _bootstrapSync() async {
+    // [AUTO-REFRESH HOOK] Cho phép nơi khác (vd chạy Scene) ép App kéo lại trạng thái
+    // thật từ REST mà không cần giữ context của Dashboard.
+    Provider.of<DeviceProvider>(context, listen: false).onRefreshRequested =
+        () => _initializeHome(isSilent: true);
+
     await _initializeHome(); // REST: danh sách + trạng thái thật -> UI tĩnh lên hình trước
     if (!mounted) return;
     Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail);
@@ -159,65 +165,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
           setState(() { currentHomeId = homeId; userEmail = email; userRole = role; });
 
-          if (role == 'SUPER_USER') {
-            final resHomes = await http.get(Uri.parse('$baseUrl/homes'), headers: {'Authorization': 'Bearer $token'});
-            if (resHomes.statusCode == 200) {
-              List<dynamic> homes = jsonDecode(resHomes.body);
-              // Gọi API lấy thiết bị của tất cả các nhà SONG SONG thay vì chờ tuần tự từng nhà
-              await Future.wait(homes.map((home) async {
-                final hId = home['home_id'];
-                final dRes = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(hId.toString())}/devices'), headers: {'Authorization': 'Bearer $token'});
-                if (dRes.statusCode == 200) {
-                  List<dynamic> devs = jsonDecode(dRes.body);
-                  int onCount = 0, offCount = 0, totalEndpoints = 0;
-                  
-                  for (var d in devs) {
-                    // [FIX ĐẾM SAI] Hub & Cảm biến LUÔN online nhưng KHÔNG phải công tắc bật/tắt.
-                    // Bỏ qua khỏi phép đếm để thẻ nhà không báo nhầm (trước đây 2/16 dù đã tắt hết).
-                    final String dType = '${d['fw_type'] ?? ''} ${d['category'] ?? ''} ${d['type'] ?? ''}'.toUpperCase();
-                    if (dType.contains('HUB') || dType.contains('SENSOR')) continue;
-
-                    var rawState = d['state'] ?? d['state_data'] ?? d['properties'] ?? {};
-                    Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
-                    bool hasEp = false;
-
-                    // HÀM ĐỆ QUY CẬP NHẬT TÍNH TOÁN (LỌC BỎ IP, MAC, WIFI...)
-                    void countRecursive(String key, dynamic val) {
-                      final kLow = key.toLowerCase();
-                      final ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping'];
-                      for (var ig in ignored) { if (kLow == ig || kLow.contains(ig)) return; } // Gặp rác là bỏ qua ngay
-
-                      if (val is Map) {
-                        if (val.containsKey('state') || val.containsKey('value')) {
-                           String s = (val['state'] ?? val['value']).toString().toUpperCase();
-                           if (s == 'ON' || s == 'TRUE' || s == '1') { hasEp = true; totalEndpoints++; onCount++; }
-                           else if (s == 'OFF' || s == 'FALSE' || s == '0') { hasEp = true; totalEndpoints++; offCount++; }
-                        } else {
-                           val.forEach((k, v) => countRecursive(k, v));
-                        }
-                        return;
-                      }
-                      
-                      String s = val.toString().toUpperCase();
-                      if (s == 'ON' || s == 'TRUE' || s == '1') {
-                        hasEp = true; totalEndpoints++; onCount++;
-                      } else if (s == 'OFF' || s == 'FALSE' || s == '0') {
-                        hasEp = true; totalEndpoints++; offCount++;
-                      }
-                    }
-
-                    if (stateMap.isNotEmpty) stateMap.forEach((k, v) => countRecursive(k, v));
-                    if (!hasEp) { totalEndpoints++; offCount++; }
-                  }
-                  
-                  home['on_count'] = onCount; home['off_count'] = offCount; home['total_endpoints'] = totalEndpoints; home['raw_devices'] = devs;
-                }
-              }));
-              if (mounted) setState(() => _allHomesForSuperUser = homes);
-            }
-            if (_selectedHomeForSuperUser != null) { await _fetchDevicesForHome(_selectedHomeForSuperUser!['home_id'], token); }
+          // [SINGLE FETCH — CHỐNG N+1] MỘT lần gọi duy nhất gộp Homes + Rooms + Devices,
+          // thay cho chuỗi "GET /homes rồi loop GET /homes/:id/devices từng nhà" (nghẽn 4G).
+          final sync = await DashboardSyncService().fetch();
+          if (!mounted) return;
+          if (sync.error != null) {
+            // Mạng chậm/timeout -> báo nhẹ, KHÔNG sập màn hình
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(sync.error!), backgroundColor: Colors.orange));
           } else {
-            if (homeId.isNotEmpty) { await _fetchDevicesForHome(homeId, token); }
+            // Index nhà theo home_id để phân phối nhanh xuống các provider
+            final Map<String, Map<String, dynamic>> homeById = {
+              for (final h in sync.homes)
+                if (h is Map) (h['home_id'] ?? '').toString(): Map<String, dynamic>.from(h),
+            };
+
+            if (role == 'SUPER_USER') {
+              final homes = sync.homes.whereType<Map>().map((h) => Map<String, dynamic>.from(h)).toList();
+              for (final h in homes) { _annotateHomeCounts(h); } // đếm on/off từ devices lồng sẵn
+              if (mounted) setState(() => _allHomesForSuperUser = homes);
+              if (_selectedHomeForSuperUser != null) {
+                final hid = _selectedHomeForSuperUser!['home_id'].toString();
+                final h = homeById[hid];
+                if (h != null) {
+                  await _fetchDevicesForHome(hid, token,
+                      preloadedDevices: (h['devices'] as List?) ?? const [],
+                      preloadedRooms: (h['rooms'] as List?) ?? const []);
+                }
+              }
+            } else {
+              final h = homeById[homeId];
+              if (homeId.isNotEmpty && h != null) {
+                await _fetchDevicesForHome(homeId, token,
+                    preloadedDevices: (h['devices'] as List?) ?? const [],
+                    preloadedRooms: (h['rooms'] as List?) ?? const []);
+              }
+            }
           }
           if (mounted) { Provider.of<NotificationProvider>(context, listen: false).fetchHistory(); }
         }
@@ -226,19 +208,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (mounted && !isSilent) setState(() => _isLoadingDevices = false);
   }
 
-  Future<void> _fetchDevicesForHome(String homeId, String token) async {
+  // [SINGLE FETCH] Đếm số nút bật/tắt của một NHÀ từ mảng devices lồng sẵn (dùng cho thẻ
+  // nhà của SUPER_USER) — thay cho việc gọi API thiết bị riêng từng nhà. Ghi kết quả vào
+  // chính map home: on_count/off_count/total_endpoints/raw_devices.
+  void _annotateHomeCounts(Map<String, dynamic> home) {
+    final List devs = (home['devices'] as List?) ?? const [];
+    int onCount = 0, offCount = 0, totalEndpoints = 0;
+    for (var d in devs) {
+      final String dType = '${d['fw_type'] ?? ''} ${d['category'] ?? ''} ${d['type'] ?? ''}'.toUpperCase();
+      if (dType.contains('HUB') || dType.contains('SENSOR')) continue; // Hub/Cảm biến không tính bật/tắt
+      var rawState = d['state'] ?? d['state_data'] ?? d['properties'] ?? {};
+      Map<String, dynamic> stateMap = rawState is String ? (jsonDecode(rawState) ?? {}) : Map<String, dynamic>.from(rawState ?? {});
+      bool hasEp = false;
+      void countRecursive(String key, dynamic val) {
+        final kLow = key.toLowerCase();
+        const ignored = ['ip', 'mac', 'rssi', 'signal', 'wifi', 'serial', 'version', 'fw', 'firmware', 'update', 'reset', 'restart', 'online', 'timestamp', 'time', 'led', 'config', 'status', 'ping'];
+        for (var ig in ignored) { if (kLow == ig || kLow.contains(ig)) return; }
+        if (val is Map) {
+          if (val.containsKey('state') || val.containsKey('value')) {
+            String s = (val['state'] ?? val['value']).toString().toUpperCase();
+            if (s == 'ON' || s == 'TRUE' || s == '1') { hasEp = true; totalEndpoints++; onCount++; }
+            else if (s == 'OFF' || s == 'FALSE' || s == '0') { hasEp = true; totalEndpoints++; offCount++; }
+          } else {
+            val.forEach((k, v) => countRecursive(k, v));
+          }
+          return;
+        }
+        String s = val.toString().toUpperCase();
+        if (s == 'ON' || s == 'TRUE' || s == '1') { hasEp = true; totalEndpoints++; onCount++; }
+        else if (s == 'OFF' || s == 'FALSE' || s == '0') { hasEp = true; totalEndpoints++; offCount++; }
+      }
+      if (stateMap.isNotEmpty) stateMap.forEach((k, v) => countRecursive(k, v));
+      if (!hasEp) { totalEndpoints++; offCount++; }
+    }
+    home['on_count'] = onCount; home['off_count'] = offCount; home['total_endpoints'] = totalEndpoints; home['raw_devices'] = devs;
+  }
+
+  /// Nạp thiết bị + phòng + ngữ cảnh của MỘT nhà. [preloadedDevices]/[preloadedRooms] != null
+  /// (từ single-fetch dashboard/sync) -> dùng thẳng, KHÔNG gọi HTTP (chống N+1); null -> fallback
+  /// gọi API riêng như cũ (dùng cho các lần refresh lẻ ngoài luồng khởi tạo).
+  Future<void> _fetchDevicesForHome(String homeId, String token, {List<dynamic>? preloadedDevices, List<dynamic>? preloadedRooms}) async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'), headers: {'Authorization': 'Bearer $token'});
+      List<dynamic> devices;
+      if (preloadedDevices != null) {
+        devices = preloadedDevices;
+      } else {
+        final response = await http.get(Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'), headers: {'Authorization': 'Bearer $token'});
+        if (!mounted) return;
+        if (response.statusCode != 200) return;
+        devices = jsonDecode(response.body);
+      }
       if (!mounted) return; // màn hình đã đóng trong lúc chờ mạng -> bỏ, không đụng context
 
-      // [PHÒNG + NGỮ CẢNH — API THẬT] Nạp phòng + ngữ cảnh của nhà đang mở SONG SONG
-      // với thiết bị (fire-and-forget: provider tự notify khi về tới, tab tự vẽ lại).
-      // Chạy cho CẢ user thường lẫn SUPER_USER vừa chọn nhà — homeId ở đây luôn là nhà đang xem.
-      Provider.of<RoomGroupProvider>(context, listen: false).fetchRooms(homeId);
+      // [PHÒNG] Rooms: có preloaded (sync) thì nạp thẳng khỏi gọi API; không thì fetch riêng.
+      // [NGỮ CẢNH] Scenes KHÔNG nằm trong sync -> luôn fetch riêng (fire-and-forget).
+      if (preloadedRooms != null) {
+        Provider.of<RoomGroupProvider>(context, listen: false).ingestRooms(homeId, preloadedRooms);
+      } else {
+        Provider.of<RoomGroupProvider>(context, listen: false).fetchRooms(homeId);
+      }
       Provider.of<AutomationProvider>(context, listen: false).fetchScenes(homeId);
 
-      if (response.statusCode == 200) {
-        List<dynamic> devices = jsonDecode(response.body);
+      {
         final dpsProvider = Provider.of<DeviceProvider>(context, listen: false);
 
         for (var device in devices) {
@@ -767,6 +798,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // [NHÓM] Mở màn chỉnh sửa nhóm — RESPONSIVE: PC mở dạng Dialog nổi giữa (KHÔNG che Sidebar),
   // Mobile mở full màn hình như cũ. Truyền danh sách công tắc thật để pick thêm thành viên.
+  // [NHÓM] Điều khiển TẤT CẢ thành viên của một nhóm ảo về cùng trạng thái [turnOn].
+  // Đây là fix bug "bấm nút nhóm không tác dụng": trước đây thẻ nhóm bắn lệnh vào MAC ảo
+  // "GROUP_xxx" (Backend không định tuyến được); nay lặp qua memberMacs, gửi lệnh TUYỆT ĐỐI
+  // cho từng thiết bị con qua endpoint 'all' (SSW04 -> cả 4 relay; SSW01/quạt bỏ qua endpoint,
+  // chỉ đọc value — đúng payload nút master đơn lẻ vẫn đang chạy tốt).
+  void _toggleGroup(DeviceGroup g, bool turnOn) {
+    if (g.memberMacs.isEmpty) return;
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+    for (final memberMac in g.memberMacs) {
+      deviceProv.setSwitchState(memberMac, 'all', turnOn);
+    }
+    // Không optimistic: icon nhóm sáng/tắt theo state feedback thật từ các thành viên
+    // (group section watch DeviceProvider -> tự vẽ lại khi member đổi trạng thái).
+  }
+
   void _openEditGroup(String groupMac) {
     final avail = _currentHomeDevices.map((d) => {
       'mac': (d['mac_address'] ?? d['mac'] ?? '').toString(),
@@ -1134,15 +1180,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
         int count = notifProvider.unreadCount;
         return Stack(
           clipBehavior: Clip.none,
+          alignment: Alignment.center,
           children: [
-            IconButton(icon: Icon(Icons.notifications_none_rounded, color: textMain), onPressed: () => _showNotificationPanel(textMain, textSub)),
+            // [UX — TOUCH TARGET 48x48 chuẩn Material] Icon vẫn 24 (KHÔNG to thêm) nhưng vùng
+            // chạm đảm bảo tối thiểu 48x48: padding 12 + constraints ép tối thiểu 48 + splashRadius
+            // 24 cho ripple tròn đầy. Bấm dễ trúng trên cả cảm ứng lẫn chuột, layout không xô lệch.
+            IconButton(
+              icon: Icon(Icons.notifications_none_rounded, color: textMain),
+              iconSize: 24,
+              padding: const EdgeInsets.all(12),
+              splashRadius: 24,
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              tooltip: 'Thông báo',
+              onPressed: () => _showNotificationPanel(textMain, textSub),
+            ),
             if (count > 0)
               Positioned(
-                top: 8, right: 8,
-                child: Container(
-                  padding: const EdgeInsets.all(5), decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
-                  child: Text(count > 9 ? '9+' : '$count', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold, height: 1))
-                )
+                top: 6, right: 6,
+                // IgnorePointer: badge KHÔNG hứng cú chạm -> mọi tap quanh nó đều xuống nút chuông
+                child: IgnorePointer(
+                  child: Container(
+                    padding: const EdgeInsets.all(5), decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+                    child: Text(count > 9 ? '9+' : '$count', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold, height: 1)),
+                  ),
+                ),
               )
           ],
         );
@@ -2616,6 +2677,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // ====================================================================
         Builder(builder: (context) {
           final groups = context.watch<RoomGroupProvider>().groups;
+          // Watch DeviceProvider để trạng thái tổng của nhóm cập nhật LIVE khi thành viên đổi
+          final deviceProv = context.watch<DeviceProvider>();
           if (groups.isEmpty) return const SizedBox.shrink();
           return Padding(
             padding: const EdgeInsets.only(top: 8.0),
@@ -2628,16 +2691,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.0),
                 itemBuilder: (context, index) {
                   final g = groups[index];
+                  // [ĐỒNG BỘ UI NHÓM] Sáng nếu CÓ bất kỳ thành viên nào đang bật; tắt khi TẤT CẢ tắt
+                  final bool groupOn = g.memberMacs.any((m) => deviceProv.anyEndpointOn(m));
                   return SmartSwitchCard(
                     key: ValueKey('group_${g.mac}_${g.memberMacs.length}'),
                     mac: g.mac,
                     endpointKey: 'all',
                     backendName: g.name,
-                    initialStatus: false,
+                    initialStatus: groupOn,
                     provider: provider,
                     onRefresh: _handleRefresh,
                     rawDeviceData: const {},
                     isGroup: true,
+                    onGroupToggle: (turnOn) => _toggleGroup(g, turnOn),
                     onEditGroup: () => _openEditGroup(g.mac),
                     onAssignRoom: () => _assignSingleRoom(g.mac), // [PHÒNG] nhóm cũng gán được vào phòng
                     onRename: () => _renameGroup(g.mac, g.name),
@@ -2924,6 +2990,9 @@ class SmartSwitchCard extends StatefulWidget {
   final VoidCallback? onDeviceShare;
   final bool isGroup;               // [NHÓM] true = Công tắc ảo (nhóm) -> hiện badge phân biệt
   final VoidCallback? onEditGroup;  // [NHÓM] Chỉnh sửa nhóm — chỉ non-null khi isGroup
+  // [NHÓM] Bấm nút tổng của nhóm ảo -> điều khiển TẤT CẢ thành viên (turnOn = trạng thái
+  // muốn chuyển tới). non-null CHỈ khi isGroup; nhóm KHÔNG bắn lệnh vào MAC ảo "GROUP_xxx".
+  final void Function(bool turnOn)? onGroupToggle;
 
   const SmartSwitchCard({
     super.key,
@@ -2942,6 +3011,7 @@ class SmartSwitchCard extends StatefulWidget {
     this.onDeviceTimer, this.onDeviceHistory, this.onDeviceAutomation, this.onDeviceShare,
     this.isGroup = false,
     this.onEditGroup,
+    this.onGroupToggle,
   });
 
   @override
@@ -2968,6 +3038,14 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
     }
     // Thiết bị Ngoại tuyến: khóa hẳn điều khiển (vẫn cho long-press mở menu để xóa/ẩn)
     if (widget.isOffline) return;
+
+    // [NHÓM] Nút tổng nhóm ảo: KHÔNG bắn lệnh vào MAC ảo "GROUP_xxx" (Backend không định
+    // tuyến được) — mà lặp điều khiển TỪNG thành viên qua callback. isOnline = trạng thái
+    // tổng hiện tại (bật nếu có bất kỳ thành viên bật) -> !isOnline = trạng thái muốn chuyển tới.
+    if (widget.isGroup) {
+      widget.onGroupToggle?.call(!isOnline);
+      return;
+    }
 
     // [REAL-STATE] KHÔNG lật màu ngay (bỏ Optimistic UI): chỉ bắn lệnh qua Bridge,
     // icon chỉ sáng khi rơ-le đóng cắt thật và state ngược về qua MQTT —

@@ -25,6 +25,7 @@ const List<IconData> kSceneStepIcons = [
   Icons.notifications_active_outlined, Icons.timelapse, Icons.lightbulb_outline,
   Icons.tv, Icons.power_settings_new, Icons.blinds_closed, Icons.flash_on,
   Icons.thermostat, // điều kiện thời tiết theo ngưỡng nhiệt độ
+  Icons.air, Icons.power_off, // hành động quạt: tốc độ / tắt
 ];
 
 /// Tra IconData từ codePoint qua bảng CONST thay vì dựng `IconData(codePoint,...)` động

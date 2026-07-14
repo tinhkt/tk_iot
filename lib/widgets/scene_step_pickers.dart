@@ -44,7 +44,8 @@ class _EndpointOption {
   final String endpoint;
   final String name;
   final bool online;
-  const _EndpointOption({required this.mac, required this.endpoint, required this.name, required this.online});
+  final bool isFan; // true -> hiện thêm bước chọn Tốc độ (Số 1/2/3) thay vì chỉ Bật/Tắt
+  const _EndpointOption({required this.mac, required this.endpoint, required this.name, required this.online, this.isFan = false});
 }
 
 /// Tầng chọn thiết bị/kênh — DÙNG CHUNG cho Action lẫn Condition 'device_state'.
@@ -59,7 +60,9 @@ Future<_EndpointOption?> _pickEndpoint(BuildContext context, {required String ti
       final String last4 = mac.length >= 4 ? mac.substring(mac.length - 4) : mac;
       final String? backendName = d.nameOf(ep);
       final String name = (backendName != null && backendName.trim().isNotEmpty) ? backendName : '$ep · $last4';
-      options.add(_EndpointOption(mac: mac, endpoint: ep, name: name, online: d.online));
+      // Quạt: Backend gắn type "fan" HOẶC endpoint có khóa tốc độ (_speed) -> render UI Tốc độ
+      final bool isFan = d.typeOf(ep) == 'fan' || d.dps.containsKey('${ep}_speed');
+      options.add(_EndpointOption(mac: mac, endpoint: ep, name: name, online: d.online, isFan: isFan));
     }
   });
   options.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -181,6 +184,12 @@ Future<SceneStep?> showActionPicker(BuildContext context) async {
   final _EndpointOption? picked = await _pickEndpoint(context, title: 'Chọn thiết bị');
   if (picked == null || !context.mounted) return null;
 
+  // [UI ĐỘNG THEO LOẠI THIẾT BỊ] Quạt -> chọn Tốc độ (Số 1/2/3); còn lại -> Bật/Tắt.
+  // Tương lai mở rộng dimmer (độ sáng) / điều hòa (nhiệt độ) theo cùng khuôn action/value.
+  if (picked.isFan) {
+    return _pickFanAction(context, picked);
+  }
+
   final String? command = await _pickOnOff(context, title: picked.name);
   if (command == null) return null;
 
@@ -188,7 +197,34 @@ Future<SceneStep?> showActionPicker(BuildContext context) async {
   return SceneStep(
     Icons.power_settings_new,
     '$verb ${picked.name}',
-    params: {'mac': picked.mac, 'endpoint': picked.endpoint, 'command': command},
+    // Khuôn lệnh LINH HOẠT {action,value} — Backend fan-out bắn nguyên khối xuống firmware
+    params: {'mac': picked.mac, 'endpoint': picked.endpoint, 'action': 'set', 'value': command},
+  );
+}
+
+/// Chọn hành động cho QUẠT: Tắt / Số 1 / Số 2 / Số 3 -> params {action:"speed", value:"0..3"}.
+Future<SceneStep?> _pickFanAction(BuildContext context, _EndpointOption picked) async {
+  const List<(int, String)> speeds = [(0, 'Tắt'), (1, 'Số 1'), (2, 'Số 2'), (3, 'Số 3')];
+  final int? speed = await _showGlassPicker<int>(
+    context,
+    title: 'Tốc độ ${picked.name}',
+    body: (ctx) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: speeds
+          .map((s) => _optionTile(ctx,
+              icon: s.$1 == 0 ? Icons.power_off : Icons.air,
+              title: s.$2,
+              onTap: () => Navigator.pop(ctx, s.$1)))
+          .toList(),
+    ),
+  );
+  if (speed == null) return null;
+
+  final String label = speed == 0 ? 'Tắt ${picked.name}' : 'Bật ${picked.name} — Số $speed';
+  return SceneStep(
+    Icons.air,
+    label,
+    params: {'mac': picked.mac, 'endpoint': picked.endpoint, 'action': 'speed', 'value': '$speed'},
   );
 }
 

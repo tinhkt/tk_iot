@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/automation_provider.dart';
+import '../../providers/device_provider.dart';
 import '../../widgets/adaptive_navigation.dart';
 import 'create_automation_screen.dart';
 
@@ -121,11 +122,20 @@ class _SceneList extends StatelessWidget {
                         icon: const Icon(Icons.play_arrow_rounded, size: 18),
                         label: const Text('Chạy'),
                         onPressed: () async {
+                          // Giữ ref DeviceProvider TRƯỚC await — nó sống suốt vòng đời app
+                          // nên gọi lại an toàn dù thẻ này đã bị dispose sau 1.5s.
+                          final deviceProvider = context.read<DeviceProvider>();
                           final err = await provider.executeScene(s.id);
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                               content: Text(err ?? 'Đang chạy ngữ cảnh "${s.name}"'),
                               backgroundColor: err == null ? tkGreen : Colors.redAccent));
+                          // [FALLBACK ĐỒNG BỘ UI] Scene chạy OK -> phần cứng đổi trạng thái +
+                          // bắn state feedback qua MQTT (UI tự cập nhật). Nhưng phòng khi sóng
+                          // về trễ/rớt: sau 1.5s chủ động ép kéo lại trạng thái thật từ Server.
+                          if (err == null) {
+                            Future.delayed(const Duration(milliseconds: 1500), deviceProvider.requestRefresh);
+                          }
                         },
                       )
                     // Tự động -> Switch bật/tắt (optimistic — provider tự hoàn tác khi lỗi)
