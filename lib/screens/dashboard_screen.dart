@@ -203,7 +203,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
           if (mounted) { Provider.of<NotificationProvider>(context, listen: false).fetchHistory(); }
         }
-      } catch (e) { if (kDebugMode) print("Lỗi giải mã token: $e"); }
+      } catch (e, st) {
+        // [FIX NUỐT LỖI] Trước đây MỌI lỗi (kể cả parse response sync) bị gán nhãn sai
+        // "Lỗi giải mã token" rồi nuốt -> thiết bị không lên mà không rõ vì sao. Nay log
+        // rõ loại lỗi + stack trace để lộ đúng dòng hỏng (thường là parse/mapping JSON).
+        debugPrint('DASHBOARD_INIT_ERROR: ${e.runtimeType}: $e');
+        debugPrint('DASHBOARD_INIT_STACK: $st');
+      }
     }
     if (mounted && !isSilent) setState(() => _isLoadingDevices = false);
   }
