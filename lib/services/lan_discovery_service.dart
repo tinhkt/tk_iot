@@ -68,11 +68,32 @@ class LanDiscoveryService {
       });
 
       final List<int> payload = utf8.encode(jsonEncode({'cmd': 'discovery'}));
-      final InternetAddress broadcast = InternetAddress('255.255.255.255');
+
+      // [AUDIT MẠNG] Global broadcast 255.255.255.255 bị nhiều router/Android chặn hoặc
+      // máy nhiều card mạng (PC có adapter ảo) phát nhầm interface. Fix: phát THÊM
+      // broadcast ĐỊNH HƯỚNG SUBNET (/24 -> x.y.z.255) cho TỪNG interface IPv4 —
+      // gói dò đi đúng mọi mạng máy đang đứng trong.
+      final targets = <InternetAddress>{InternetAddress('255.255.255.255')};
+      try {
+        for (final iface in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
+          for (final addr in iface.addresses) {
+            final parts = addr.address.split('.');
+            if (parts.length == 4 && parts[0] != '127') {
+              targets.add(InternetAddress('${parts[0]}.${parts[1]}.${parts[2]}.255'));
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) print('⚠️ [LAN SCAN] Không liệt kê được interface (dùng mỗi global broadcast): $e');
+      }
+      if (kDebugMode) {
+        print('📡 [LAN SCAN] BẮT ĐẦU: cổng đích $discoveryPort, cửa sổ ${timeout.inSeconds}s, '
+            'đích broadcast: ${targets.map((t) => t.address).join(", ")}');
+      }
 
       // Phát ngay, rồi nhắc lại mỗi giây trong suốt cửa sổ quét (UDP không đảm bảo tới nơi)
-      _safeSend(payload, broadcast);
-      _retryTimer = Timer.periodic(const Duration(seconds: 1), (_) => _safeSend(payload, broadcast));
+      _safeSend(payload, targets);
+      _retryTimer = Timer.periodic(const Duration(seconds: 1), (_) => _safeSend(payload, targets));
 
       // Hết thời gian -> dừng, giữ nguyên kết quả đã có
       _timeoutTimer = Timer(timeout, stop);
@@ -82,11 +103,13 @@ class LanDiscoveryService {
     }
   }
 
-  void _safeSend(List<int> payload, InternetAddress broadcast) {
-    try {
-      _socket?.send(payload, broadcast, discoveryPort);
-    } catch (e) {
-      if (kDebugMode) print('⚠️ [LAN SCAN] Lỗi gửi broadcast: $e');
+  void _safeSend(List<int> payload, Set<InternetAddress> targets) {
+    for (final t in targets) {
+      try {
+        _socket?.send(payload, t, discoveryPort);
+      } catch (e) {
+        if (kDebugMode) print('⚠️ [LAN SCAN] Lỗi gửi broadcast tới ${t.address}: $e');
+      }
     }
   }
 
@@ -97,6 +120,13 @@ class LanDiscoveryService {
 
       final String mac = (decoded['mac'] ?? '').toString().replaceAll(':', '').toUpperCase();
       if (mac.isEmpty) return; // gói không phải phản hồi thiết bị (vd chính gói broadcast của ta)
+
+      if (kDebugMode) {
+        if (!_found.containsKey(mac)) {
+          print('📶 [LAN SCAN] NHẬN phản hồi từ $mac @ ${dg.address.address} '
+              '(type: ${decoded['fw_type'] ?? decoded['category'] ?? '?'})');
+        }
+      }
 
       // KHỬ TRÙNG theo MAC: thiết bị trả lời nhiều lần vẫn chỉ 1 mục
       _found[mac] = LanDevice(
@@ -126,6 +156,10 @@ class LanDiscoveryService {
     _socket = null;
     if (_scanning) {
       _scanning = false;
+      if (kDebugMode) {
+        print('📡 [LAN SCAN] KẾT THÚC: tìm thấy ${_found.length} thiết bị '
+            '(${_found.keys.join(", ")})');
+      }
       _emit(); // báo UI đã dừng (kèm danh sách cuối cùng)
     }
   }

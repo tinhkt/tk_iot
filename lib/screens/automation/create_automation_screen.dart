@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/automation_provider.dart';
+import '../../services/constraint_engine.dart';
 import '../../widgets/glass_popup.dart';
 import '../../widgets/scene_step_pickers.dart';
 
@@ -185,9 +186,45 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
 
   // Hành động: thiết bị THẬT từ kho DPS -> endpoint -> BẬT/TẮT
   // -> params {"mac","endpoint","command"} đúng khuôn Backend Fan-out MQTT.
+  //
+  // [CONSTRAINT ENGINE] Quy tắc 'scene.actions' (CapabilityRegistry): MỖI ENDPOINT
+  // CHỈ MANG 1 HÀNH ĐỘNG trong một ngữ cảnh — thêm hành động mới cho cùng endpoint
+  // là engine ra lệnh THAY hành động cũ (hết cảnh "bật rồi tắt cùng kênh" xung đột).
+  // Bước không nhắm endpoint (Gửi thông báo, Chờ...) không bị ràng buộc.
   Future<void> _pickAction() async {
     final step = await showActionPicker(context);
-    if (step != null && mounted) setState(() => _actions.add(step));
+    if (step == null || !mounted) return;
+
+    final String? mac = step.params?['mac']?.toString();
+    final String? ep = step.params?['endpoint']?.toString();
+    if (mac != null && ep != null) {
+      // Dịch các action hiện có sang SelectionItem (key = vị trí, scope = mac|endpoint)
+      final current = <SelectionItem>[];
+      final stepByKey = <String, SceneStep>{};
+      for (int i = 0; i < _actions.length; i++) {
+        final m = _actions[i].params?['mac']?.toString();
+        final e = _actions[i].params?['endpoint']?.toString();
+        if (m == null || e == null) continue; // thông báo/delay: ngoài phạm vi quy tắc
+        final item = SelectionItem(key: 'a$i', scopeKey: '$m|$e');
+        current.add(item);
+        stepByKey[item.key] = _actions[i];
+      }
+      final res = ValidationEngine.validateFor('scene.actions',
+          current: current, attempt: SelectionItem(key: 'new', scopeKey: '$mac|$ep'));
+      if (!res.allowed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res.reason ?? 'Vi phạm quy tắc ngữ cảnh'), backgroundColor: Colors.redAccent));
+        return;
+      }
+      if (res.operations.isNotEmpty) {
+        final doomed = {for (final op in res.operations) stepByKey[op.targetKey]};
+        setState(() => _actions.removeWhere(doomed.contains));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Kênh này đã có hành động — đã thay bằng hành động mới'),
+            backgroundColor: Colors.orange));
+      }
+    }
+    setState(() => _actions.add(step));
   }
 
   void _pickIcon() {

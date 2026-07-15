@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart' show CupertinoTimerPicker, CupertinoTimerPickerMode, CupertinoTheme, CupertinoThemeData, CupertinoTextThemeData;
 import 'package:flutter/material.dart';
 
+import '../../services/constraint_engine.dart';
 import '../../services/schedule_service.dart';
 import '../../widgets/glass_popup.dart';
 
@@ -391,11 +392,28 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
                     icon: const Icon(Icons.save_outlined),
                     label: Text(editing != null ? 'Lưu thay đổi' : 'Thêm lịch'),
                     onPressed: () async {
+                      // [CONSTRAINT ENGINE] Quy tắc 'schedule.times': mỗi mốc giờ chỉ 1 lịch
+                      // (2 lịch trùng giờ = xung đột ON/OFF không xác định) — chặn NGAY tại
+                      // đây trước khi gọi API; sửa lịch thì loại chính nó khỏi phép so.
+                      final String newTime = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+                      final conflict = ValidationEngine.validateFor('schedule.times',
+                          current: [
+                            for (final s in _schedules)
+                              if (s.id != (editing?.id ?? '')) SelectionItem(key: 's${s.id}', scopeKey: s.time),
+                          ],
+                          attempt: SelectionItem(key: 'new', scopeKey: newTime));
+                      if (!conflict.allowed) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text(conflict.reason ?? 'Trùng giờ với lịch khác'),
+                            backgroundColor: Colors.redAccent));
+                        return; // giữ nguyên editor để user chỉnh lại giờ
+                      }
+
                       Navigator.pop(ctx);
                       // API THẬT: POST /devices/:mac/schedules (upsert theo id; id rỗng = tạo mới)
                       final (saved, err) = await _scheduleApi.saveSchedule(widget.mac, {
                         'id': editing?.id ?? '',
-                        'time': '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+                        'time': newTime,
                         'repeat_days': repeat,
                         'action': turnOn ? 'ON' : 'OFF',
                         'is_enabled': editing?.isEnabled ?? true,

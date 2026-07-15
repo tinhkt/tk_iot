@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/api_service.dart';
+import '../services/constraint_engine.dart';
 import '../services/secure_storage_service.dart';
 
 /// Phòng (Room) — nay là bản chiếu của bảng SQL `rooms` bên Backend.
@@ -42,44 +43,15 @@ class GroupMemberRef {
 }
 
 // ============================================================================
-// ⚖️ CONSTRAINT ENGINE — QUY TẮC THÀNH VIÊN THEO LOẠI NHÓM (KHÔNG HARD-CODE THIẾT BỊ)
+// ⚖️ GROUP CONSTRAINT — ADAPTER MỎNG TRÊN UNIVERSAL VALIDATION ENGINE
 // ============================================================================
-// UI KHÔNG được tự chứa if-else theo loại thiết bị/nhóm: mọi quyết định
-// "được thêm không / phải tự bỏ kênh nào trước" đều hỏi engine này.
-// Thêm kịch bản nhóm mới (vd "đèn màu chỉ 1 kênh") = thêm MỘT entry vào
-// [GroupConstraint.byGroupType] — không đụng một dòng UI nào. Bảng này là bản
-// chiếu 1:1 của groupConstraints bên Backend Go (server cưỡng chế lại lần cuối).
+// Quy tắc thành viên nhóm KHÔNG còn nằm ở đây: nguồn sự thật là
+// CapabilityRegistry['group.{groupType}'] trong lib/services/constraint_engine.dart
+// (engine tổng quát dùng chung cho Nhóm / Scene actions / Lịch hẹn...).
+// Adapter này chỉ dịch GroupMemberRef <-> SelectionItem để giữ nguyên API cho UI:
+// thêm loại nhóm mới = thêm entry Registry, KHÔNG đụng file này lẫn UI.
 
-/// Bộ ràng buộc của một loại nhóm.
-class GroupConstraint {
-  /// false = mỗi thiết bị chỉ được góp tối đa 1 kênh.
-  final bool allowMultiEndpointPerDevice;
-
-  /// Trần số kênh mỗi thiết bị (0 = không giới hạn; chỉ xét khi allowMulti=true).
-  final int maxChannelsPerDevice;
-
-  /// true = chọn kênh MỚI tự động bỏ kênh CŨ cùng thiết bị (thay vì từ chối).
-  final bool exclusiveSelection;
-
-  const GroupConstraint({
-    this.allowMultiEndpointPerDevice = true,
-    this.maxChannelsPerDevice = 0,
-    this.exclusiveSelection = false,
-  });
-
-  /// BẢNG QUY TẮC — nguồn sự thật duy nhất phía App.
-  static const Map<String, GroupConstraint> byGroupType = {
-    'normal': GroupConstraint(allowMultiEndpointPerDevice: true),
-    'staircase': GroupConstraint(allowMultiEndpointPerDevice: true),
-    'fan': GroupConstraint(
-        allowMultiEndpointPerDevice: false, maxChannelsPerDevice: 1, exclusiveSelection: true),
-  };
-
-  static GroupConstraint of(String groupType) =>
-      byGroupType[groupType] ?? const GroupConstraint();
-}
-
-/// Phán quyết của engine cho một lần tick chọn thành viên.
+/// Phán quyết cho một lần tick chọn thành viên (API ổn định cho UI).
 class MemberResolution {
   final bool allowed;
   /// Các thành viên engine RA LỆNH bỏ trước khi thêm (vd nhóm Quạt auto-uncheck kênh cũ).
@@ -92,34 +64,29 @@ class MemberResolution {
   const MemberResolution.denied(String reason) : this._(false, const [], reason);
 }
 
-/// Engine THUẦN TÚY (không state, không UI): kiểm tra [attempt] trên nền [current]
-/// theo quy tắc của [groupType].
 class GroupConstraintEngine {
   static MemberResolution resolve({
     required String groupType,
     required List<GroupMemberRef> current,
     required GroupMemberRef attempt,
   }) {
-    if (current.any((m) => m.key == attempt.key)) {
-      return const MemberResolution.denied('Kênh này đã có trong nhóm');
+    // Dịch sang ngôn ngữ trung tính của engine: key = MAC|endpoint, scope = MAC
+    final res = ValidationEngine.validateFor(
+      'group.$groupType',
+      current: [for (final m in current) SelectionItem(key: m.key, scopeKey: m.mac)],
+      attempt: SelectionItem(key: attempt.key, scopeKey: attempt.mac),
+    );
+    if (!res.allowed) {
+      // Việt hóa câu mặc định theo ngữ cảnh nhóm
+      final reason = res.reason == 'Mục này đã được chọn' ? 'Kênh này đã có trong nhóm' : res.reason;
+      return MemberResolution.denied(reason ?? 'Vi phạm quy tắc nhóm');
     }
-    final c = GroupConstraint.of(groupType);
-    final sameDevice = current.where((m) => m.mac == attempt.mac).toList();
-    if (sameDevice.isEmpty) return const MemberResolution.allowedWith();
-
-    // Trần kênh/thiết bị: allowMulti=false nghĩa là trần 1, bất kể maxChannels
-    final int limit = !c.allowMultiEndpointPerDevice
-        ? 1
-        : (c.maxChannelsPerDevice > 0 ? c.maxChannelsPerDevice : 0);
-    if (limit == 0 || sameDevice.length < limit) return const MemberResolution.allowedWith();
-
-    if (c.exclusiveSelection) {
-      // Tự đá đủ số kênh CŨ NHẤT để vừa trần sau khi thêm kênh mới
-      final removeCount = sameDevice.length - limit + 1;
-      return MemberResolution.allowedWith(sameDevice.take(removeCount).toList());
-    }
-    return MemberResolution.denied(
-        'Loại nhóm này chỉ cho phép $limit kênh mỗi thiết bị — hãy bỏ bớt kênh cũ trước');
+    final uncheckKeys = {
+      for (final op in res.operations)
+        if (op.op == SelectionOp.uncheck) op.targetKey,
+    };
+    return MemberResolution.allowedWith(
+        current.where((m) => uncheckKeys.contains(m.key)).toList());
   }
 }
 
@@ -172,6 +139,15 @@ class DeviceGroup {
         if (seen.add(ref.key)) members.add(ref);
       }
     }
+    // [SELF-HEAL — WHOLE vs CHANNEL] Bản ghi hỗn hợp từ server đời cũ: cùng một MAC
+    // vừa có member CẢ THIẾT BỊ (endpoint '') vừa có KÊNH LẺ -> toggle sẽ bắn 'all'
+    // + từng kênh làm SSW04 bật cả 4 relay. Kênh lẻ THẮNG, member '' bị loại ngay khi nạp.
+    final hasChannel = <String>{
+      for (final m in members)
+        if (m.endpoint.isNotEmpty) m.mac,
+    };
+    members.removeWhere((m) => m.endpoint.isEmpty && hasChannel.contains(m.mac));
+
     return DeviceGroup(
       mac: (json['mac'] ?? '').toString(),
       name: (json['name'] ?? '').toString(),
@@ -530,11 +506,22 @@ class RoomGroupProvider extends ChangeNotifier {
       if (res.statusCode != 200) return _errorFrom(res, 'Không tải được danh sách nhóm');
 
       final body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      _groups = (body['groups'] as List? ?? [])
-          .whereType<Map>()
+      final rawGroups = (body['groups'] as List? ?? []).whereType<Map>().toList();
+      _groups = rawGroups
           .map((e) => DeviceGroup.fromJson(Map<String, dynamic>.from(e)))
           .toList();
-      if (kDebugMode) print('🧩 [GROUPS] Server trả ${_groups.length} nhóm (home $homeId)');
+      if (kDebugMode) {
+        print('🧩 [GROUPS] Server trả ${_groups.length} nhóm (home $homeId)');
+        // [PHÁT HIỆN SERVER V1] Nhóm có device_macs nhưng KHÔNG có key 'members'
+        // -> binary backend đời cũ: mọi endpoint đã lưu sẽ quay về '' (cả thiết bị)
+        for (final e in rawGroups) {
+          final macs = e['device_macs'] as List?;
+          if (e['members'] is! List && macs != null && macs.isNotEmpty) {
+            print('🚨 [GROUPS] Nhóm ${e['mac']} trả về theo SCHEMA V1 (không có "members") '
+                '— endpoint từng lưu đã thất lạc phía server. CẦN go build + deploy backend.');
+          }
+        }
+      }
       notifyListeners();
       return null;
     } catch (e) {
@@ -608,17 +595,39 @@ class RoomGroupProvider extends ChangeNotifier {
   /// thành viên biến mất NGAY trước mắt kèm log — không còn cảnh "tưởng đã lưu".
   Future<String?> _pushMembers(DeviceGroup g) async {
     try {
+      final sentMembers = g.membersJson();
+      if (kDebugMode) {
+        // [SOI PAYLOAD] Chứng cứ phía gửi: endpoint có mặt trong body PUT hay không
+        print('🧩 [GROUPS->PUT] ${g.mac}: ${jsonEncode(sentMembers)}');
+      }
       final res = await http.put(
         Uri.parse('$_apiBase/groups/${Uri.encodeComponent(g.mac)}'),
         headers: await _authHeaders(),
         body: jsonEncode({
           'home_id': _homeId,
-          'members': g.membersJson(),
+          'members': sentMembers,
           'device_macs': g.memberMacs.toList(),
         }),
       );
       if (res.statusCode != 200) return _errorFrom(res, 'Không lưu được thành viên nhóm');
-      if (kDebugMode) print('🧩 [GROUPS] Đã lưu ${g.memberMacs.length} thành viên nhóm ${g.mac}');
+      if (kDebugMode) {
+        // [PHÁT HIỆN SERVER V1] Đối chiếu echo: ta GỬI endpoint mà server trả về group
+        // KHÔNG có members -> binary đang chạy là schema cũ, endpoint bị vứt ở server.
+        try {
+          final body = jsonDecode(utf8.decode(res.bodyBytes));
+          final echoed = (body is Map ? body['group'] : null);
+          final echoedMembers = (echoed is Map ? echoed['members'] : null);
+          final bool sentEndpoints = sentMembers.any((m) => (m['endpoint'] ?? '').isNotEmpty);
+          if (sentEndpoints && (echoedMembers is! List || echoedMembers.isEmpty)) {
+            print('🚨 [GROUPS] SERVER ĐANG CHẠY SCHEMA V1: đã gửi members kèm endpoint '
+                'nhưng server không echo lại "members" — endpoint bị VỨT phía server. '
+                'CẦN go build + deploy backend, không phải lỗi serialization client.');
+          } else {
+            print('🧩 [GROUPS<-ECHO] ${g.mac}: ${jsonEncode(echoedMembers)}');
+          }
+        } catch (_) {}
+        print('🧩 [GROUPS] Đã lưu ${g.memberMacs.length} thành viên nhóm ${g.mac}');
+      }
       if (_homeId.isNotEmpty) fetchGroups(_homeId); // hội tụ về sự thật đã persist
       return null;
     } catch (e) {

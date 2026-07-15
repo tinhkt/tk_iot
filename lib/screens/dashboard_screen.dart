@@ -437,12 +437,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     try {
+      if (kDebugMode) print('🤝 [LINK] Gửi yêu cầu link $mac vào nhà $homeId...');
       final token = await AuthService().getToken();
       final response = await http.post(
         Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: jsonEncode({'mac_address': mac}),
       );
+      if (kDebugMode) print('🤝 [LINK] $mac -> HTTP ${response.statusCode}: ${response.body}');
       if (!mounted) return;
 
       if (response.statusCode == 200) {
@@ -903,7 +905,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (g.members.isEmpty) return;
     final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
     for (final m in g.members) {
-      deviceProv.setSwitchState(m.mac, m.endpoint.isEmpty ? 'all' : m.endpoint, turnOn);
+      // [FALLBACK CHUẨN] targetID = member.endpoint (ID đầy đủ "S_{mac}_2"...);
+      // rỗng (member đời cũ / cả thiết bị) -> 'all' (SSW04: cả 4 kênh; SSW01/quạt chỉ đọc value)
+      final String targetId = m.endpoint.isEmpty ? 'all' : m.endpoint;
+      if (kDebugMode) {
+        print('🕹️ [GROUP TOGGLE] ${g.name}: ${m.mac} endpoint="$targetId" -> ${turnOn ? 'ON' : 'OFF'}'
+            '${m.endpoint.isEmpty ? ' (member kiểu cũ — CẢ THIẾT BỊ; vào Sửa nhóm tick từng kênh nếu muốn per-relay)' : ''}');
+      }
+      deviceProv.setSwitchState(m.mac, targetId, turnOn);
     }
     // Không optimistic: icon nhóm sáng/tắt theo state feedback thật từ các thành viên
     // (group section watch DeviceProvider -> tự vẽ lại khi member đổi trạng thái).
@@ -1184,6 +1193,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // [DISPLAY NAME — CẤM MAC THÔ TRONG THÔNG BÁO] Khử mọi MAC 12-hex còn sót trong nội
+  // dung tin (lịch sử đời cũ trong Redis vẫn mang "(MAC: XXXX)" dù server đã sửa):
+  //   1. Gỡ hậu tố "(MAC: ...)" server phiên bản cũ chèn vào.
+  //   2. MAC trần còn lại -> thay bằng tên thân thiện từ kho DPS (cùng bộ quy tắc
+  //      DeviceProvider.displayNameOf toàn app); thiết bị chưa sync tên -> "Thiết bị lạ".
+  String _friendlyNotifMessage(NotificationItem notif) {
+    String msg = notif.message.replaceAll(RegExp(r'\s*\(MAC:\s*[0-9A-Fa-f]{12}\)'), '');
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+    msg = msg.replaceAllMapped(RegExp(r'\b[0-9A-F]{12}\b'), (m) {
+      final d = deviceProv.deviceOf(m.group(0)!);
+      return d == null ? 'Thiết bị lạ' : d.displayName();
+    });
+    return msg;
+  }
+
   // Hàng thông báo DÙNG CHUNG cho cả popup chuông lẫn tab "Tất cả thông báo":
   //  • Chấm màu bên phải = CHƯA ĐỌC; đọc rồi thì chữ mờ đi (Opacity) đúng chuẩn Tuya/Mi Home.
   //  • Vuốt SANG TRÁI = xóa hẳn (nền đỏ, thùng rác) — gọi provider.dismiss (xóa cả trên Redis).
@@ -1236,7 +1260,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 4.0),
-        child: Text(notif.message, style: TextStyle(color: textSub.withValues(alpha: read ? 0.7 : 1.0), height: 1.4, fontSize: 13)),
+        // [DISPLAY NAME] Nội dung đi qua bộ lọc tên — không bao giờ hiện MAC thô
+        child: Text(_friendlyNotifMessage(notif), style: TextStyle(color: textSub.withValues(alpha: read ? 0.7 : 1.0), height: 1.4, fontSize: 13)),
       ),
       onTap: () {
         // Chạm là đã đọc (kể cả khi không có MAC để deeplink)
