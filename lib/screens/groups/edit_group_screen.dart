@@ -142,83 +142,151 @@ class EditGroupScreen extends StatelessWidget {
 
   // Picker chọn thêm công tắc CHƯA thuộc nhóm — [KÍNH MỜ ĐỒNG BỘ] qua showGlassPopup
   // (PC: dialog giữa màn hình; Mobile: sheet; màu chữ do panel kính ép tương phản)
+  // ==========================================================================
+  // PICKER THÀNH VIÊN — [CONSTRAINT-BASED] danh sách PHẲNG phân cấp MAC > Endpoint
+  // ==========================================================================
+  // Kiến trúc chịu tải 16-32 kênh:
+  //   - Hàng render qua ListView.builder trên danh sách _PickRow đã PHẲNG HÓA
+  //     (header thiết bị + từng kênh) — không lồng ExpansionTile, không rebuild cả cây.
+  //   - Mỗi checkbox kênh là MỘT ĐƠN VỊ ĐỘC LẬP: tick/untick không đụng kênh khác,
+  //     TRỪ KHI GroupConstraintEngine ra lệnh (vd nhóm Quạt auto-uncheck kênh cũ).
+  //   - UI KHÔNG chứa quy tắc: thêm loại nhóm mới chỉ cần thêm entry vào
+  //     GroupConstraint.byGroupType (provider) — file này không phải sửa.
+  //   - Xác nhận một lần -> provider.replaceMembers (một PUT duy nhất).
   void _pickDevices(BuildContext context, RoomGroupProvider provider, DeviceGroup group) {
     final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
 
-    // [MULTI-CHANNEL] Ứng viên tính theo TỪNG KÊNH: thiết bị đa kênh (SSW04, Hub) mà
-    // mới góp 2/4 kênh vào nhóm thì 2 kênh còn lại VẪN là ứng viên hợp lệ.
-    // Loại: MAC ảo nhóm, thiết bị đã vào nhóm kiểu "cả thiết bị" (endpoint rỗng).
-    final candidates = availableDevices.where((d) {
+    // ---- PHẲNG HÓA: MAC > Endpoint ----
+    final rows = <_PickRow>[];
+    for (final d in availableDevices) {
       final mac = (d['mac'] ?? '').toString().toUpperCase();
-      if (mac.isEmpty || mac.startsWith('GROUP_') || group.hasMember(mac)) return false;
-      final eps = deviceProv.deviceOf(mac)?.endpointIds ?? const [];
-      if (eps.length <= 1) return !group.memberMacs.contains(mac); // đơn kênh: còn trống mới hiện
-      return eps.any((ep) => !group.hasMember(mac, ep)); // đa kênh: còn kênh trống là hiện
-    }).toList();
+      if (mac.isEmpty || mac.startsWith('GROUP_')) continue;
+      final name = deviceProv.displayNameOf(mac, fallback: (d['name'] ?? mac).toString());
+      final device = deviceProv.deviceOf(mac);
+      final eps = (device?.endpointIds ?? const []).toList()..sort();
 
-    // Thêm xong một thành viên: đóng picker + báo lỗi đỏ nếu server không persist
-    Future<void> addMember(BuildContext ctx, String mac, String endpoint) async {
-      Navigator.pop(ctx);
-      final err = await provider.addToGroup(group.mac, mac, endpoint: endpoint);
-      if (err != null && context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+      if (eps.length <= 1) {
+        // Đơn kênh: một hàng checkbox mang tên thiết bị
+        rows.add(_PickRow.channel(mac: mac, endpoint: eps.isEmpty ? '' : eps.first, label: name, subtitle: mac));
+        continue;
+      }
+      // Đa kênh: header (không checkbox) + từng kênh một hàng độc lập
+      rows.add(_PickRow.header(mac: mac, label: name, subtitle: '$mac • ${eps.length} kênh'));
+      // Thành viên "cả thiết bị" kiểu cũ (endpoint rỗng) của thiết bị đa kênh:
+      // hiện hàng riêng để user thấy và gỡ được (di sản trước multi-channel)
+      if (group.hasMember(mac)) {
+        rows.add(_PickRow.channel(mac: mac, endpoint: '', label: 'Cả thiết bị (kiểu cũ)', subtitle: 'lệnh chung "all" — bỏ tick để chuyển sang từng kênh'));
+      }
+      for (final ep in eps) {
+        final String? epName = device?.nameOf(ep);
+        final String label = (epName != null && epName.trim().isNotEmpty) ? epName.trim() : _channelLabel(ep);
+        rows.add(_PickRow.channel(mac: mac, endpoint: ep, label: label, subtitle: ep));
       }
     }
 
+    // ---- BẢN NHÁP THÀNH VIÊN: copy đầy đủ (giữ floor + thành viên không hiện trong picker) ----
+    final working = [
+      for (final m in group.members) GroupMemberRef(mac: m.mac, endpoint: m.endpoint, floor: m.floor)
+    ];
+
     showGlassPopup(
       context,
-      title: 'Thêm thiết bị vào nhóm',
-      body: (ctx) => candidates.isEmpty
-          ? const Padding(padding: EdgeInsets.fromLTRB(24, 8, 24, 16), child: Text('Không còn thiết bị/kênh nào để thêm.'))
-          : ListView(
-              shrinkWrap: true,
-              children: candidates.map((d) {
-                final mac = (d['mac'] ?? '').toString();
-                // [DISPLAY NAME] danh sách khả dụng cũng ưu tiên tên user đặt từ DPS
-                final name = deviceProv.displayNameOf(mac, fallback: (d['name'] ?? mac).toString());
-                final device = deviceProv.deviceOf(mac);
-                final eps = (device?.endpointIds ?? const []).toList()..sort();
+      title: 'Chọn thành viên nhóm',
+      body: (ctx) => rows.isEmpty
+          ? const Padding(padding: EdgeInsets.fromLTRB(24, 8, 24, 16), child: Text('Không có thiết bị/kênh nào để chọn.'))
+          : StatefulBuilder(
+              builder: (ctx, setSheet) {
+                bool isChecked(_PickRow r) => working.any((m) => m.key == '${r.mac}|${r.endpoint}');
 
-                // ---- THIẾT BỊ ĐƠN KÊNH: một dòng, chạm là thêm (endpoint tường minh nếu biết) ----
-                if (eps.length <= 1) {
-                  return ListTile(
-                    leading: const Icon(Icons.add_circle_outline, color: tkGreen),
-                    title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
-                    onTap: () => addMember(ctx, mac, eps.isEmpty ? '' : eps.first),
-                  );
+                void toggle(_PickRow r) {
+                  final key = '${r.mac}|${r.endpoint}';
+                  if (isChecked(r)) {
+                    setSheet(() => working.removeWhere((m) => m.key == key)); // untick độc lập
+                    return;
+                  }
+                  // [CONSTRAINT ENGINE] mọi lần tick đều xin phán quyết
+                  final attempt = GroupMemberRef(mac: r.mac, endpoint: r.endpoint);
+                  final res = GroupConstraintEngine.resolve(
+                      groupType: group.groupType, current: working, attempt: attempt);
+                  if (!res.allowed) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(res.reason ?? 'Vi phạm quy tắc nhóm'), backgroundColor: Colors.redAccent));
+                    return;
+                  }
+                  setSheet(() {
+                    // Engine ra lệnh bỏ kênh nào thì auto-uncheck đúng kênh đó (vd nhóm Quạt)
+                    working.removeWhere((m) => res.removeFirst.any((x) => x.key == m.key));
+                    working.add(attempt);
+                  });
                 }
 
-                // ---- [MULTI-CHANNEL] THIẾT BỊ ĐA KÊNH: mở rộng chọn riêng từng relay ----
-                return ExpansionTile(
-                  leading: const Icon(Icons.grid_view_rounded, color: tkGreen),
-                  title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('$mac • ${eps.length} kênh — chạm để chọn từng relay',
-                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
-                  iconColor: tkGreen,
-                  collapsedIconColor: tkGreen,
-                  children: eps.map((ep) {
-                    final bool already = group.hasMember(mac, ep);
-                    final String? epName = device?.nameOf(ep);
-                    final String label = (epName != null && epName.trim().isNotEmpty)
-                        ? epName.trim()
-                        : _channelLabel(ep);
-                    return ListTile(
-                      contentPadding: const EdgeInsets.only(left: 40, right: 16),
-                      leading: Icon(already ? Icons.check_circle : Icons.add_circle_outline,
-                          color: already ? Colors.grey : tkGreen, size: 20),
-                      title: Text('$label${already ? '  (đã trong nhóm)' : ''}',
-                          maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontWeight: FontWeight.w600, color: already ? Colors.grey : null)),
-                      subtitle: Text(ep, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
-                      enabled: !already,
-                      onTap: already ? null : () => addMember(ctx, mac, ep),
-                    );
-                  }).toList(),
-                );
-              }).toList(),
+                return Column(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: rows.length,
+                      itemBuilder: (_, i) {
+                        final r = rows[i];
+                        if (r.isHeader) {
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
+                            child: Row(children: [
+                              const Icon(Icons.grid_view_rounded, color: tkGreen, size: 18),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700))),
+                              Text(r.subtitle, style: const TextStyle(fontSize: 10.5)),
+                            ]),
+                          );
+                        }
+                        return CheckboxListTile(
+                          dense: true,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.only(left: r.endpoint.isEmpty && r.subtitle == r.mac ? 16 : 32, right: 16),
+                          activeColor: tkGreen,
+                          value: isChecked(r),
+                          title: Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                          subtitle: Text(r.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10.5)),
+                          onChanged: (_) => toggle(r),
+                        );
+                      },
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 13), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          // MỘT PUT duy nhất cho cả phiên chọn — persist thật + revert nguyên khối khi lỗi
+                          final err = await provider.replaceMembers(group.mac, working);
+                          if (err != null && context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                          }
+                        },
+                        child: Text('Lưu thành viên (${working.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ),
+                ]);
+              },
             ),
     );
   }
+}
+
+/// Một hàng trong picker phẳng hóa: header thiết bị (đa kênh) hoặc checkbox kênh.
+class _PickRow {
+  final bool isHeader;
+  final String mac;
+  final String endpoint;
+  final String label;
+  final String subtitle;
+  const _PickRow._(this.isHeader, this.mac, this.endpoint, this.label, this.subtitle);
+  const _PickRow.header({required String mac, required String label, required String subtitle})
+      : this._(true, mac, '', label, subtitle);
+  const _PickRow.channel({required String mac, required String endpoint, required String label, required String subtitle})
+      : this._(false, mac, endpoint, label, subtitle);
 }

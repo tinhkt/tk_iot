@@ -78,8 +78,14 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
   final TextEditingController nameCtrl = TextEditingController();
   int selectedIcon = icons.first.codePoint;
 
-  // [CẦU THANG] Trạng thái chế độ + tầng đã gán từng thành viên (mặc định tuần tự 1..n)
-  bool isStaircase = false;
+  // [LOẠI NHÓM] normal | staircase | fan — nhãn hiển thị; quy tắc thành viên do
+  // GroupConstraintEngine (room_group_provider) quyết, dialog không chứa logic ràng buộc.
+  const List<(String, String, IconData)> groupTypes = [
+    ('normal', 'Thường', Icons.grid_view_rounded),
+    ('staircase', 'Cầu thang', Icons.stairs_outlined),
+    ('fan', 'Quạt', Icons.air),
+  ];
+  String groupType = 'normal';
   final Map<String, String> floors = {
     for (int i = 0; i < memberMacs.length; i++)
       memberMacs[i].toUpperCase(): kGroupFloors[i < kGroupFloors.length ? i : kGroupFloors.length - 1],
@@ -155,21 +161,32 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                         );
                       }).toList(),
                     ),
-                    // ---- [CẦU THANG] Công tắc liên kết đa tầng ----
-                    if (memberMacs.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                        activeTrackColor: _tkGreen,
-                        title: Text('Là công tắc cầu thang',
-                            style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600)),
-                        subtitle: Text('Các công tắc tự đồng bộ trạng thái theo nhau (đảo chiều đa tầng)',
+                    // ---- [LOẠI NHÓM] Thường / Cầu thang / Quạt ----
+                    const SizedBox(height: 12),
+                    Text('Loại nhóm:', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      children: groupTypes.map((t) {
+                        final bool sel = groupType == t.$1;
+                        return ChoiceChip(
+                          avatar: Icon(t.$3, size: 16, color: sel ? Colors.white : _tkGreen),
+                          label: Text(t.$2),
+                          labelStyle: TextStyle(color: sel ? Colors.white : textMain, fontWeight: FontWeight.w600, fontSize: 13),
+                          selectedColor: _tkGreen,
+                          selected: sel,
+                          onSelected: (_) => setDialog(() => groupType = t.$1),
+                        );
+                      }).toList(),
+                    ),
+                    if (groupType == 'fan')
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text('Nhóm Quạt: mỗi thiết bị chỉ góp đúng 1 kênh — chọn kênh mới tự bỏ kênh cũ.',
                             style: TextStyle(color: textSub, fontSize: 11.5)),
-                        value: isStaircase,
-                        onChanged: (v) => setDialog(() => isStaircase = v),
                       ),
-                      if (isStaircase)
+                    if (memberMacs.isNotEmpty) ...[
+                      if (groupType == 'staircase')
                         // Gán "Tầng" cho từng công tắc đã tick chọn — cuộn được khi nhóm đông
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxHeight: 190),
@@ -217,8 +234,8 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                             if (name.isEmpty) return;
                             Navigator.pop(ctx, CreateGroupResult(
                               name, selectedIcon,
-                              groupType: isStaircase ? 'staircase' : 'normal',
-                              floors: isStaircase ? Map<String, String>.from(floors) : const {},
+                              groupType: groupType,
+                              floors: groupType == 'staircase' ? Map<String, String>.from(floors) : const {},
                             ));
                           },
                           child: const Text('Tạo nhóm'),

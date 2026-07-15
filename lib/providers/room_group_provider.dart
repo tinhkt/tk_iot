@@ -41,6 +41,88 @@ class GroupMemberRef {
   String get key => '$mac|$endpoint';
 }
 
+// ============================================================================
+// ⚖️ CONSTRAINT ENGINE — QUY TẮC THÀNH VIÊN THEO LOẠI NHÓM (KHÔNG HARD-CODE THIẾT BỊ)
+// ============================================================================
+// UI KHÔNG được tự chứa if-else theo loại thiết bị/nhóm: mọi quyết định
+// "được thêm không / phải tự bỏ kênh nào trước" đều hỏi engine này.
+// Thêm kịch bản nhóm mới (vd "đèn màu chỉ 1 kênh") = thêm MỘT entry vào
+// [GroupConstraint.byGroupType] — không đụng một dòng UI nào. Bảng này là bản
+// chiếu 1:1 của groupConstraints bên Backend Go (server cưỡng chế lại lần cuối).
+
+/// Bộ ràng buộc của một loại nhóm.
+class GroupConstraint {
+  /// false = mỗi thiết bị chỉ được góp tối đa 1 kênh.
+  final bool allowMultiEndpointPerDevice;
+
+  /// Trần số kênh mỗi thiết bị (0 = không giới hạn; chỉ xét khi allowMulti=true).
+  final int maxChannelsPerDevice;
+
+  /// true = chọn kênh MỚI tự động bỏ kênh CŨ cùng thiết bị (thay vì từ chối).
+  final bool exclusiveSelection;
+
+  const GroupConstraint({
+    this.allowMultiEndpointPerDevice = true,
+    this.maxChannelsPerDevice = 0,
+    this.exclusiveSelection = false,
+  });
+
+  /// BẢNG QUY TẮC — nguồn sự thật duy nhất phía App.
+  static const Map<String, GroupConstraint> byGroupType = {
+    'normal': GroupConstraint(allowMultiEndpointPerDevice: true),
+    'staircase': GroupConstraint(allowMultiEndpointPerDevice: true),
+    'fan': GroupConstraint(
+        allowMultiEndpointPerDevice: false, maxChannelsPerDevice: 1, exclusiveSelection: true),
+  };
+
+  static GroupConstraint of(String groupType) =>
+      byGroupType[groupType] ?? const GroupConstraint();
+}
+
+/// Phán quyết của engine cho một lần tick chọn thành viên.
+class MemberResolution {
+  final bool allowed;
+  /// Các thành viên engine RA LỆNH bỏ trước khi thêm (vd nhóm Quạt auto-uncheck kênh cũ).
+  final List<GroupMemberRef> removeFirst;
+  /// Câu báo lỗi khi [allowed] = false.
+  final String? reason;
+  const MemberResolution._(this.allowed, this.removeFirst, this.reason);
+  const MemberResolution.allowedWith([List<GroupMemberRef> removeFirst = const []])
+      : this._(true, removeFirst, null);
+  const MemberResolution.denied(String reason) : this._(false, const [], reason);
+}
+
+/// Engine THUẦN TÚY (không state, không UI): kiểm tra [attempt] trên nền [current]
+/// theo quy tắc của [groupType].
+class GroupConstraintEngine {
+  static MemberResolution resolve({
+    required String groupType,
+    required List<GroupMemberRef> current,
+    required GroupMemberRef attempt,
+  }) {
+    if (current.any((m) => m.key == attempt.key)) {
+      return const MemberResolution.denied('Kênh này đã có trong nhóm');
+    }
+    final c = GroupConstraint.of(groupType);
+    final sameDevice = current.where((m) => m.mac == attempt.mac).toList();
+    if (sameDevice.isEmpty) return const MemberResolution.allowedWith();
+
+    // Trần kênh/thiết bị: allowMulti=false nghĩa là trần 1, bất kể maxChannels
+    final int limit = !c.allowMultiEndpointPerDevice
+        ? 1
+        : (c.maxChannelsPerDevice > 0 ? c.maxChannelsPerDevice : 0);
+    if (limit == 0 || sameDevice.length < limit) return const MemberResolution.allowedWith();
+
+    if (c.exclusiveSelection) {
+      // Tự đá đủ số kênh CŨ NHẤT để vừa trần sau khi thêm kênh mới
+      final removeCount = sameDevice.length - limit + 1;
+      return MemberResolution.allowedWith(sameDevice.take(removeCount).toList());
+    }
+    return MemberResolution.denied(
+        'Loại nhóm này chỉ cho phép $limit kênh mỗi thiết bị — hãy bỏ bớt kênh cũ trước');
+  }
+}
+
 class DeviceGroup {
   final String mac; // "GROUP_xxx" — dùng như MAC ảo
   String name;
@@ -547,23 +629,55 @@ class RoomGroupProvider extends ChangeNotifier {
 
   /// [MULTI-CHANNEL] Thêm thành viên: [endpoint] rỗng = cả thiết bị (legacy),
   /// "S_{mac}_2"... = đúng một kênh của thiết bị đa kênh. [floor] cho nhóm cầu thang.
+  /// Mọi lần thêm đều qua [GroupConstraintEngine] — nhóm Quạt tự đá kênh cũ cùng
+  /// thiết bị, loại nhóm cấm trùng thiết bị sẽ trả câu báo lỗi thay vì thêm bậy.
   Future<String?> addToGroup(String groupMac, String deviceMac,
       {String endpoint = '', String? floor}) async {
     final g = groupOf(groupMac);
     if (g == null) return 'Nhóm không tồn tại';
     final sn = deviceMac.toUpperCase();
+    final backup = List<GroupMemberRef>.of(g.members);
 
     final existing = g.members.where((m) => m.mac == sn && m.endpoint == endpoint).firstOrNull;
     if (existing != null) {
       if (floor == null || floor.isEmpty || existing.floor == floor) return null; // không đổi gì
       existing.floor = floor;
     } else {
-      g.members.add(GroupMemberRef(mac: sn, endpoint: endpoint, floor: floor ?? ''));
+      final attempt = GroupMemberRef(mac: sn, endpoint: endpoint, floor: floor ?? '');
+      final res = GroupConstraintEngine.resolve(
+          groupType: g.groupType, current: g.members, attempt: attempt);
+      if (!res.allowed) return res.reason;
+      // Engine ra lệnh bỏ kênh nào thì bỏ đúng kênh đó (vd nhóm Quạt: auto-uncheck kênh cũ)
+      g.members.removeWhere((m) => res.removeFirst.any((r) => r.key == m.key));
+      g.members.add(attempt);
     }
     notifyListeners();
     final err = await _pushMembers(g);
     if (err != null) {
-      if (existing == null) g.members.removeWhere((m) => m.mac == sn && m.endpoint == endpoint);
+      g.members
+        ..clear()
+        ..addAll(backup); // hoàn tác nguyên khối (cả kênh bị engine đá)
+      notifyListeners();
+    }
+    return err;
+  }
+
+  /// [CONSTRAINT PICKER] Thay TOÀN BỘ danh sách thành viên bằng bản đã được
+  /// ConstraintEngine duyệt trong picker multi-select — một PUT duy nhất thay vì
+  /// N lần add/remove. Optimistic + hoàn tác nguyên khối khi lỗi.
+  Future<String?> replaceMembers(String groupMac, List<GroupMemberRef> newMembers) async {
+    final g = groupOf(groupMac);
+    if (g == null) return 'Nhóm không tồn tại';
+    final backup = List<GroupMemberRef>.of(g.members);
+    g.members
+      ..clear()
+      ..addAll(newMembers);
+    notifyListeners();
+    final err = await _pushMembers(g);
+    if (err != null) {
+      g.members
+        ..clear()
+        ..addAll(backup); // hoàn tác nguyên khối
       notifyListeners();
     }
     return err;
