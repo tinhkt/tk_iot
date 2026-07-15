@@ -537,16 +537,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final token = await AuthService().getToken();
       final response = await http.get(
-        Uri.parse('$baseUrl/weather/current'), 
+        Uri.parse('$baseUrl/weather/current'),
         headers: {'Authorization': 'Bearer $token'},
-      );
+      ).timeout(const Duration(seconds: 10)); // tránh treo "Đang tải..." vô hạn nếu mạng kẹt (vd. IPv6 lỗi)
 
       if (response.statusCode == 200) {
         final jsonResponse = jsonDecode(response.body);
-        
+
         // Trỏ đúng vào lớp "data" bên trong JSON trả về
-        final weatherInfo = jsonResponse['data'] ?? {}; 
-        
+        final weatherInfo = jsonResponse['data'] ?? {};
+
         if (mounted) {
           setState(() {
             _weatherData = {
@@ -556,9 +556,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
             };
           });
         }
+      } else {
+        // 401 (token hết hạn), 404, 5xx... trước đây bị nuốt lặng lẽ → UI kẹt "Đang tải..."
+        if (kDebugMode) print("☁️ API thời tiết trả về ${response.statusCode}: ${response.body}");
+        if (mounted) {
+          setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
+        }
+      }
+    } on TimeoutException {
+      if (kDebugMode) print("☁️ API thời tiết timeout sau 10s (kiểm tra mạng/IPv6)");
+      if (mounted) {
+        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
       }
     } catch (e) {
       if (kDebugMode) print("☁️ Lỗi API thời tiết: $e");
+      if (mounted) {
+        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
+      }
     }
   }
 

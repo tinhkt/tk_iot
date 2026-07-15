@@ -347,6 +347,15 @@ class DeviceProvider with ChangeNotifier {
       return;
     }
 
+    // [CHẶN TIẾNG VỌNG LỆNH — GỐC RỄ "THẺ MA value"] App publish lệnh
+    // {"endpoint","action","value"} vào smarthub/{home}/{mac}/command và cũng subscribe
+    // smarthub/{home}/# nên NHẬN LẠI chính gói lệnh đó (MQTT 3.1.1 không có No-Local).
+    // Nếu để lọt xuống endpointJsonToDps, các khóa của KHUÔN LỆNH thành dps rác
+    // ("value":"ON" qua được bộ lọc ON/OFF) -> grid mọc thẻ ma "value" -> user đổi tên
+    // thẻ ma -> hash device_names dính field "value". Từ đây: CHỈ topic đuôi /state
+    // mới được coi là dữ liệu trạng thái.
+    if (parts.last != 'state') return;
+
     final json = DeviceModel.safeDecode(payload);
 
     if (json != null) {
