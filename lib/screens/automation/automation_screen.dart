@@ -78,6 +78,36 @@ class _SceneList extends StatelessWidget {
 
   static const Color tkGreen = Color(0xFF00A651);
 
+  /// Nhấn giữ thẻ ngữ cảnh -> AlertDialog xác nhận -> DELETE /api/scenes/:id.
+  /// Provider xóa OPTIMISTIC: gỡ khỏi UI ngay khi bấm Đồng ý (notifyListeners ->
+  /// Consumer vẽ lại tức thì); API lỗi thì tự gắn lại đúng vị trí cũ + SnackBar đỏ.
+  Future<void> _confirmDeleteScene(BuildContext context, AutomationProvider provider, SceneItem s) async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Xóa ngữ cảnh'),
+        content: Text('Bạn có chắc chắn muốn xóa ngữ cảnh "${s.name}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Đồng ý xóa'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+
+    final err = await provider.deleteScene(s.id);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(err ?? 'Đã xóa ngữ cảnh "${s.name}"'),
+      backgroundColor: err == null ? tkGreen : Colors.redAccent,
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -112,6 +142,8 @@ class _SceneList extends StatelessWidget {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 // Bấm cả thẻ (không phải Switch/nút Chạy) -> mở màn SỬA ngữ cảnh với dữ liệu đổ sẵn
                 onTap: () => openAdaptiveScreen(context, CreateAutomationScreen(editScene: s)),
+                // Nhấn giữ thẻ -> hỏi xác nhận rồi xóa (áp dụng cho cả 2 tab)
+                onLongPress: () => _confirmDeleteScene(context, provider, s),
                 leading: CircleAvatar(radius: 24, backgroundColor: tkGreen.withValues(alpha: 0.15), child: Icon(s.icon, color: tkGreen, size: 26)),
                 title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
                 subtitle: Padding(padding: const EdgeInsets.only(top: 4), child: Text(summary, style: TextStyle(color: textSub, fontSize: 12))),

@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:http/http.dart' as http;
 
 import 'api_service.dart';
@@ -105,15 +105,28 @@ class ScheduleService {
 
   /// DELETE /api/schedules/:id — null = thành công.
   Future<String?> deleteSchedule(String id) async {
+    // id rỗng sẽ biến URL thành DELETE /api/schedules/ (route KHÔNG tồn tại) ->
+    // server trả 404 lạc đề. Chặn từ gốc, báo đúng bản chất lỗi.
+    if (id.trim().isEmpty) {
+      debugPrint('DELETE_SCHEDULE_ERROR: id rỗng — lịch chưa được lưu lên server?');
+      return 'Lịch trình chưa có mã hợp lệ — kéo làm mới rồi thử lại';
+    }
     try {
       final res = await http.delete(
         Uri.parse('$_apiBase/schedules/${Uri.encodeComponent(id)}'),
         headers: await _authHeaders(),
       );
-      if (res.statusCode != 200) return _errorFrom(res, 'Không xóa được lịch trình');
-      return null;
+      // Mọi mã 2xx đều là XÓA THÀNH CÔNG. Tuyệt đối KHÔNG parse body ở nhánh này —
+      // server đời cũ có thể trả 200/204 body rỗng, jsonDecode sẽ ném FormatException
+      // và biến một lần xóa thành công thành "Lỗi kết nối máy chủ" oan.
+      if (res.statusCode >= 200 && res.statusCode < 300) return null;
+
+      debugPrint('DELETE_SCHEDULE_ERROR: HTTP ${res.statusCode} — body: ${res.body}');
+      return _errorFrom(res, 'Không xóa được lịch trình');
     } catch (e) {
-      if (kDebugMode) print('❌ [SCHEDULE] Lỗi xóa lịch: $e');
+      // Lộ NGUYÊN HÌNH exception (trước đây chỉ in khi debug, chạy release là nuốt ngầm):
+      // HandshakeException/SocketException = mạng thật; FormatException = server trả rác.
+      debugPrint('DELETE_SCHEDULE_ERROR: ${e.runtimeType}: $e');
       return 'Lỗi kết nối máy chủ';
     }
   }
