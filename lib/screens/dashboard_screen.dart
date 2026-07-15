@@ -895,15 +895,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // [NHÓM] Mở màn chỉnh sửa nhóm — RESPONSIVE: PC mở dạng Dialog nổi giữa (KHÔNG che Sidebar),
   // Mobile mở full màn hình như cũ. Truyền danh sách công tắc thật để pick thêm thành viên.
   // [NHÓM] Điều khiển TẤT CẢ thành viên của một nhóm ảo về cùng trạng thái [turnOn].
-  // Đây là fix bug "bấm nút nhóm không tác dụng": trước đây thẻ nhóm bắn lệnh vào MAC ảo
-  // "GROUP_xxx" (Backend không định tuyến được); nay lặp qua memberMacs, gửi lệnh TUYỆT ĐỐI
-  // cho từng thiết bị con qua endpoint 'all' (SSW04 -> cả 4 relay; SSW01/quạt bỏ qua endpoint,
-  // chỉ đọc value — đúng payload nút master đơn lẻ vẫn đang chạy tốt).
+  // [MULTI-CHANNEL] Thành viên có endpoint cụ thể (kênh SSW04, D1/F1 Hub) -> lệnh trỏ
+  // ĐÍCH DANH kênh đó, không còn cảnh bật/tắt cả cụm 4 relay. Thành viên kiểu cũ
+  // (endpoint rỗng = cả thiết bị) giữ nguyên hành vi 'all' (SSW04 -> cả 4; SSW01/quạt
+  // bỏ qua endpoint, chỉ đọc value).
   void _toggleGroup(DeviceGroup g, bool turnOn) {
-    if (g.memberMacs.isEmpty) return;
+    if (g.members.isEmpty) return;
     final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
-    for (final memberMac in g.memberMacs) {
-      deviceProv.setSwitchState(memberMac, 'all', turnOn);
+    for (final m in g.members) {
+      deviceProv.setSwitchState(m.mac, m.endpoint.isEmpty ? 'all' : m.endpoint, turnOn);
     }
     // Không optimistic: icon nhóm sáng/tắt theo state feedback thật từ các thành viên
     // (group section watch DeviceProvider -> tự vẽ lại khi member đổi trạng thái).
@@ -2793,9 +2793,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 itemBuilder: (context, index) {
                   final g = groups[index];
                   // [ĐỒNG BỘ UI NHÓM] Sáng nếu CÓ bất kỳ thành viên nào đang bật; tắt khi TẤT CẢ tắt
-                  final bool groupOn = g.memberMacs.any((m) => deviceProv.anyEndpointOn(m));
+                  // [MULTI-CHANNEL] Nhóm sáng khi BẤT KỲ thành viên nào bật: member có
+                  // endpoint cụ thể chỉ soi đúng kênh đó; member kiểu cũ soi cả thiết bị.
+                  final bool groupOn = g.members.any((m) => m.endpoint.isEmpty
+                      ? deviceProv.anyEndpointOn(m.mac)
+                      : (deviceProv.deviceOf(m.mac)?.isOn(m.endpoint) ?? false));
                   return SmartSwitchCard(
-                    key: ValueKey('group_${g.mac}_${g.memberMacs.length}'),
+                    key: ValueKey('group_${g.mac}_${g.members.length}'),
                     mac: g.mac,
                     endpointKey: 'all',
                     backendName: g.name,

@@ -26,42 +26,68 @@ class Room {
 /// Nhóm thiết bị / Công tắc ảo (Virtual Switch Group). mac dạng "GROUP_xxx" để render
 /// bằng chính SmartSwitchCard (phân biệt bằng badge). memberMacs = MAC các thiết bị con.
 /// Persist bên Backend: Redis hash `device_groups:{homeId}` (cụm /api/groups).
+/// Một thành viên nhóm — [MULTI-CHANNEL]:
+///   endpoint: ID kênh CỤ THỂ trên thiết bị đa kênh ("S_{mac}_2" cho kênh 2 SSW04,
+///     "D1"/"F1" cho Hub V38). RỖNG = CẢ THIẾT BỊ (nhóm đời cũ chỉ có MAC — lệnh
+///     phát "all"/"S_{mac}" như trước, tương thích ngược tuyệt đối).
+///   floor: "Tầng 1"... cho nhóm cầu thang.
+class GroupMemberRef {
+  final String mac;
+  final String endpoint;
+  String floor;
+  GroupMemberRef({required this.mac, this.endpoint = '', this.floor = ''});
+
+  /// Khóa định danh duy nhất của thành viên: hai kênh cùng MAC = hai thành viên khác nhau.
+  String get key => '$mac|$endpoint';
+}
+
 class DeviceGroup {
   final String mac; // "GROUP_xxx" — dùng như MAC ảo
   String name;
   int iconCodePoint; // icon do user chọn (lưu codePoint để dễ serialize sau này)
   String groupType; // "normal" | "staircase" (công tắc cầu thang — thành viên tự đồng bộ nhau)
-  final Set<String> memberMacs;
-  final Map<String, String> memberFloors; // MAC -> "Tầng 1"... (siêu dữ liệu nhóm cầu thang)
+  /// Nguồn sự thật thành viên — danh sách (không phải Set MAC) vì SSW04 có thể góp
+  /// nhiều kênh riêng lẻ vào cùng một nhóm.
+  final List<GroupMemberRef> members;
   DeviceGroup({
     required this.mac,
     required this.name,
     required this.iconCodePoint,
     this.groupType = 'normal',
-    Set<String>? members,
-    Map<String, String>? floors,
-  })  : memberMacs = members ?? {},
-        memberFloors = floors ?? {};
+    List<GroupMemberRef>? members,
+  }) : members = members ?? [];
 
   bool get isStaircase => groupType == 'staircase';
 
-  /// Khuôn JSON hai chiều với DeviceGroupDoc bên Backend Go — SCHEMA V2 ưu tiên
-  /// members[{mac,floor}], rơi về device_macs (bản ghi V1) khi members vắng mặt.
+  /// View MAC dẫn xuất (khử trùng lặp) — cho các chỗ chỉ cần biết "nhóm gồm thiết bị nào".
+  Set<String> get memberMacs => {for (final m in members) m.mac};
+
+  bool hasMember(String mac, [String endpoint = '']) {
+    final sn = mac.toUpperCase();
+    return members.any((m) => m.mac == sn && m.endpoint == endpoint);
+  }
+
+  /// Khuôn JSON hai chiều với DeviceGroupDoc bên Backend Go — SCHEMA V3 ưu tiên
+  /// members[{mac,endpoint,floor}], rơi về device_macs (bản ghi V1) khi members vắng mặt.
   factory DeviceGroup.fromJson(Map<String, dynamic> json) {
-    final members = <String>{};
-    final floors = <String, String>{};
+    final members = <GroupMemberRef>[];
+    final seen = <String>{};
     final rawMembers = json['members'];
     if (rawMembers is List && rawMembers.isNotEmpty) {
       for (final m in rawMembers.whereType<Map>()) {
         final sn = (m['mac'] ?? '').toString().toUpperCase();
         if (sn.isEmpty) continue;
-        members.add(sn);
-        final floor = (m['floor'] ?? '').toString();
-        if (floor.isNotEmpty) floors[sn] = floor;
+        final ref = GroupMemberRef(
+          mac: sn,
+          endpoint: (m['endpoint'] ?? '').toString(),
+          floor: (m['floor'] ?? '').toString(),
+        );
+        if (seen.add(ref.key)) members.add(ref);
       }
     } else {
       for (final e in (json['device_macs'] as List?) ?? const []) {
-        members.add(e.toString().toUpperCase());
+        final ref = GroupMemberRef(mac: e.toString().toUpperCase());
+        if (seen.add(ref.key)) members.add(ref);
       }
     }
     return DeviceGroup(
@@ -70,13 +96,12 @@ class DeviceGroup {
       iconCodePoint: (json['icon_code'] as num?)?.toInt() ?? Icons.grid_view_rounded.codePoint,
       groupType: (json['group_type'] ?? 'normal').toString(),
       members: members,
-      floors: floors,
     );
   }
 
-  /// Mảng members [{mac, floor}] đúng khuôn Backend — dùng cho body POST/PUT.
+  /// Mảng members [{mac, endpoint, floor}] đúng khuôn Backend — dùng cho body POST/PUT.
   List<Map<String, String>> membersJson() =>
-      [for (final m in memberMacs) {'mac': m, 'floor': memberFloors[m] ?? ''}];
+      [for (final m in members) {'mac': m.mac, 'endpoint': m.endpoint, 'floor': m.floor}];
 
   /// Bộ icon nhóm user chọn được (đồng bộ với showCreateGroupDialog) — CONST để tra
   /// ngược từ codePoint, không dựng IconData động (giữ icon tree-shaking + analyze sạch).
@@ -443,16 +468,17 @@ class RoomGroupProvider extends ChangeNotifier {
   /// Lỗi mạng/server -> gỡ thẻ ra + trả câu báo lỗi.
   Future<String?> createGroup(String name, int iconCodePoint, List<String> members,
       {String groupType = 'normal', Map<String, String>? floors}) async {
+    // Tạo từ bulk-select cấp THIẾT BỊ: member endpoint rỗng (cả thiết bị — legacy);
+    // muốn góp từng kênh SSW04 riêng lẻ thì dùng màn Sửa nhóm sau khi tạo.
     final g = DeviceGroup(
       mac: 'GROUP_${DateTime.now().millisecondsSinceEpoch}',
       name: name.trim(),
       iconCodePoint: iconCodePoint,
       groupType: groupType,
-      members: members.map((e) => e.toUpperCase()).toSet(),
-      floors: {
-        if (floors != null)
-          for (final e in floors.entries) e.key.toUpperCase(): e.value,
-      },
+      members: [
+        for (final m in members)
+          GroupMemberRef(mac: m.toUpperCase(), floor: floors?[m.toUpperCase()] ?? floors?[m] ?? ''),
+      ],
     );
     _groups.add(g);
     notifyListeners();
@@ -519,34 +545,46 @@ class RoomGroupProvider extends ChangeNotifier {
     }
   }
 
-  /// [floor] tùy chọn — gán tầng luôn khi thêm thành viên vào nhóm cầu thang.
-  Future<String?> addToGroup(String groupMac, String deviceMac, {String? floor}) async {
+  /// [MULTI-CHANNEL] Thêm thành viên: [endpoint] rỗng = cả thiết bị (legacy),
+  /// "S_{mac}_2"... = đúng một kênh của thiết bị đa kênh. [floor] cho nhóm cầu thang.
+  Future<String?> addToGroup(String groupMac, String deviceMac,
+      {String endpoint = '', String? floor}) async {
     final g = groupOf(groupMac);
     if (g == null) return 'Nhóm không tồn tại';
     final sn = deviceMac.toUpperCase();
-    final bool added = g.memberMacs.add(sn);
-    if (floor != null && floor.isNotEmpty) g.memberFloors[sn] = floor;
-    if (!added && floor == null) return null; // đã có sẵn, không đổi gì — khỏi gọi mạng
+
+    final existing = g.members.where((m) => m.mac == sn && m.endpoint == endpoint).firstOrNull;
+    if (existing != null) {
+      if (floor == null || floor.isEmpty || existing.floor == floor) return null; // không đổi gì
+      existing.floor = floor;
+    } else {
+      g.members.add(GroupMemberRef(mac: sn, endpoint: endpoint, floor: floor ?? ''));
+    }
     notifyListeners();
     final err = await _pushMembers(g);
     if (err != null) {
-      if (added) g.memberMacs.remove(sn); // hoàn tác
+      if (existing == null) g.members.removeWhere((m) => m.mac == sn && m.endpoint == endpoint);
       notifyListeners();
     }
     return err;
   }
 
-  Future<String?> removeFromGroup(String groupMac, String deviceMac) async {
+  /// Gỡ thành viên. [endpoint] null = gỡ MỌI kênh của MAC này (tương thích caller cũ);
+  /// truyền tường minh (kể cả '') = gỡ đúng một thành viên.
+  Future<String?> removeFromGroup(String groupMac, String deviceMac, {String? endpoint}) async {
     final g = groupOf(groupMac);
     if (g == null) return 'Nhóm không tồn tại';
     final sn = deviceMac.toUpperCase();
-    if (!g.memberMacs.remove(sn)) return null; // vốn không thuộc nhóm — idempotent
-    final String? oldFloor = g.memberFloors.remove(sn);
+
+    final removed = g.members
+        .where((m) => m.mac == sn && (endpoint == null || m.endpoint == endpoint))
+        .toList();
+    if (removed.isEmpty) return null; // vốn không thuộc nhóm — idempotent
+    g.members.removeWhere((m) => removed.contains(m));
     notifyListeners();
     final err = await _pushMembers(g);
     if (err != null) {
-      g.memberMacs.add(sn); // hoàn tác
-      if (oldFloor != null) g.memberFloors[sn] = oldFloor;
+      g.members.addAll(removed); // hoàn tác
       notifyListeners();
     }
     return err;

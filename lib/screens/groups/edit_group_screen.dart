@@ -30,6 +30,24 @@ class EditGroupScreen extends StatelessWidget {
     return deviceProv.displayNameOf(mac, fallback: restName ?? mac);
   }
 
+  /// Nhãn ngắn của một kênh: 'S_xxx_2' -> 'Relay 2'; 'D1'/'F1' giữ nguyên; khác -> Kênh.
+  static String _channelLabel(String endpoint) {
+    final m = RegExp(r'[_-](\d+)$').firstMatch(endpoint);
+    if (m != null) return 'Relay ${m.group(1)}';
+    if (RegExp(r'^[A-Za-z]\d+$').hasMatch(endpoint)) return endpoint; // D1, F1...
+    return 'Kênh';
+  }
+
+  /// [MULTI-CHANNEL] Tên hiển thị của MỘT THÀNH VIÊN: ưu tiên tên user đặt cho đúng
+  /// kênh đó ("Đèn Bếp"); chưa đặt thì "Tên thiết bị (Relay 2)"; member kiểu cũ
+  /// (endpoint rỗng = cả thiết bị) dùng tên thiết bị như trước.
+  String _memberName(DeviceProvider deviceProv, GroupMemberRef m) {
+    if (m.endpoint.isEmpty) return _nameOf(deviceProv, m.mac);
+    final String? epName = deviceProv.deviceOf(m.mac)?.nameOf(m.endpoint);
+    if (epName != null && epName.trim().isNotEmpty) return epName.trim();
+    return '${_nameOf(deviceProv, m.mac)} (${_channelLabel(m.endpoint)})';
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -56,7 +74,7 @@ class EditGroupScreen extends StatelessWidget {
             if (group == null) {
               return Center(child: Text('Nhóm không tồn tại', style: TextStyle(color: textSub)));
             }
-            final members = group.memberMacs.toList();
+            final members = group.members;
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -73,27 +91,36 @@ class EditGroupScreen extends StatelessWidget {
                 if (members.isEmpty)
                   Padding(padding: const EdgeInsets.all(20), child: Center(child: Text('Nhóm chưa có thiết bị nào.', style: TextStyle(color: textSub))))
                 else
-                  ...members.map((mac) => Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        decoration: BoxDecoration(color: isDark ? const Color(0xFF1E293B) : Colors.white, borderRadius: BorderRadius.circular(12)),
-                        child: ListTile(
-                          leading: Icon(Icons.lightbulb_outline, color: tkGreen),
-                          title: Text(_nameOf(deviceProv, mac), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-                          subtitle: Text(mac, style: TextStyle(color: textSub, fontSize: 11)),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
-                            // await + báo lỗi rõ ràng: gỡ mà server không lưu được thì
-                            // thành viên tự quay lại danh sách (revert) kèm SnackBar đỏ
-                            onPressed: () async {
-                              final err = await provider.removeFromGroup(groupMac, mac);
-                              if (err != null && context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
-                              }
-                            },
-                          ),
+                  ...members.map((m) {
+                    // Subtitle: MAC + kênh (nếu là thành viên đa kênh) + tầng (nhóm cầu thang)
+                    final String sub = [
+                      m.mac,
+                      if (m.endpoint.isNotEmpty) m.endpoint,
+                      if (m.floor.isNotEmpty) m.floor,
+                    ].join(' • ');
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      decoration: BoxDecoration(color: isDark ? const Color(0xFF1E293B) : Colors.white, borderRadius: BorderRadius.circular(12)),
+                      child: ListTile(
+                        leading: Icon(m.endpoint.isEmpty ? Icons.lightbulb_outline : Icons.power_rounded, color: tkGreen),
+                        title: Text(_memberName(deviceProv, m), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+                        subtitle: Text(sub, style: TextStyle(color: textSub, fontSize: 11)),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
+                          // await + báo lỗi rõ ràng: gỡ mà server không lưu được thì
+                          // thành viên tự quay lại danh sách (revert) kèm SnackBar đỏ.
+                          // endpoint truyền TƯỜNG MINH — chỉ gỡ đúng kênh này.
+                          onPressed: () async {
+                            final err = await provider.removeFromGroup(groupMac, m.mac, endpoint: m.endpoint);
+                            if (err != null && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                            }
+                          },
                         ),
-                      )),
+                      ),
+                    );
+                  }),
                 const SizedBox(height: 16),
                 // Nút thêm thiết bị -> picker
                 SizedBox(
@@ -117,36 +144,78 @@ class EditGroupScreen extends StatelessWidget {
   // (PC: dialog giữa màn hình; Mobile: sheet; màu chữ do panel kính ép tương phản)
   void _pickDevices(BuildContext context, RoomGroupProvider provider, DeviceGroup group) {
     final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+
+    // [MULTI-CHANNEL] Ứng viên tính theo TỪNG KÊNH: thiết bị đa kênh (SSW04, Hub) mà
+    // mới góp 2/4 kênh vào nhóm thì 2 kênh còn lại VẪN là ứng viên hợp lệ.
+    // Loại: MAC ảo nhóm, thiết bị đã vào nhóm kiểu "cả thiết bị" (endpoint rỗng).
     final candidates = availableDevices.where((d) {
       final mac = (d['mac'] ?? '').toString().toUpperCase();
-      return mac.isNotEmpty && !group.memberMacs.contains(mac) && !mac.startsWith('GROUP_');
+      if (mac.isEmpty || mac.startsWith('GROUP_') || group.hasMember(mac)) return false;
+      final eps = deviceProv.deviceOf(mac)?.endpointIds ?? const [];
+      if (eps.length <= 1) return !group.memberMacs.contains(mac); // đơn kênh: còn trống mới hiện
+      return eps.any((ep) => !group.hasMember(mac, ep)); // đa kênh: còn kênh trống là hiện
     }).toList();
+
+    // Thêm xong một thành viên: đóng picker + báo lỗi đỏ nếu server không persist
+    Future<void> addMember(BuildContext ctx, String mac, String endpoint) async {
+      Navigator.pop(ctx);
+      final err = await provider.addToGroup(group.mac, mac, endpoint: endpoint);
+      if (err != null && context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+      }
+    }
 
     showGlassPopup(
       context,
       title: 'Thêm thiết bị vào nhóm',
       body: (ctx) => candidates.isEmpty
-          ? const Padding(padding: EdgeInsets.fromLTRB(24, 8, 24, 16), child: Text('Không còn thiết bị nào để thêm.'))
+          ? const Padding(padding: EdgeInsets.fromLTRB(24, 8, 24, 16), child: Text('Không còn thiết bị/kênh nào để thêm.'))
           : ListView(
               shrinkWrap: true,
               children: candidates.map((d) {
                 final mac = (d['mac'] ?? '').toString();
                 // [DISPLAY NAME] danh sách khả dụng cũng ưu tiên tên user đặt từ DPS
                 final name = deviceProv.displayNameOf(mac, fallback: (d['name'] ?? mac).toString());
-                return ListTile(
-                  leading: const Icon(Icons.add_circle_outline, color: tkGreen),
+                final device = deviceProv.deviceOf(mac);
+                final eps = (device?.endpointIds ?? const []).toList()..sort();
+
+                // ---- THIẾT BỊ ĐƠN KÊNH: một dòng, chạm là thêm (endpoint tường minh nếu biết) ----
+                if (eps.length <= 1) {
+                  return ListTile(
+                    leading: const Icon(Icons.add_circle_outline, color: tkGreen),
+                    title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                    onTap: () => addMember(ctx, mac, eps.isEmpty ? '' : eps.first),
+                  );
+                }
+
+                // ---- [MULTI-CHANNEL] THIẾT BỊ ĐA KÊNH: mở rộng chọn riêng từng relay ----
+                return ExpansionTile(
+                  leading: const Icon(Icons.grid_view_rounded, color: tkGreen),
                   title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    // await kết quả persist thật — thất bại là thấy SnackBar đỏ ngay,
-                    // không còn cảnh thêm "thành công" trên RAM rồi bốc hơi sau restart
-                    final err = await provider.addToGroup(group.mac, mac);
-                    if (err != null && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
-                    }
-                  },
+                  subtitle: Text('$mac • ${eps.length} kênh — chạm để chọn từng relay',
+                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                  iconColor: tkGreen,
+                  collapsedIconColor: tkGreen,
+                  children: eps.map((ep) {
+                    final bool already = group.hasMember(mac, ep);
+                    final String? epName = device?.nameOf(ep);
+                    final String label = (epName != null && epName.trim().isNotEmpty)
+                        ? epName.trim()
+                        : _channelLabel(ep);
+                    return ListTile(
+                      contentPadding: const EdgeInsets.only(left: 40, right: 16),
+                      leading: Icon(already ? Icons.check_circle : Icons.add_circle_outline,
+                          color: already ? Colors.grey : tkGreen, size: 20),
+                      title: Text('$label${already ? '  (đã trong nhóm)' : ''}',
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontWeight: FontWeight.w600, color: already ? Colors.grey : null)),
+                      subtitle: Text(ep, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                      enabled: !already,
+                      onTap: already ? null : () => addMember(ctx, mac, ep),
+                    );
+                  }).toList(),
                 );
               }).toList(),
             ),
