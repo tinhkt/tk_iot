@@ -78,6 +78,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...'};
   Timer? _debounceSync;
+
+  /// [SINGLE-FLIGHT UI] Lượt _initializeHome ĐANG chạy (nếu có). Mutex ở tầng service chỉ
+  /// gộp được HTTP request; khóa này gộp cả PIPELINE hydrate/ingest (parse JWT + setState +
+  /// đổ provider + fetchScenes/fetchHistory) — nhiều nơi gọi trùng lúc chỉ chạy đúng 1 lượt.
+  Future<void>? _initInFlight;
+
+  /// [CHỐNG RE-FETCH VÔ HẠN] MAC lạ đã được cấp 1 lượt re-fetch trong phiên này. Topic của
+  /// thiết bị con Hub/echo lệnh không bao giờ vào danh sách nhà -> nếu không ghi sổ, MỖI gói
+  /// tin định kỳ của nó lại kích _initializeHome thêm lần nữa (nguồn gốc chuỗi 4 lần gọi).
+  final Set<String> _resyncRequestedMacs = {};
+
+  /// Giữ tham chiếu provider để dispose() gỡ hook an toàn (không dùng context sau unmount).
+  DeviceProvider? _deviceProviderRef;
+
+  /// Segment topic dạng MAC (12 hex) — compile 1 lần vì listener MQTT là hot path.
+  static final RegExp _macSegmentRegex = RegExp(r'^[0-9A-Fa-f]{12}$');
   bool _isSelectionMode = false;
   final Set<String> _selectedDevices = {}; 
   final Set<String> _hiddenDevices = {}; // Chứa ID (MAC_Endpoint) của các công tắc bị ẩn
@@ -118,8 +134,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _bootstrapSync() async {
     // [AUTO-REFRESH HOOK] Cho phép nơi khác (vd chạy Scene) ép App kéo lại trạng thái
     // thật từ REST mà không cần giữ context của Dashboard.
-    Provider.of<DeviceProvider>(context, listen: false).onRefreshRequested =
-        () => _initializeHome(isSilent: true);
+    _deviceProviderRef = Provider.of<DeviceProvider>(context, listen: false);
+    _deviceProviderRef!.onRefreshRequested = () => _initializeHome(isSilent: true);
 
     await _initializeHome(); // REST: danh sách + trạng thái thật -> UI tĩnh lên hình trước
     if (!mounted) return;
@@ -141,11 +157,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   @override
-  void dispose() { _debounceSync?.cancel(); super.dispose(); }
+  void dispose() {
+    _debounceSync?.cancel();
+    // Gỡ hook trỏ vào State đã chết — chống Scene/MQTT về trễ gọi setState sau unmount
+    // (vd đăng xuất: Dashboard bị thay bằng Login nhưng provider sống toàn app).
+    _deviceProviderRef?.onRefreshRequested = null;
+    _deviceProviderRef?.clearGlobalMqttListener();
+    super.dispose();
+  }
 
   Future<void> _handleRefresh() async { await _initializeHome(isSilent: false); await Future.delayed(const Duration(milliseconds: 500)); }
 
-  Future<void> _initializeHome({bool isSilent = false}) async {
+  /// Cổng CHỐNG GỌI TRÙNG của toàn luồng khởi tạo: đang có lượt chạy thì mọi lời gọi mới
+  /// (MQTT thiết bị lạ, hook Scene, pull-to-refresh...) CÙNG CHỜ lượt đó, không mở pipeline
+  /// hydrate/ingest thứ hai — API khởi tạo chỉ "nổ" đúng 1 lần cho mỗi đợt.
+  Future<void> _initializeHome({bool isSilent = false}) {
+    final inFlight = _initInFlight;
+    if (inFlight != null) {
+      debugPrint('INIT_DEDUP: _initializeHome đang chạy -> tái dùng lượt hiện tại');
+      return inFlight;
+    }
+    final run = _doInitializeHome(isSilent: isSilent);
+    _initInFlight = run;
+    run.whenComplete(() => _initInFlight = null);
+    return run;
+  }
+
+  Future<void> _doInitializeHome({bool isSilent = false}) async {
+    if (!mounted) return;
     if (!isSilent) setState(() => _isLoadingDevices = true);
     final token = await AuthService().getToken();
     if (token != null) {
@@ -163,6 +202,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             print('🔑 [ROLE DEBUG] JWT payload = $payload');
             print('🔑 [ROLE DEBUG] role parsed = "$role"  (email: $email)');
           }
+          if (!mounted) return;
           setState(() { currentHomeId = homeId; userEmail = email; userRole = role; });
 
           // [SINGLE FETCH — CHỐNG N+1] MỘT lần gọi duy nhất gộp Homes + Rooms + Devices,
@@ -460,18 +500,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       // [TỐI ƯU TỐC ĐỘ QUẠT/CÔNG TẮC] DeviceProvider đã cập nhật kho DPS + notifyListeners()
       // NGAY khi gói state về -> thẻ (SmartFanCard/SmartSwitchCard) tự vẽ lại tức thì (<300ms),
-      // hoàn toàn hướng sự kiện qua stream MQTT. KHÔNG re-fetch REST cho mỗi gói state nữa
-      // (trước đây làm full _initializeHome mỗi tin -> nặng + tạo trễ giả).
+      // hoàn toàn hướng sự kiện qua stream MQTT. KHÔNG re-fetch REST cho mỗi gói state nữa.
       // CHỈ nạp lại danh sách REST khi xuất hiện thiết bị LẠ chưa có trong lưới (vừa Add/Link).
-      final String upperTopic = topic.toUpperCase();
-      final bool knownDevice = _currentHomeDevices.any((d) {
-        final m = (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase();
-        return m.isNotEmpty && upperTopic.contains(m);
-      });
-      if (knownDevice) return; // thiết bị đã biết -> đã cập nhật realtime qua DPS, khỏi re-fetch
+      //
+      // [FIX GỌI 4 LẦN] Ngay sau subscribe smarthub/{home_id}/#, broker dội cả loạt retained
+      // message (bridge status, telemetry, endpoint Hub, echo lệnh). Trước đây MỌI topic không
+      // chứa MAC đã biết đều bị coi là "thiết bị mới" -> mỗi cửa sổ debounce 500ms lại nổ thêm
+      // một _initializeHome, và topic không bao giờ trở thành "đã biết" thì kích lại VÔ HẠN
+      // theo từng gói tin định kỳ. Nay lọc 3 lớp:
+      //   (1) Topic KHÔNG có segment dạng MAC (12 hex) -> không bao giờ là thiết bị mới, bỏ.
+      //   (2) Có bất kỳ MAC nào đã nằm trong lưới -> realtime đã xử lý qua DPS, bỏ.
+      //   (3) MAC lạ chỉ được cấp ĐÚNG 1 lượt re-fetch mỗi phiên: re-fetch xong mà vẫn lạ
+      //       (thiết bị con Hub/nhà khác) thì im lặng vĩnh viễn, không kéo REST nữa.
+      final List<String> macsInTopic = [
+        for (final part in topic.split('/'))
+          if (part.length == 12 && _macSegmentRegex.hasMatch(part)) part.toUpperCase(),
+      ];
+      if (macsInTopic.isEmpty) return; // (1) bridge/status/echo — không phải thiết bị
 
-      if (_debounceSync?.isActive ?? false) _debounceSync!.cancel();
-      _debounceSync = Timer(const Duration(milliseconds: 500), () {
+      final Set<String> owned = _ownedMacs;
+      if (macsInTopic.any(owned.contains)) return; // (2) đã có trong lưới
+
+      final newMacs = macsInTopic.where((m) => !_resyncRequestedMacs.contains(m)).toList();
+      if (newMacs.isEmpty) return; // (3) đã re-fetch cho MAC này rồi mà vẫn lạ -> bỏ qua
+      _resyncRequestedMacs.addAll(newMacs);
+
+      // Debounce 2s: gom trọn cơn bão retained lúc vừa subscribe thành MỘT lần nạp duy nhất
+      _debounceSync?.cancel();
+      _debounceSync = Timer(const Duration(seconds: 2), () {
         if (mounted) _initializeHome(isSilent: true); // chỉ để nạp thiết bị mới vào danh sách
       });
     });

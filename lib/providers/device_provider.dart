@@ -172,6 +172,10 @@ class DeviceProvider with ChangeNotifier {
     _globalListener = callback;
   }
 
+  /// Dashboard gọi trong dispose(): gỡ listener trỏ vào State đã unmount để gói tin
+  /// MQTT về trễ không gọi ngược vào widget chết (an toàn vòng đời khi đăng xuất).
+  void clearGlobalMqttListener() => _globalListener = null;
+
   /// Hook do Dashboard đăng ký (trỏ tới _initializeHome) để các nơi KHÔNG giữ context
   /// (vd AutomationProvider sau khi chạy Scene) có thể "ép" App kéo lại trạng thái thật
   /// từ REST — lưới an toàn khi sóng MQTT state feedback về trễ/rớt.

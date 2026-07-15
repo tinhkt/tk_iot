@@ -26,15 +26,33 @@ class DashboardSyncService {
 
   /// [FIX HANDSHAKE 4G] MỘT http.Client DÙNG CHUNG, sống suốt vòng đời App: giữ kết nối
   /// keep-alive để TÁI DÙNG phiên TLS đã bắt tay -> các lần gọi sau KHÔNG mở handshake mới.
-  /// Nguyên nhân "Connection terminated during handshake" chỉ riêng sync: lúc mở App bắn
-  /// đồng loạt login+sync+notifications+homes+weather+MQTT -> nhiều TLS handshake đua nhau
-  /// qua NPM/4G, một cái thua cuộc bị rớt (thường là sync). Dùng client chung + retry để
-  /// gom về ít kết nối và tự nối lại khi rớt tạm. (KHÔNG close client — dùng lại toàn app.)
+  /// (KHÔNG close client — dùng lại toàn app.)
   static final http.Client _client = http.Client();
 
-  /// Gọi sync có retry (tối đa 3 lần, backoff tăng dần) chịu lỗi handshake/rớt 4G tạm thời.
+  /// [SINGLE-FLIGHT / MUTEX] Luồng sync ĐANG chạy (nếu có). Nhiều nơi gọi fetch() đồng loạt
+  /// lúc khởi tạo (Provider + rebuild + post-frame...) trước đây mở 4 request => 4 TLS
+  /// handshake cùng lúc => NPM/4G firewall drop ("terminated during handshake"). Nay 4 lời
+  /// gọi trùng CHIA SẺ cùng MỘT Future -> chỉ đúng 1 HTTP request thật sự chạy.
+  static Future<DashboardSyncResult>? _activeFetch;
+
+  /// fetch() — cổng CHỐNG GỌI ĐỒNG LOẠT: đang có luồng tải thì tái dùng, không mở request mới.
+  Future<DashboardSyncResult> fetch() {
+    final active = _activeFetch;
+    if (active != null) {
+      debugPrint('SYNC_DEDUP: đã có luồng đang tải -> tái dùng, KHÔNG mở request mới');
+      return active;
+    }
+    final future = _doFetch();
+    _activeFetch = future;
+    // Clear khi HOÀN TẤT (thành công lẫn lỗi) để lần khởi tạo sau vẫn gọi mới được
+    future.whenComplete(() => _activeFetch = null);
+    return future;
+  }
+
+  /// _doFetch — luồng tải thật: retry tối đa 3 lần (backoff tăng dần) chịu lỗi handshake/rớt 4G.
   /// HTTP non-200 (401/500...) KHÔNG retry (lỗi thật, retry vô ích).
-  Future<DashboardSyncResult> fetch() async {
+  Future<DashboardSyncResult> _doFetch() async {
+    debugPrint('SYNC_CALLING_URL: $_syncUrl'); // in URL tuyệt đối -> loại trừ double-slash/URI rác
     for (int attempt = 1; attempt <= _maxAttempts; attempt++) {
       try {
         // [AUTH] Cùng cơ chế token với mọi API khác (SecureStorageService)
