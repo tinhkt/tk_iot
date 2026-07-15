@@ -308,11 +308,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       // [PHÒNG] Rooms: có preloaded (sync) thì nạp thẳng khỏi gọi API; không thì fetch riêng.
       // [NGỮ CẢNH] Scenes KHÔNG nằm trong sync -> luôn fetch riêng (fire-and-forget).
+      // [NHÓM] Groups persist bên Redis (/api/groups) — luôn fetch riêng: đây là mắt xích
+      // làm nhóm công tắc ảo SỐNG LẠI sau restart/đăng nhập máy khác (trước đây mock RAM).
+      final roomGroupProv = Provider.of<RoomGroupProvider>(context, listen: false);
       if (preloadedRooms != null) {
-        Provider.of<RoomGroupProvider>(context, listen: false).ingestRooms(homeId, preloadedRooms);
+        roomGroupProv.ingestRooms(homeId, preloadedRooms);
       } else {
-        Provider.of<RoomGroupProvider>(context, listen: false).fetchRooms(homeId);
+        roomGroupProv.fetchRooms(homeId);
       }
+      roomGroupProv.fetchGroups(homeId);
       Provider.of<AutomationProvider>(context, listen: false).fetchScenes(homeId);
 
       {
@@ -802,16 +806,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (err == null) setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
   }
 
-  // [NHÓM] Tạo Công tắc ảo từ các thiết bị đã chọn (mock).
+  // [NHÓM] Tạo Công tắc ảo từ các thiết bị đã chọn — persist thật qua POST /api/groups.
+  // Hỗ trợ nhóm CẦU THANG: dialog nhận danh sách MAC + tên để user gán "Tầng" từng công tắc.
   Future<void> _bulkCreateGroup() async {
     final macs = _selectedMacs();
     if (macs.isEmpty) return;
-    final result = await showCreateGroupDialog(context);
+    // [DISPLAY NAME] Tra tên hiển thị theo MAC — tên user đặt (DPS) thắng tên REST cấp
+    // thiết bị; fallback 4 số cuối do dialog tự lo khi cả hai đều trống.
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+    final Map<String, String> restNameByMac = {
+      for (final d in _currentHomeDevices)
+        (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase():
+            (d['name'] ?? '').toString(),
+    };
+    final result = await showCreateGroupDialog(context,
+        memberMacs: macs,
+        memberNameOf: (mac) =>
+            deviceProv.displayNameOf(mac, fallback: restNameByMac[mac.toUpperCase()] ?? ''));
     if (result == null || !mounted) return;
-    Provider.of<RoomGroupProvider>(context, listen: false).createGroup(result.name, result.iconCodePoint, macs);
+    final String? err = await Provider.of<RoomGroupProvider>(context, listen: false)
+        .createGroup(result.name, result.iconCodePoint, macs,
+            groupType: result.groupType, floors: result.floors);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã tạo nhóm "${result.name}" (${macs.length} thiết bị)'), backgroundColor: tkGreen));
-    setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(err ?? 'Đã tạo nhóm "${result.name}" (${macs.length} thiết bị)'),
+        backgroundColor: err == null ? tkGreen : Colors.redAccent));
+    if (err == null) setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
   }
 
   // [CHUẨN HÓA — NGUỒN BƠM DUY NHẤT] Bộ callback tiêu chuẩn cho MỌI loại thẻ thiết bị.
@@ -890,9 +910,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _openEditGroup(String groupMac) {
-    final avail = _currentHomeDevices.map((d) => {
-      'mac': (d['mac_address'] ?? d['mac'] ?? '').toString(),
-      'name': (d['name'] ?? d['mac_address'] ?? d['mac'] ?? '').toString(),
+    // [DISPLAY NAME] Tên user đặt (kho DPS) thắng tên cấp thiết bị từ REST (sw-xxxx)
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
+    final avail = _currentHomeDevices.map((d) {
+      final String mac = (d['mac_address'] ?? d['mac'] ?? '').toString();
+      return {
+        'mac': mac,
+        'name': deviceProv.displayNameOf(mac, fallback: (d['name'] ?? mac).toString()),
+      };
     }).where((e) => (e['mac'] ?? '').isNotEmpty).toList();
 
     if (MediaQuery.of(context).size.width > 800) {

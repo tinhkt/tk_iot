@@ -108,6 +108,28 @@ class DeviceModel {
   /// Tên hiển thị của endpoint (null nếu Backend chưa gửi tên)
   String? nameOf(String endpoint) => dps['${endpoint}_name']?.toString();
 
+  /// [DISPLAY NAME — NGUỒN DUY NHẤT] Tên cấp THIẾT BỊ: quét các khóa *_name trong kho
+  /// DPS (REST overlay đã đặt tên NGƯỜI DÙNG lên trước tên tự sinh — hash device_names
+  /// thắng tuyệt đối) theo thứ tự khóa ổn định, lấy tên đầu tiên không rỗng.
+  /// null = thiết bị chưa từng có tên nào trong DPS.
+  String? get primaryName {
+    final keys = dps.keys.where((k) => k.endsWith('_name') && !k.startsWith('__')).toList()..sort();
+    for (final k in keys) {
+      final v = dps[k]?.toString().trim() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    return null;
+  }
+
+  /// Tên hiển thị CHỐT cho mọi danh sách thiết bị (sửa nhóm, picker, dialog...):
+  /// tên user đặt (primaryName) -> [fallback] (vd name cấp thiết bị từ REST) -> "Thiết bị {4 cuối}".
+  String displayName([String? fallback]) {
+    final n = primaryName;
+    if (n != null) return n;
+    if (fallback != null && fallback.trim().isNotEmpty) return fallback.trim();
+    return 'Thiết bị ${mac.length >= 4 ? mac.substring(mac.length - 4) : mac}';
+  }
+
   /// Nhóm thiết bị của endpoint do Backend gắn: "fan" | "switch" (null nếu chưa biết)
   String? typeOf(String endpoint) => dps['${endpoint}_type']?.toString();
 
@@ -156,6 +178,17 @@ class DeviceProvider with ChangeNotifier {
 
   /// Lấy nhanh một thiết bị theo MAC (null nếu chưa từng có tín hiệu)
   DeviceModel? deviceOf(String mac) => _devices[_cleanMac(mac)];
+
+  /// [DISPLAY NAME] Tên hiển thị của thiết bị theo MAC — cửa DUY NHẤT cho mọi UI
+  /// danh sách (sửa nhóm, dialog tạo nhóm, picker...). Ưu tiên tên user đặt trong DPS,
+  /// rơi về [fallback] (tên cấp thiết bị từ REST), cuối cùng là "Thiết bị {4 cuối MAC}".
+  String displayNameOf(String mac, {String? fallback}) {
+    final d = _devices[_cleanMac(mac)];
+    if (d != null) return d.displayName(fallback);
+    if (fallback != null && fallback.trim().isNotEmpty) return fallback.trim();
+    final sn = _cleanMac(mac);
+    return 'Thiết bị ${sn.length >= 4 ? sn.substring(sn.length - 4) : sn}';
+  }
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;

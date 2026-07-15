@@ -50,15 +50,26 @@ Future<Room?> showRoomSelectionDialog(BuildContext context, RoomGroupProvider pr
 }
 
 // ============================================================================
-// DIALOG TẠO NHÓM (CreateGroupDialog) — trả về {name, iconCodePoint} hoặc null
+// DIALOG TẠO NHÓM (CreateGroupDialog) — trả về {name, icon, groupType, floors} hoặc null
 // ============================================================================
 class CreateGroupResult {
   final String name;
   final int iconCodePoint;
-  const CreateGroupResult(this.name, this.iconCodePoint);
+  final String groupType; // "normal" | "staircase" (công tắc cầu thang)
+  final Map<String, String> floors; // MAC -> "Tầng N" (chỉ có nghĩa khi staircase)
+  const CreateGroupResult(this.name, this.iconCodePoint,
+      {this.groupType = 'normal', this.floors = const {}});
 }
 
-Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context) {
+/// Danh sách tầng chọn được cho thành viên nhóm cầu thang.
+const List<String> kGroupFloors = [
+  'Tầng 1', 'Tầng 2', 'Tầng 3', 'Tầng 4', 'Tầng 5', 'Tầng 6', 'Tầng 7', 'Tầng 8',
+];
+
+/// [memberMacs] + [memberNameOf]: danh sách thiết bị đã tick chọn — dialog dùng để
+/// render bộ gán "Tầng" cho từng công tắc khi bật chế độ CẦU THANG.
+Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
+    {List<String> memberMacs = const [], String Function(String mac)? memberNameOf}) {
   // Bộ icon gợi ý cho nhóm (đèn/ổ cắm/rèm/toàn nhà...)
   const List<IconData> icons = [
     Icons.lightbulb_outline, Icons.grid_view_rounded, Icons.power_settings_new_rounded,
@@ -66,6 +77,18 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context) {
   ];
   final TextEditingController nameCtrl = TextEditingController();
   int selectedIcon = icons.first.codePoint;
+
+  // [CẦU THANG] Trạng thái chế độ + tầng đã gán từng thành viên (mặc định tuần tự 1..n)
+  bool isStaircase = false;
+  final Map<String, String> floors = {
+    for (int i = 0; i < memberMacs.length; i++)
+      memberMacs[i].toUpperCase(): kGroupFloors[i < kGroupFloors.length ? i : kGroupFloors.length - 1],
+  };
+  String displayName(String mac) {
+    final n = memberNameOf?.call(mac);
+    if (n != null && n.trim().isNotEmpty) return n;
+    return mac.length >= 4 ? '...${mac.substring(mac.length - 4)}' : mac;
+  }
 
   return showDialog<CreateGroupResult>(
     context: context,
@@ -132,6 +155,55 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context) {
                         );
                       }).toList(),
                     ),
+                    // ---- [CẦU THANG] Công tắc liên kết đa tầng ----
+                    if (memberMacs.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        activeTrackColor: _tkGreen,
+                        title: Text('Là công tắc cầu thang',
+                            style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600)),
+                        subtitle: Text('Các công tắc tự đồng bộ trạng thái theo nhau (đảo chiều đa tầng)',
+                            style: TextStyle(color: textSub, fontSize: 11.5)),
+                        value: isStaircase,
+                        onChanged: (v) => setDialog(() => isStaircase = v),
+                      ),
+                      if (isStaircase)
+                        // Gán "Tầng" cho từng công tắc đã tick chọn — cuộn được khi nhóm đông
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 190),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: memberMacs.length,
+                            itemBuilder: (_, i) {
+                              final String sn = memberMacs[i].toUpperCase();
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 3),
+                                child: Row(children: [
+                                  const Icon(Icons.stairs_outlined, color: _tkGreen, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(displayName(sn), maxLines: 1, overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(color: textMain, fontSize: 13.5, fontWeight: FontWeight.w600)),
+                                  ),
+                                  DropdownButton<String>(
+                                    value: floors[sn],
+                                    isDense: true,
+                                    underline: const SizedBox.shrink(),
+                                    dropdownColor: isDark ? const Color(0xFF2A2D31) : Colors.white,
+                                    style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.w600),
+                                    items: kGroupFloors
+                                        .map((f) => DropdownMenuItem(value: f, child: Text(f)))
+                                        .toList(),
+                                    onChanged: (f) => setDialog(() => floors[sn] = f ?? floors[sn]!),
+                                  ),
+                                ]),
+                              );
+                            },
+                          ),
+                        ),
+                    ],
                     const SizedBox(height: 20),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
@@ -143,7 +215,11 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context) {
                           onPressed: () {
                             final name = nameCtrl.text.trim();
                             if (name.isEmpty) return;
-                            Navigator.pop(ctx, CreateGroupResult(name, selectedIcon));
+                            Navigator.pop(ctx, CreateGroupResult(
+                              name, selectedIcon,
+                              groupType: isStaircase ? 'staircase' : 'normal',
+                              floors: isStaircase ? Map<String, String>.from(floors) : const {},
+                            ));
                           },
                           child: const Text('Tạo nhóm'),
                         ),

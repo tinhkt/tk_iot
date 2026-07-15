@@ -53,15 +53,18 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
-    final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
+    // [KÍNH MỜ] Màn này sống TRONG _GlassShell của openAdaptiveScreen — nền/AppBar phải
+    // TRONG SUỐT, chữ contrast chuẩn kính (white / black87), thẻ nội dung dùng dải alpha
+    // (không màu đặc) để giữ độ xuyên thấu của lớp blur phía sau.
+    final Color textMain = isDark ? Colors.white : Colors.black87;
+    final Color textSub = isDark ? Colors.white70 : Colors.black54;
+    final Color cardColor = Colors.white.withValues(alpha: isDark ? 0.08 : 0.55);
 
     return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
+      backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
       appBar: AppBar(
         title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),
-        backgroundColor: cardColor,
+        backgroundColor: Colors.transparent,
         foregroundColor: textMain,
         elevation: 0,
         actions: [

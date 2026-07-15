@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../providers/device_provider.dart';
 import '../../providers/room_group_provider.dart';
 import '../../widgets/glass_popup.dart';
 
@@ -15,13 +16,18 @@ class EditGroupScreen extends StatelessWidget {
 
   static const Color tkGreen = Color(0xFF00A651);
 
-  String _nameOf(String mac) {
+  /// [DISPLAY NAME] Tên hiển thị: ưu tiên tên NGƯỜI DÙNG ĐẶT từ kho DPS
+  /// (DeviceProvider.displayNameOf — nguồn duy nhất toàn app), fallback = name cấp
+  /// thiết bị trong [availableDevices] (có thể là tên tự sinh sw-xxxx), cuối cùng MAC.
+  String _nameOf(DeviceProvider deviceProv, String mac) {
+    String? restName;
     for (final d in availableDevices) {
       if ((d['mac'] ?? '').toString().toUpperCase() == mac.toUpperCase()) {
-        return (d['name'] ?? mac).toString();
+        restName = (d['name'] ?? '').toString();
+        break;
       }
     }
-    return mac; // chưa có trong danh sách -> hiện MAC
+    return deviceProv.displayNameOf(mac, fallback: restName ?? mac);
   }
 
   @override
@@ -44,6 +50,8 @@ class EditGroupScreen extends StatelessWidget {
       body: SafeArea(
         child: Consumer<RoomGroupProvider>(
           builder: (context, provider, _) {
+            // watch DeviceProvider: đổi tên thiết bị ở nơi khác -> danh sách này tự cập nhật
+            final deviceProv = context.watch<DeviceProvider>();
             final group = provider.groupOf(groupMac);
             if (group == null) {
               return Center(child: Text('Nhóm không tồn tại', style: TextStyle(color: textSub)));
@@ -70,7 +78,7 @@ class EditGroupScreen extends StatelessWidget {
                         decoration: BoxDecoration(color: isDark ? const Color(0xFF1E293B) : Colors.white, borderRadius: BorderRadius.circular(12)),
                         child: ListTile(
                           leading: Icon(Icons.lightbulb_outline, color: tkGreen),
-                          title: Text(_nameOf(mac), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+                          title: Text(_nameOf(deviceProv, mac), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
                           subtitle: Text(mac, style: TextStyle(color: textSub, fontSize: 11)),
                           trailing: IconButton(
                             icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
@@ -100,6 +108,7 @@ class EditGroupScreen extends StatelessWidget {
   // Picker chọn thêm công tắc CHƯA thuộc nhóm — [KÍNH MỜ ĐỒNG BỘ] qua showGlassPopup
   // (PC: dialog giữa màn hình; Mobile: sheet; màu chữ do panel kính ép tương phản)
   void _pickDevices(BuildContext context, RoomGroupProvider provider, DeviceGroup group) {
+    final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
     final candidates = availableDevices.where((d) {
       final mac = (d['mac'] ?? '').toString().toUpperCase();
       return mac.isNotEmpty && !group.memberMacs.contains(mac) && !mac.startsWith('GROUP_');
@@ -114,9 +123,11 @@ class EditGroupScreen extends StatelessWidget {
               shrinkWrap: true,
               children: candidates.map((d) {
                 final mac = (d['mac'] ?? '').toString();
+                // [DISPLAY NAME] danh sách khả dụng cũng ưu tiên tên user đặt từ DPS
+                final name = deviceProv.displayNameOf(mac, fallback: (d['name'] ?? mac).toString());
                 return ListTile(
                   leading: const Icon(Icons.add_circle_outline, color: tkGreen),
-                  title: Text((d['name'] ?? mac).toString(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
                   onTap: () {
                     provider.addToGroup(group.mac, mac);

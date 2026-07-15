@@ -25,14 +25,58 @@ class Room {
 
 /// Nhóm thiết bị / Công tắc ảo (Virtual Switch Group). mac dạng "GROUP_xxx" để render
 /// bằng chính SmartSwitchCard (phân biệt bằng badge). memberMacs = MAC các thiết bị con.
-/// (Nhóm vẫn là mock cục bộ — Backend chưa có bảng groups.)
+/// Persist bên Backend: Redis hash `device_groups:{homeId}` (cụm /api/groups).
 class DeviceGroup {
   final String mac; // "GROUP_xxx" — dùng như MAC ảo
   String name;
   int iconCodePoint; // icon do user chọn (lưu codePoint để dễ serialize sau này)
+  String groupType; // "normal" | "staircase" (công tắc cầu thang — thành viên tự đồng bộ nhau)
   final Set<String> memberMacs;
-  DeviceGroup({required this.mac, required this.name, required this.iconCodePoint, Set<String>? members})
-      : memberMacs = members ?? {};
+  final Map<String, String> memberFloors; // MAC -> "Tầng 1"... (siêu dữ liệu nhóm cầu thang)
+  DeviceGroup({
+    required this.mac,
+    required this.name,
+    required this.iconCodePoint,
+    this.groupType = 'normal',
+    Set<String>? members,
+    Map<String, String>? floors,
+  })  : memberMacs = members ?? {},
+        memberFloors = floors ?? {};
+
+  bool get isStaircase => groupType == 'staircase';
+
+  /// Khuôn JSON hai chiều với DeviceGroupDoc bên Backend Go — SCHEMA V2 ưu tiên
+  /// members[{mac,floor}], rơi về device_macs (bản ghi V1) khi members vắng mặt.
+  factory DeviceGroup.fromJson(Map<String, dynamic> json) {
+    final members = <String>{};
+    final floors = <String, String>{};
+    final rawMembers = json['members'];
+    if (rawMembers is List && rawMembers.isNotEmpty) {
+      for (final m in rawMembers.whereType<Map>()) {
+        final sn = (m['mac'] ?? '').toString().toUpperCase();
+        if (sn.isEmpty) continue;
+        members.add(sn);
+        final floor = (m['floor'] ?? '').toString();
+        if (floor.isNotEmpty) floors[sn] = floor;
+      }
+    } else {
+      for (final e in (json['device_macs'] as List?) ?? const []) {
+        members.add(e.toString().toUpperCase());
+      }
+    }
+    return DeviceGroup(
+      mac: (json['mac'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      iconCodePoint: (json['icon_code'] as num?)?.toInt() ?? Icons.grid_view_rounded.codePoint,
+      groupType: (json['group_type'] ?? 'normal').toString(),
+      members: members,
+      floors: floors,
+    );
+  }
+
+  /// Mảng members [{mac, floor}] đúng khuôn Backend — dùng cho body POST/PUT.
+  List<Map<String, String>> membersJson() =>
+      [for (final m in memberMacs) {'mac': m, 'floor': memberFloors[m] ?? ''}];
 
   /// Bộ icon nhóm user chọn được (đồng bộ với showCreateGroupDialog) — CONST để tra
   /// ngược từ codePoint, không dựng IconData động (giữ icon tree-shaking + analyze sạch).
@@ -350,8 +394,10 @@ class RoomGroupProvider extends ChangeNotifier {
     }
   }
 
-  // ===================== NHÓM (GROUPS) — VẪN MOCK CỤC BỘ =====================
-  final List<DeviceGroup> _groups = [];
+  // ===================== NHÓM (GROUPS) — API THẬT (/api/groups, Redis) =====================
+  // Trước đây mock RAM thuần -> restart App / đăng nhập máy khác là nhóm BIẾN MẤT.
+  // Nay: Optimistic UI (sửa list cục bộ NGAY) + gọi HTTP persist, lỗi thì hoàn tác.
+  List<DeviceGroup> _groups = [];
 
   List<DeviceGroup> get groups => List.unmodifiable(_groups);
 
@@ -364,39 +410,179 @@ class RoomGroupProvider extends ChangeNotifier {
     return null;
   }
 
-  /// Tạo nhóm mới từ tập MAC đã chọn (mock). Đấu API sau: POST /groups.
-  DeviceGroup createGroup(String name, int iconCodePoint, List<String> members) {
+  /// GET /api/groups?home_id=... — nạp danh sách nhóm đã persist. Dashboard gọi cạnh
+  /// fetchRooms trong luồng khởi tạo — đây chính là mắt xích làm nhóm "sống lại" sau restart.
+  Future<String?> fetchGroups(String homeId) async {
+    if (homeId.isEmpty) return 'Thiếu home_id';
+    _homeId = homeId;
+    try {
+      final res = await http.get(
+        Uri.parse('$_apiBase/groups?home_id=${Uri.encodeComponent(homeId)}'),
+        headers: await _authHeaders(),
+      );
+      if (res.statusCode != 200) return _errorFrom(res, 'Không tải được danh sách nhóm');
+
+      final body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      _groups = (body['groups'] as List? ?? [])
+          .whereType<Map>()
+          .map((e) => DeviceGroup.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+      if (kDebugMode) print('🧩 [GROUPS] Server trả ${_groups.length} nhóm (home $homeId)');
+      notifyListeners();
+      return null;
+    } catch (e) {
+      if (kDebugMode) print('❌ [GROUPS] Lỗi tải nhóm: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
+  /// POST /api/groups — tạo nhóm mới. Optimistic: App tự sinh MAC ảo "GROUP_{millis}"
+  /// và vẽ thẻ NGAY; Backend giữ nguyên MAC client cấp nên identity không đổi sau persist.
+  /// [groupType]='staircase' + [floors] (MAC->"Tầng N") cho nhóm CÔNG TẮC CẦU THANG —
+  /// Backend Staircase Engine sẽ tự đồng bộ trạng thái các thành viên theo nhau.
+  /// Lỗi mạng/server -> gỡ thẻ ra + trả câu báo lỗi.
+  Future<String?> createGroup(String name, int iconCodePoint, List<String> members,
+      {String groupType = 'normal', Map<String, String>? floors}) async {
     final g = DeviceGroup(
       mac: 'GROUP_${DateTime.now().millisecondsSinceEpoch}',
       name: name.trim(),
       iconCodePoint: iconCodePoint,
+      groupType: groupType,
       members: members.map((e) => e.toUpperCase()).toSet(),
+      floors: {
+        if (floors != null)
+          for (final e in floors.entries) e.key.toUpperCase(): e.value,
+      },
     );
     _groups.add(g);
     notifyListeners();
-    return g;
-  }
 
-  void addToGroup(String groupMac, String deviceMac) {
-    groupOf(groupMac)?.memberMacs.add(deviceMac.toUpperCase());
-    notifyListeners();
-  }
-
-  void removeFromGroup(String groupMac, String deviceMac) {
-    groupOf(groupMac)?.memberMacs.remove(deviceMac.toUpperCase());
-    notifyListeners();
-  }
-
-  void renameGroup(String groupMac, String name) {
-    final g = groupOf(groupMac);
-    if (g != null) {
-      g.name = name.trim();
+    try {
+      final res = await http.post(
+        Uri.parse('$_apiBase/groups'),
+        headers: await _authHeaders(),
+        body: jsonEncode({
+          'home_id': _homeId,
+          'mac': g.mac,
+          'name': g.name,
+          'icon_code': g.iconCodePoint,
+          'group_type': g.groupType,
+          'members': g.membersJson(),
+        }),
+      );
+      if (res.statusCode != 201) {
+        _groups.removeWhere((x) => x.mac == g.mac); // hoàn tác thẻ vừa vẽ
+        notifyListeners();
+        return _errorFrom(res, 'Không lưu được nhóm');
+      }
+      return null;
+    } catch (e) {
+      _groups.removeWhere((x) => x.mac == g.mac);
       notifyListeners();
+      if (kDebugMode) print('❌ [GROUPS] Lỗi tạo nhóm: $e');
+      return 'Lỗi kết nối máy chủ';
     }
   }
 
-  void deleteGroup(String groupMac) {
-    _groups.removeWhere((g) => g.mac == groupMac);
+  /// PUT /api/groups/:mac {members} — đẩy danh sách thành viên MỚI NHẤT (kèm floor)
+  /// lên server (idempotent: gửi cả danh sách thay vì diff). Dùng chung cho thêm/gỡ.
+  Future<String?> _pushMembers(DeviceGroup g) async {
+    try {
+      final res = await http.put(
+        Uri.parse('$_apiBase/groups/${Uri.encodeComponent(g.mac)}'),
+        headers: await _authHeaders(),
+        body: jsonEncode({'home_id': _homeId, 'members': g.membersJson()}),
+      );
+      if (res.statusCode != 200) return _errorFrom(res, 'Không lưu được thành viên nhóm');
+      return null;
+    } catch (e) {
+      if (kDebugMode) print('❌ [GROUPS] Lỗi lưu thành viên: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
+  /// [floor] tùy chọn — gán tầng luôn khi thêm thành viên vào nhóm cầu thang.
+  Future<String?> addToGroup(String groupMac, String deviceMac, {String? floor}) async {
+    final g = groupOf(groupMac);
+    if (g == null) return 'Nhóm không tồn tại';
+    final sn = deviceMac.toUpperCase();
+    final bool added = g.memberMacs.add(sn);
+    if (floor != null && floor.isNotEmpty) g.memberFloors[sn] = floor;
+    if (!added && floor == null) return null; // đã có sẵn, không đổi gì — khỏi gọi mạng
     notifyListeners();
+    final err = await _pushMembers(g);
+    if (err != null) {
+      if (added) g.memberMacs.remove(sn); // hoàn tác
+      notifyListeners();
+    }
+    return err;
+  }
+
+  Future<String?> removeFromGroup(String groupMac, String deviceMac) async {
+    final g = groupOf(groupMac);
+    if (g == null) return 'Nhóm không tồn tại';
+    final sn = deviceMac.toUpperCase();
+    if (!g.memberMacs.remove(sn)) return null; // vốn không thuộc nhóm — idempotent
+    final String? oldFloor = g.memberFloors.remove(sn);
+    notifyListeners();
+    final err = await _pushMembers(g);
+    if (err != null) {
+      g.memberMacs.add(sn); // hoàn tác
+      if (oldFloor != null) g.memberFloors[sn] = oldFloor;
+      notifyListeners();
+    }
+    return err;
+  }
+
+  /// PUT /api/groups/:mac {name} — đổi tên nhóm, optimistic + hoàn tác khi lỗi.
+  Future<String?> renameGroup(String groupMac, String name) async {
+    final g = groupOf(groupMac);
+    if (g == null) return 'Nhóm không tồn tại';
+    final String oldName = g.name;
+    g.name = name.trim();
+    notifyListeners();
+    try {
+      final res = await http.put(
+        Uri.parse('$_apiBase/groups/${Uri.encodeComponent(groupMac)}'),
+        headers: await _authHeaders(),
+        body: jsonEncode({'home_id': _homeId, 'name': g.name}),
+      );
+      if (res.statusCode != 200) {
+        g.name = oldName;
+        notifyListeners();
+        return _errorFrom(res, 'Không đổi được tên nhóm');
+      }
+      return null;
+    } catch (e) {
+      g.name = oldName;
+      notifyListeners();
+      if (kDebugMode) print('❌ [GROUPS] Lỗi đổi tên nhóm: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
+  /// DELETE /api/groups/:mac — xóa nhóm, optimistic; lỗi thì kéo lại từ server (nguồn sự thật).
+  Future<String?> deleteGroup(String groupMac) async {
+    final idx = _groups.indexWhere((g) => g.mac == groupMac);
+    if (idx == -1) return null;
+    final DeviceGroup removed = _groups.removeAt(idx);
+    notifyListeners();
+    try {
+      final res = await http.delete(
+        Uri.parse('$_apiBase/groups/${Uri.encodeComponent(groupMac)}?home_id=${Uri.encodeComponent(_homeId)}'),
+        headers: await _authHeaders(),
+      );
+      if (res.statusCode != 200) {
+        _groups.insert(idx.clamp(0, _groups.length), removed); // hoàn tác đúng vị trí
+        notifyListeners();
+        return _errorFrom(res, 'Không xóa được nhóm');
+      }
+      return null;
+    } catch (e) {
+      _groups.insert(idx.clamp(0, _groups.length), removed);
+      notifyListeners();
+      if (kDebugMode) print('❌ [GROUPS] Lỗi xóa nhóm: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
   }
 }

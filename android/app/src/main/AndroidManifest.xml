@@ -13,8 +13,7 @@
         android:label="Tuấn Kiệt IoT"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher" 
-        tools:replace="android:label,android:icon,android:roundIcon" 
+        tools:replace="android:label,android:icon" 
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:usesCleartextTraffic="true"> 

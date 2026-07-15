@@ -39,7 +39,8 @@ Future<T?> showGlassPopup<T>(
     context: context,
     isScrollControlled: true,
     enableDrag: false, // cuộn danh sách không kéo sập sheet — đóng bằng nút X
-    backgroundColor: Colors.transparent,
+    backgroundColor: Colors.transparent, // bắt buộc để nhìn xuyên thấu lớp kính
+    elevation: 0,
     builder: (ctx) => Padding(
       // Bàn phím bật lên thì sheet tự nâng theo — TextField không bị che
       padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
@@ -63,20 +64,24 @@ class GlassPopupPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    // [CONTRAST] Màu chữ/icon chủ đạo trên nền kính — ép xuống toàn bộ cây con
-    final Color onGlass = isDark ? Colors.white.withValues(alpha: 0.95) : const Color(0xFF0F172A);
+    // [CONTRAST] Chữ/icon trên nền kính: Dark = Trắng tinh, Light = black87 (đậm w600+) —
+    // tương phản do MÀU CHỮ đảm nhận, KHÔNG phải do làm đục nền.
+    final Color onGlass = isDark ? Colors.white : Colors.black87;
     final BorderRadius radius = isSheet ? const BorderRadius.vertical(top: Radius.circular(20)) : BorderRadius.circular(24);
 
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
           decoration: BoxDecoration(
-            // alpha 0.85: đủ trong để thấy kính, đủ đặc để chữ không chìm
-            color: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.85),
+            // [KÍNH THẬT] Tint BÁN TRONG SUỐT — tuyệt đối không màu đặc: lớp blur phía sau
+            // phải nhìn thấy được thì mới ra glassmorphism. (Lưu ý Flutter: color phải nằm
+            // TRONG BoxDecoration — Container không cho dùng đồng thời color + decoration.)
+            color: isDark ? Colors.black.withValues(alpha: 0.55) : Colors.white.withValues(alpha: 0.65),
             borderRadius: radius,
-            border: Border.all(color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.12)),
+            // Viền SÁNG nhẹ bắt sáng ở mép — tạo khối tách panel khỏi nền
+            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
             gradient: LinearGradient(
               begin: Alignment.topLeft, end: Alignment.bottomRight,
               colors: [Colors.white.withValues(alpha: 0.10), Colors.white.withValues(alpha: 0.02)],
@@ -106,7 +111,8 @@ class GlassPopupPanel extends StatelessWidget {
                         ),
                         IconButton(
                           tooltip: 'Đóng',
-                          icon: Icon(Icons.close, color: onGlass.withValues(alpha: 0.75), size: 22),
+                          // Icon đậm full-color — sắc nét trên nền kính, không còn mờ 0.75
+                          icon: Icon(Icons.close, color: onGlass, size: 22),
                           onPressed: () => Navigator.pop(context),
                         ),
                       ]),
