@@ -82,7 +82,15 @@ class EditGroupScreen extends StatelessWidget {
                           subtitle: Text(mac, style: TextStyle(color: textSub, fontSize: 11)),
                           trailing: IconButton(
                             icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
-                            onPressed: () => provider.removeFromGroup(groupMac, mac),
+                            // await + báo lỗi rõ ràng: gỡ mà server không lưu được thì
+                            // thành viên tự quay lại danh sách (revert) kèm SnackBar đỏ
+                            onPressed: () async {
+                              final err = await provider.removeFromGroup(groupMac, mac);
+                              if (err != null && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                              }
+                            },
                           ),
                         ),
                       )),
@@ -129,9 +137,15 @@ class EditGroupScreen extends StatelessWidget {
                   leading: const Icon(Icons.add_circle_outline, color: tkGreen),
                   title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
-                  onTap: () {
-                    provider.addToGroup(group.mac, mac);
+                  onTap: () async {
                     Navigator.pop(ctx);
+                    // await kết quả persist thật — thất bại là thấy SnackBar đỏ ngay,
+                    // không còn cảnh thêm "thành công" trên RAM rồi bốc hơi sau restart
+                    final err = await provider.addToGroup(group.mac, mac);
+                    if (err != null && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+                    }
                   },
                 );
               }).toList(),

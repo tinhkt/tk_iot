@@ -468,6 +468,9 @@ class RoomGroupProvider extends ChangeNotifier {
           'icon_code': g.iconCodePoint,
           'group_type': g.groupType,
           'members': g.membersJson(),
+          // [CHỐNG LỆCH PHIÊN BẢN] backend V1 chỉ đọc device_macs — gửi kèm để
+          // thành viên không "bốc hơi" khi server chưa deploy schema V2
+          'device_macs': g.memberMacs.toList(),
         }),
       );
       if (res.statusCode != 201) {
@@ -484,16 +487,31 @@ class RoomGroupProvider extends ChangeNotifier {
     }
   }
 
-  /// PUT /api/groups/:mac {members} — đẩy danh sách thành viên MỚI NHẤT (kèm floor)
-  /// lên server (idempotent: gửi cả danh sách thay vì diff). Dùng chung cho thêm/gỡ.
+  /// PUT /api/groups/:mac — đẩy danh sách thành viên MỚI NHẤT lên server (idempotent:
+  /// gửi cả danh sách thay vì diff). Dùng chung cho thêm/gỡ thành viên.
+  ///
+  /// [CHỐNG LỆCH PHIÊN BẢN] Gửi SONG SONG cả hai khóa:
+  ///   - members [{mac,floor}] : schema V2 (backend cầu thang) — được ưu tiên đọc
+  ///   - device_macs [...]     : schema V1 — backend cũ CHỈ đọc khóa này; thiếu nó thì
+  ///     server trả 200 mà KHÔNG lưu gì -> "bốc hơi" thành viên sau khi restart App.
+  ///
+  /// [HỘI TỤ SỰ THẬT] PUT xong là fetchGroups() lại từ server (cùng bài học fix
+  /// "mất thiết bị trong phòng sau restart" của Rooms): nếu server không persist,
+  /// thành viên biến mất NGAY trước mắt kèm log — không còn cảnh "tưởng đã lưu".
   Future<String?> _pushMembers(DeviceGroup g) async {
     try {
       final res = await http.put(
         Uri.parse('$_apiBase/groups/${Uri.encodeComponent(g.mac)}'),
         headers: await _authHeaders(),
-        body: jsonEncode({'home_id': _homeId, 'members': g.membersJson()}),
+        body: jsonEncode({
+          'home_id': _homeId,
+          'members': g.membersJson(),
+          'device_macs': g.memberMacs.toList(),
+        }),
       );
       if (res.statusCode != 200) return _errorFrom(res, 'Không lưu được thành viên nhóm');
+      if (kDebugMode) print('🧩 [GROUPS] Đã lưu ${g.memberMacs.length} thành viên nhóm ${g.mac}');
+      if (_homeId.isNotEmpty) fetchGroups(_homeId); // hội tụ về sự thật đã persist
       return null;
     } catch (e) {
       if (kDebugMode) print('❌ [GROUPS] Lỗi lưu thành viên: $e');
