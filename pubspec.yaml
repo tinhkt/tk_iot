@@ -33,14 +33,15 @@ flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/images/icon_app.png"
-  # iOS App Store CẤM icon có kênh alpha (lỗi ITMS-90717) — tool tự ép nền đặc màu trắng
+  # [ADAPTIVE ICON — Android 8+] Bắt buộc khai đủ CẶP background+foreground:
+  # đợt cấu hình trước sinh ra drawable ic_launcher_foreground + colors.xml nhưng
+  # THIẾU mipmap-anydpi-v26/ic_launcher.xml -> launcher đời mới không có icon
+  # adaptive hợp lệ để dùng. Khai đủ ở đây để generator sinh trọn bộ nhất quán.
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/icon_app.png"
+  # Tránh lỗi kênh alpha trên iOS App Store (ITMS-90717)
   remove_alpha_ios: true
   background_color_ios: "#FFFFFF"
-  adaptive_icon_background: "#FFFFFF" # Màu nền lớp dưới của adaptive icon Android 8+
-  # Lớp trên adaptive icon: Android chỉ giữ ~66% vùng giữa (safe zone) rồi cắt khuôn tròn.
-  # Nếu chóp mái nhà bị xén trên máy thật: xuất thêm bản icon_app_foreground.png 1024x1024
-  # với logo thu nhỏ ~660px ở giữa (rìa trong suốt) rồi trỏ dòng dưới vào file đó.
-  adaptive_icon_foreground: "assets/images/icon_app.png"
 
 flutter:
   uses-material-design: true

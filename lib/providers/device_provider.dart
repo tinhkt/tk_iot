@@ -68,7 +68,17 @@ class DeviceModel {
   /// Gộp một loạt giá trị mới vào kho dps (chỉ ghi đè khóa được gửi lên,
   /// giữ nguyên các khóa còn lại). Trả về true nếu có ít nhất 1 thay đổi thật sự
   /// — để Provider quyết định có cần vẽ lại UI hay không.
-  bool mergeDps(Map<String, dynamic> updates) {
+  ///
+  /// [QUY TẮC THÉP Ở MỨC NHÂN — PHÂN QUYỀN TÊN] mergeDps mặc định TỪ CHỐI mọi khóa
+  /// tên ("name" / "*_name"): dù update đến từ MQTT, echo lệnh, optimistic update
+  /// hay bất kỳ luồng nào thêm sau này, tên hiển thị KHÔNG THỂ bị ghi đè — quên
+  /// truyền cờ là bị chặn, không thể "lọt lưới". DUY NHẤT luồng HTTP Sync
+  /// (hydrateFromRest / fetchDeviceState) được mở khóa qua [allowNameKeys]=true:
+  /// HTTP quản lý Tên, mọi luồng khác chỉ quản lý trạng thái vật lý.
+  bool mergeDps(Map<String, dynamic> updates, {bool allowNameKeys = false}) {
+    if (!allowNameKeys) {
+      updates.removeWhere((k, _) => k == 'name' || k.endsWith('_name'));
+    }
     bool changed = false;
     updates.forEach((key, value) {
       if (dps[key] != value) {
@@ -279,7 +289,8 @@ class DeviceProvider with ChangeNotifier {
 
     bool changed = false;
     if (stateData != null && stateData.isNotEmpty) {
-      changed = device.mergeDps(endpointJsonToDps(stateData));
+      // allowNameKeys: REST Sync là NGUỒN DUY NHẤT được quyền ghi tên hiển thị
+      changed = device.mergeDps(endpointJsonToDps(stateData), allowNameKeys: true);
     }
     // Đặt cờ online SAU mergeDps (mergeDps tự bật online=true khi có dữ liệu mới):
     // trạng thái Trực tuyến/Ngoại tuyến thật từ Backend (device_online) phải thắng
@@ -345,16 +356,9 @@ class DeviceProvider with ChangeNotifier {
       // Cùng một bộ dịch với hydrateFromRest — sóng MQTT và ảnh REST không bao giờ lệch khuôn.
       final updates = endpointJsonToDps(json);
 
-      // [QUY TẮC THÉP — PHÂN QUYỀN DỮ LIỆU] Tên hiển thị CHỈ thuộc quyền luồng HTTP Sync
-      // (hydrateFromRest / fetchDeviceState). Sóng MQTT realtime chỉ được chở TRẠNG THÁI
-      // VẬT LÝ (ON/OFF, speed, swing, telemetry) — TUYỆT ĐỐI không được đụng vào tên.
-      // Trước đây chặn bằng Regex nhận diện tên tự sinh (sw-xxxx/Fan-xxxx): firmware/Backend
-      // đổi khuôn tên là lọt lưới và ghi đè tên custom ngay khi bấm Bật/Tắt. Nay CẮT BỎ
-      // TRIỆT ĐỂ mọi khóa tên khỏi payload MQTT, không cần biết giá trị là gì:
-      //   - "name"      : khóa tên trần lọt qua nhánh (b) của endpointJsonToDps
-      //   - "*_name"    : tên endpoint đã dịch ("S_xxx_name") HOẶC gửi sẵn dạng phẳng
-      updates.removeWhere((k, _) => k == 'name' || k.endsWith('_name'));
-
+      // [QUY TẮC THÉP] Khóa tên trong payload MQTT bị chặn NGAY TRONG NHÂN mergeDps
+      // (mặc định allowNameKeys=false) — nơi này không cần và không được lọc tay nữa,
+      // mọi luồng trạng thái đều đi qua đúng một cửa kiểm soát duy nhất.
       changed = device.mergeDps(updates);
       if (kDebugMode && parts.last == 'state') {
         debugPrint('📥 [STATE FEEDBACK] $cleanMac nhận state realtime -> ${json.keys.toList()} (đổi: $changed)');
@@ -408,7 +412,8 @@ class DeviceProvider with ChangeNotifier {
           updates['${id}_swing'] = sub.swing;
           if (sub.name != null) updates['${id}_name'] = sub.name;
         });
-        device.mergeDps(updates);
+        // allowNameKeys: đây là REST GET (HTTP quản lý Tên) — cùng đặc quyền với hydrateFromRest
+        device.mergeDps(updates, allowNameKeys: true);
       }
     } catch (e) {
       if (kDebugMode) print('❌ Lỗi nạp trạng thái thiết bị $mac: $e');
