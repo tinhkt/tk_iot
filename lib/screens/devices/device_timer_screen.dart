@@ -7,15 +7,21 @@ import '../../services/constraint_engine.dart';
 import '../../services/schedule_service.dart';
 import '../../widgets/glass_popup.dart';
 
-/// DeviceTimerScreen — Hẹn giờ & Lịch trình cho MỘT thiết bị.
-/// 2 tab: Đếm ngược (Countdown — mock cục bộ, chưa có API) + Lịch trình (API THẬT:
-/// cụm /api/devices/:mac/schedules qua ScheduleService, state giữ bằng setState).
+/// DeviceTimerScreen — Hẹn giờ & Lịch trình cho MỘT thiết bị (hoặc ĐÚNG MỘT kênh của thiết
+/// bị nhiều relay — xem [endpoint]).
+/// 2 tab: Đếm ngược (API THẬT: /api/devices/:mac/countdown, sống ở Backend — Postgres +
+/// ticker 5s, KHÔNG còn Timer.periodic cục bộ) + Lịch trình (API THẬT: /api/devices/:mac/
+/// schedules qua ScheduleService).
 /// CHẠM vào lịch trình / bộ đếm ngược đang hoạt động -> mở trình CHỈNH SỬA tương ứng
 /// (không chỉ xem); FAB "Thêm lịch" dùng chung editor với chế độ sửa.
 class DeviceTimerScreen extends StatefulWidget {
   final String mac;
   final String deviceName;
-  const DeviceTimerScreen({super.key, required this.mac, required this.deviceName});
+  // [FIX MULTI-RELAY] Kênh CỤ THỂ mà thẻ vừa mở menu đại diện ("S_{mac}_2", "D1"...) — rỗng
+  // = thiết bị 1 kênh (SSW01/quạt/Hub) hoặc lối gọi cũ chưa nâng cấp. MỌI lịch/đếm ngược tạo
+  // từ màn hình này đều mang endpoint này, đảm bảo lệnh CHỈ tác động đúng kênh đang xem.
+  final String endpoint;
+  const DeviceTimerScreen({super.key, required this.mac, required this.deviceName, this.endpoint = ''});
 
   @override
   State<DeviceTimerScreen> createState() => _DeviceTimerScreenState();
@@ -34,11 +40,12 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
   void initState() {
     super.initState();
     _loadSchedules();
+    _loadCountdown();
   }
 
   Future<void> _loadSchedules() async {
     setState(() => _loadingSchedules = true);
-    final (list, err) = await _scheduleApi.fetchSchedules(widget.mac);
+    final (list, err) = await _scheduleApi.fetchSchedules(widget.mac, endpoint: widget.endpoint);
     if (!mounted) return;
     setState(() {
       _schedules = list;
@@ -51,11 +58,14 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: isError ? Colors.redAccent : tkGreen));
   }
 
-  // ----- ĐẾM NGƯỢC (mock, chạy trên App): hết giờ sẽ Bật/Tắt thiết bị -----
-  DateTime? _countdownEndsAt;      // null = chưa đặt
-  Duration _countdownDuration = const Duration(hours: 1);
-  bool _countdownTurnOn = false;   // hành động khi hết giờ: true=Bật, false=Tắt
-  Timer? _ticker;                  // vẽ lại đồng hồ mỗi giây khi đang chạy
+  // ----- ĐẾM NGƯỢC — API THẬT (bảng device_countdowns, ticker Backend 5s) -----
+  // _ticker ở đây CHỈ vẽ lại đồng hồ trên màn hình mỗi giây (UI thuần) — việc BẮN LỆNH thật
+  // khi hết giờ do Backend tự làm dù App có đang mở hay không, KHÔNG phụ thuộc widget này.
+  final CountdownService _countdownApi = CountdownService();
+  CountdownItem? _countdown; // null = chưa đặt
+  bool _loadingCountdown = true;
+  Duration _countdownDuration = const Duration(hours: 1); // giá trị gợi ý cho lần đặt tiếp theo
+  Timer? _ticker;
 
   @override
   void dispose() {
@@ -63,12 +73,24 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
     super.dispose();
   }
 
-  Duration get _remaining {
-    final end = _countdownEndsAt;
-    if (end == null) return Duration.zero;
-    final d = end.difference(DateTime.now());
-    return d.isNegative ? Duration.zero : d;
+  /// Gọi lúc mở màn hình để KHÔI PHỤC đếm ngược đang chạy (nếu có) — trước đây đóng/mở lại
+  /// App là mất trắng bộ đếm vì nó chỉ sống trong biến State cục bộ.
+  Future<void> _loadCountdown() async {
+    setState(() => _loadingCountdown = true);
+    final (cd, err) = await _countdownApi.fetchActive(widget.mac, endpoint: widget.endpoint);
+    if (!mounted) return;
+    setState(() {
+      _countdown = cd;
+      _loadingCountdown = false;
+    });
+    if (err != null) {
+      _snack(err, isError: true);
+    } else if (cd != null) {
+      _startTicker();
+    }
   }
+
+  Duration get _remaining => _countdown?.remaining ?? Duration.zero;
 
   String _fmtDuration(Duration d) {
     String two(int n) => n.toString().padLeft(2, '0');
@@ -79,13 +101,17 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      if (_remaining == Duration.zero && _countdownEndsAt != null) {
-        // Hết giờ (mock): báo hành động rồi tự xóa bộ đếm. Đấu API/MQTT sau.
-        final act = _countdownTurnOn ? 'BẬT' : 'TẮT';
-        setState(() => _countdownEndsAt = null);
+      if (_countdown != null && _remaining == Duration.zero) {
+        // Hiển thị hết 00:00:00 — Backend là nơi QUYẾT ĐỊNH thật sự đã bắn lệnh hay chưa
+        // (ticker Server 5s có thể trễ vài giây so với đồng hồ App). Poll lại 1 lần để đồng
+        // bộ UI với sự thật thay vì tự đoán đã xong.
         _ticker?.cancel();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Hết giờ đếm ngược — $act "${widget.deviceName}"'), backgroundColor: tkGreen));
+        _loadCountdown().then((_) {
+          if (mounted && _countdown == null) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('Hết giờ đếm ngược cho "${widget.deviceName}"'), backgroundColor: tkGreen));
+          }
+        });
         return;
       }
       setState(() {}); // tick: cập nhật số giây còn lại
@@ -140,7 +166,10 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
   // TAB ĐẾM NGƯỢC — chạm vào đồng hồ đang chạy để CHỈNH SỬA lại thời lượng
   // ==========================================================================
   Widget _buildCountdownTab(Color cardColor, Color textMain, Color textSub) {
-    final bool active = _countdownEndsAt != null;
+    if (_loadingCountdown) {
+      return const Center(child: CircularProgressIndicator(color: tkGreen));
+    }
+    final bool active = _countdown != null;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -163,7 +192,7 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
                         style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold)),
                     if (active) ...[
                       const SizedBox(height: 6),
-                      Text('${_countdownTurnOn ? 'Bật' : 'Tắt'} khi hết giờ', style: TextStyle(color: textSub, fontSize: 11)),
+                      Text('${_countdown!.turnOn ? 'Bật' : 'Tắt'} khi hết giờ', style: TextStyle(color: textSub, fontSize: 11)),
                       Text('Chạm để chỉnh sửa', style: TextStyle(color: tkGreen, fontSize: 11, fontWeight: FontWeight.w600)),
                     ],
                   ],
@@ -195,9 +224,18 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
                     style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Colors.redAccent), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
                     icon: const Icon(Icons.stop_rounded, size: 18),
                     label: const Text('Hủy'),
-                    onPressed: () {
+                    onPressed: () async {
                       _ticker?.cancel();
-                      setState(() => _countdownEndsAt = null);
+                      final prev = _countdown;
+                      setState(() => _countdown = null); // optimistic
+                      final err = await _countdownApi.cancel(widget.mac, endpoint: widget.endpoint);
+                      if (!mounted) return;
+                      if (err != null) {
+                        setState(() => _countdown = prev); // hoàn tác
+                        _snack(err, isError: true);
+                      } else {
+                        _snack('Đã hủy đếm ngược');
+                      }
                     },
                   ),
                 ],
@@ -210,17 +248,21 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
 
   /// Popup đặt/chỉnh đếm ngược — [KÍNH MỜ ĐỒNG BỘ] qua showGlassPopup (PC: dialog
   /// giữa màn hình; Mobile: sheet). Đang chạy -> picker đổ sẵn thời gian CÒN LẠI.
+  /// [API THẬT] Bấm "Bắt đầu" -> POST /api/devices/:mac/countdown (seconds tính từ LÚC GỌI,
+  /// Server tự cộng vào đồng hồ của nó — tránh lệch giờ App/Server).
   void _editCountdown() {
-    Duration picked = _countdownEndsAt != null ? _remaining : _countdownDuration;
+    Duration picked = _countdown != null ? _remaining : _countdownDuration;
     if (picked < const Duration(minutes: 1)) picked = const Duration(minutes: 1);
-    bool turnOn = _countdownTurnOn;
+    bool turnOn = _countdown?.turnOn ?? false;
+    final bool wasActive = _countdown != null;
 
     showGlassPopup(
       context,
-      title: _countdownEndsAt != null ? 'Chỉnh sửa đếm ngược' : 'Đặt đếm ngược',
+      title: wasActive ? 'Chỉnh sửa đếm ngược' : 'Đặt đếm ngược',
       body: (ctx) {
         final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
         final Color pickerColor = isDark ? Colors.white.withValues(alpha: 0.95) : const Color(0xFF0F172A);
+        bool submitting = false;
         return StatefulBuilder(
           builder: (ctx, setSheet) => Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -246,25 +288,40 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
                   activeThumbColor: tkGreen,
                   title: Text('Hành động khi hết giờ: ${turnOn ? 'Bật' : 'Tắt'} thiết bị',
                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                  onChanged: (v) => setSheet(() => turnOn = v),
+                  onChanged: submitting ? null : (v) => setSheet(() => turnOn = v),
                 ),
                 const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: Text(_countdownEndsAt != null ? 'Lưu thay đổi' : 'Bắt đầu đếm ngược'),
-                    onPressed: () {
-                      if (picked < const Duration(minutes: 1)) picked = const Duration(minutes: 1);
-                      Navigator.pop(ctx);
-                      setState(() {
-                        _countdownDuration = picked;
-                        _countdownTurnOn = turnOn;
-                        _countdownEndsAt = DateTime.now().add(picked);
-                      });
-                      _startTicker();
-                    },
+                    icon: submitting
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.play_arrow_rounded),
+                    label: Text(wasActive ? 'Lưu thay đổi' : 'Bắt đầu đếm ngược'),
+                    onPressed: submitting
+                        ? null
+                        : () async {
+                            if (picked < const Duration(minutes: 1)) picked = const Duration(minutes: 1);
+                            setSheet(() => submitting = true);
+                            final (cd, err) = await _countdownApi.start(
+                              widget.mac,
+                              endpoint: widget.endpoint,
+                              seconds: picked.inSeconds,
+                              turnOn: turnOn,
+                            );
+                            if (!ctx.mounted) return;
+                            if (err != null || cd == null) {
+                              setSheet(() => submitting = false);
+                              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(err ?? 'Không đặt được đếm ngược'), backgroundColor: Colors.redAccent));
+                              return;
+                            }
+                            Navigator.pop(ctx);
+                            _countdownDuration = picked;
+                            if (!mounted) return;
+                            setState(() => _countdown = cd);
+                            _startTicker();
+                          },
                   ),
                 ),
               ],
@@ -411,8 +468,11 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
 
                       Navigator.pop(ctx);
                       // API THẬT: POST /devices/:mac/schedules (upsert theo id; id rỗng = tạo mới)
+                      // [FIX MULTI-RELAY] endpoint LUÔN gửi kèm — scheduler.go chỉ bắn đúng
+                      // kênh này, không còn dò mọi kênh của thiết bị rồi bắn tất (nổ cả cụm).
                       final (saved, err) = await _scheduleApi.saveSchedule(widget.mac, {
                         'id': editing?.id ?? '',
+                        'endpoint': widget.endpoint,
                         'time': newTime,
                         'repeat_days': repeat,
                         'action': turnOn ? 'ON' : 'OFF',

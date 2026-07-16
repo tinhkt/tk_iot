@@ -226,6 +226,33 @@ class AdminService {
     }
   }
 
+  // ==========================================================================
+  // E. OTA ZERO-TRUST — KHÓA KÝ ECDSA (chỉ đọc Public Key, Private Key không rời Server)
+  // ==========================================================================
+
+  /// Lấy Public Key ECDSA (P-256) mà Server đang dùng để ký firmware — để dán vào mảng
+  /// `OTA_PUBLIC_KEY[65]` (PROGMEM) trong mã nguồn C++ trước khi build firmware mới.
+  /// Trả (hexKey, lỗi) — hexKey null khi lỗi.
+  Future<(String?, String?)> getOtaPublicKey() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/admin/ota/public-key'),
+        headers: await _authHeaders(),
+      );
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        final hexKey = body['public_key_hex']?.toString();
+        if (hexKey == null || hexKey.isEmpty) return (null, 'Server không trả về Public Key');
+        return (hexKey, null);
+      }
+      final body = jsonDecode(res.body);
+      return (null, body['error']?.toString() ?? 'Lỗi HTTP ${res.statusCode}');
+    } catch (e) {
+      if (kDebugMode) print('❌ getOtaPublicKey: $e');
+      return (null, 'Lỗi kết nối máy chủ');
+    }
+  }
+
   /// Xóa 1 file firmware khỏi server (server tự os.Remove file rồi xóa record). Trả true nếu OK.
   Future<bool> deleteFirmware(String id) async {
     try {

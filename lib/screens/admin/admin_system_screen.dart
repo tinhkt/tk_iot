@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:file_picker/file_picker.dart';
 import '../../services/admin_service.dart';
 
@@ -495,6 +496,85 @@ class _FirmwareTabState extends State<_FirmwareTab> {
     ));
   }
 
+  // [OTA ZERO-TRUST] Private Key KHÔNG BAO GIỜ rời Server — chỉ Public Key (không phải bí
+  // mật) mới lấy ra được, để dán vào mảng OTA_PUBLIC_KEY[65] (PROGMEM) trong C++.
+  bool _fetchingKey = false;
+
+  Future<void> _showPublicKeyDialog() async {
+    setState(() => _fetchingKey = true);
+    final (hexKey, err) = await _api.getOtaPublicKey();
+    if (!mounted) return;
+    setState(() => _fetchingKey = false);
+
+    if (err != null || hexKey == null) {
+      _snack(err ?? 'Không lấy được Public Key', isError: true);
+      return;
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
+        final Color textSub = isDark ? Colors.white70 : Colors.black54;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Public Key ký OTA (P-256)'),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isDark ? Colors.black26 : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: SelectableText(
+                    hexKey,
+                    style: TextStyle(color: textMain, fontFamily: 'monospace', fontSize: 12.5, height: 1.4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: textSub),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Hãy dán chuỗi này vào biến pubkey (mảng OTA_PUBLIC_KEY[65]) trong mã nguồn C++ của thiết bị trước khi biên dịch.',
+                        style: TextStyle(color: textSub, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy vào Clipboard'),
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: hexKey));
+                if (!ctx.mounted) return;
+                Navigator.pop(ctx);
+                _snack('Đã copy Public Key vào Clipboard');
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   String _fmtSize(dynamic bytes) {
     final n = (bytes is num) ? bytes.toDouble() : double.tryParse('$bytes') ?? 0;
     if (n <= 0) return '';
@@ -522,8 +602,24 @@ class _FirmwareTabState extends State<_FirmwareTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Tải lên Firmware mới',
-                    style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text('Tải lên Firmware mới',
+                          style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
+                    ),
+                    // [OTA ZERO-TRUST] Public Key không phải bí mật -> lấy tự do để nhúng vào
+                    // C++ firmware. Private Key KHÔNG có đường nào lấy ra qua UI.
+                    TextButton.icon(
+                      style: TextButton.styleFrom(foregroundColor: tkGreen, padding: const EdgeInsets.symmetric(horizontal: 8)),
+                      icon: _fetchingKey
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+                          : const Icon(Icons.vpn_key_outlined, size: 16),
+                      label: const Text('Lấy Khóa Công Khai', style: TextStyle(fontSize: 12)),
+                      onPressed: _fetchingKey ? null : _showPublicKeyDialog,
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 // [DYNAMIC INPUT] DropdownMenu MỞ: bấm mũi tên chọn loại đã có (lấy động từ API)
                 // HOẶC gõ tay tự do loại mới (smart_fan, curtain_v2...). Giá trị dùng = text controller.

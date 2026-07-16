@@ -26,6 +26,7 @@ import '../widgets/device_menu_helper.dart';
 import '../widgets/room_group_dialogs.dart';
 import '../widgets/adaptive_navigation.dart';
 import '../providers/room_group_provider.dart';
+import '../providers/home_provider.dart';
 import '../providers/automation_provider.dart';
 import 'groups/edit_group_screen.dart';
 import 'groups/room_management_screen.dart';
@@ -92,6 +93,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// Giữ tham chiếu provider để dispose() gỡ hook an toàn (không dùng context sau unmount).
   DeviceProvider? _deviceProviderRef;
 
+  /// [CHUYỂN NHÀ] Tham chiếu HomeProvider để lắng nghe activeHomeId đổi (HomeCard gọi
+  /// setActiveHome khi user bấm "Vào điều khiển") — xem _onActiveHomeChanged().
+  HomeProvider? _homeProviderRef;
+  String? _lastKnownActiveHomeId;
+
   /// Segment topic dạng MAC (12 hex) — compile 1 lần vì listener MQTT là hot path.
   static final RegExp _macSegmentRegex = RegExp(r'^[0-9A-Fa-f]{12}$');
   bool _isSelectionMode = false;
@@ -139,8 +145,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     await _initializeHome(); // REST: danh sách + trạng thái thật -> UI tĩnh lên hình trước
     if (!mounted) return;
+
+    // [CHUYỂN NHÀ] Gắn listener SAU KHI lượt khởi tạo đầu đã xong (restoreActiveHome() bên
+    // trong _doInitializeHome đã chạy) — tránh notifyListeners() của chính lượt restore đầu
+    // tiên kích _onActiveHomeChanged() chạy lại _initializeHome() một cách thừa thãi.
+    _homeProviderRef = Provider.of<HomeProvider>(context, listen: false);
+    _lastKnownActiveHomeId = _homeProviderRef!.activeHomeId;
+    _homeProviderRef!.addListener(_onActiveHomeChanged);
+
     Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail);
     _setupRealtimeSync();    // MQTT realtime chỉ kết nối sau khi ảnh tĩnh đã hiển thị đúng
+  }
+
+  /// [CHUYỂN NHÀ] HomeProvider.activeHomeId đổi (HomeCard gọi setActiveHome() khi user bấm
+  /// "Vào điều khiển" ở màn Quản lý Nhà) -> nhảy về tab Bảng điều khiển NGAY LẬP TỨC + refetch
+  /// thiết bị của nhà mới. HomeCard KHÔNG tự điều hướng — chỉ đổi data, Dashboard tự phản ứng.
+  void _onActiveHomeChanged() {
+    final newId = _homeProviderRef?.activeHomeId;
+    if (newId == null || newId == _lastKnownActiveHomeId || !mounted) return;
+    _lastKnownActiveHomeId = newId;
+    setState(() => _selectedIndex = 0);
+    _initializeHome();
   }
 
   /// Nạp lại danh sách nút bị ẩn từ Local Storage — trạng thái "Ẩn khỏi Bảng điều khiển"
@@ -163,6 +188,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // (vd đăng xuất: Dashboard bị thay bằng Login nhưng provider sống toàn app).
     _deviceProviderRef?.onRefreshRequested = null;
     _deviceProviderRef?.clearGlobalMqttListener();
+    _homeProviderRef?.removeListener(_onActiveHomeChanged);
     super.dispose();
   }
 
@@ -203,7 +229,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
             print('🔑 [ROLE DEBUG] role parsed = "$role"  (email: $email)');
           }
           if (!mounted) return;
-          setState(() { currentHomeId = homeId; userEmail = email; userRole = role; });
+
+          // [CHUYỂN NHÀ] Với user thường (SUPER_USER tự quản qua _selectedHomeForSuperUser,
+          // nhánh riêng bên dưới), "nhà đang xem" KHÔNG còn fix cứng theo home_id trong JWT
+          // (giá trị đó chỉ đúng tại thời điểm đăng nhập) — ưu tiên HomeProvider.activeHomeId,
+          // do HomeCard cập nhật khi user bấm "Vào điều khiển". Lần đầu (activeHomeId null)
+          // khôi phục từ SharedPreferences, rơi về home_id JWT nếu chưa từng chọn nhà nào.
+          final homeProvider = Provider.of<HomeProvider>(context, listen: false);
+          if (homeProvider.activeHomeId == null) {
+            await homeProvider.restoreActiveHome(fallback: homeId);
+            if (!mounted) return;
+          }
+          final effectiveHomeId = (role != 'SUPER_USER' && (homeProvider.activeHomeId?.isNotEmpty ?? false))
+              ? homeProvider.activeHomeId!
+              : homeId;
+
+          setState(() { currentHomeId = effectiveHomeId; userEmail = email; userRole = role; });
 
           // [SINGLE FETCH — CHỐNG N+1] MỘT lần gọi duy nhất gộp Homes + Rooms + Devices,
           // thay cho chuỗi "GET /homes rồi loop GET /homes/:id/devices từng nhà" (nghẽn 4G).
@@ -233,9 +274,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 }
               }
             } else {
-              final h = homeById[homeId];
-              if (homeId.isNotEmpty && h != null) {
-                await _fetchDevicesForHome(homeId, token,
+              final h = homeById[effectiveHomeId];
+              if (effectiveHomeId.isNotEmpty && h != null) {
+                await _fetchDevicesForHome(effectiveHomeId, token,
                     preloadedDevices: (h['devices'] as List?) ?? const [],
                     preloadedRooms: (h['rooms'] as List?) ?? const []);
               }
@@ -849,14 +890,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     VoidCallback history,
     VoidCallback automation,
     VoidCallback share,
-  }) _stdCallbacks(String mac, String key, String name) => (
+  }) _stdCallbacks(String mac, String key, String name, {String endpoint = ''}) => (
         rename: () => _showRenameDialog(key, name),
         delete: () => _deleteDevice(mac),
         assignRoom: () => _assignSingleRoom(mac),
         assignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
         // [RESPONSIVE NAV] Mobile: push toàn màn hình; PC: cửa sổ dialog lớn nổi trên
         // Dashboard — Sidebar/Topbar phía sau GIỮ NGUYÊN, không bị route đè mất
-        timer: () => openAdaptiveScreen(context, DeviceTimerScreen(mac: mac, deviceName: name)),
+        // [FIX MULTI-RELAY] endpoint truyền xuống DeviceTimerScreen -> Hẹn giờ/Đếm ngược chỉ
+        // nhắm ĐÚNG kênh của thẻ vừa mở menu, không còn mù kênh (bắn cả cụm SSW04 4 relay).
+        timer: () => openAdaptiveScreen(context, DeviceTimerScreen(mac: mac, endpoint: endpoint, deviceName: name)),
         history: () => openAdaptiveScreen(context, DeviceHistoryScreen(mac: mac, deviceName: name)),
         automation: () => openAdaptiveScreen(context, const CreateAutomationScreen()),
         share: () => showShareDeviceDialog(context, mac: mac, deviceName: name),
@@ -957,7 +1000,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (isFromDrawer && isMobile) Navigator.pop(context); 
 
     if (index == 5 && isMobile) {
-      Navigator.push(context, MaterialPageRoute(builder: (context) => Scaffold(appBar: AppBar(title: const Text('Quản lý hệ sinh thái'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: HomeManagementScreen(userRole: userRole))))).then((value) => _initializeHome());
+      Navigator.push(context, MaterialPageRoute(builder: (context) => Scaffold(appBar: AppBar(title: const Text('Quản lý hệ sinh thái'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: HomeManagementScreen(userRole: userRole, userEmail: userEmail))))).then((value) => _initializeHome());
       return; 
     }
 
@@ -1519,7 +1562,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                          : _selectedIndex == 2 ? const AutomationScreen(embedded: true)
                          : _selectedIndex == 6 ? const RoleManagementView()
                          : _selectedIndex == 3 ? Padding(padding: const EdgeInsets.all(16.0), child: _buildFullNotificationView(isDark, textMain, textSub))
-                         : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole)
+                         : _selectedIndex == 5 ? HomeManagementScreen(userRole: userRole, userEmail: userEmail)
                          : _selectedIndex == 4 && isMobile ? _buildMobileSettingsView(isDark, textMain, textSub) 
                          : isMobile 
                             ? RefreshIndicator(color: tkGreen, backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, onRefresh: _handleRefresh, child: _buildMobileContent(isDark, surfaceLight, textMain, textSub))
@@ -2664,7 +2707,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
                   ? e['endpoint'] : 'S_${e['mac']}';
               // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn (rename theo endpoint thật của quạt)
-              final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name']);
+              final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
               return SmartFanCard(
                 key: ValueKey("${hideKey}_$status"),
                 mac: e['mac'],
@@ -2705,7 +2748,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             spacing: 16, runSpacing: 16,
             children: visibleSensors.map((e) {
               final String hideKey = "${e['mac']}_${e['endpoint']}";
-              final cb = _stdCallbacks(e['mac'], hideKey, e['name']); // [NGUỒN BƠM DUY NHẤT]
+              final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']); // [NGUỒN BƠM DUY NHẤT]
               return SmartSensorCard(
                 // key chứa cả số đo + online: sóng MQTT đổi nhiệt/ẩm là thẻ vẽ lại ngay
                 key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
@@ -2759,7 +2802,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final String status = "${item['state']}_$isDevOnline";
                 final bool isOn = item['state'] == 'ON';
                 // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn — bơm đồng loạt vào thẻ
-                final cb = _stdCallbacks(mac, deviceKey, item['name']);
+                final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
 
                 return SmartSwitchCard(
                   // Key chứa cả trạng thái + online: sóng MQTT đổi ON/OFF hay LWT báo
@@ -3889,9 +3932,69 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
 // 📦 KHỐI QUẢN LÝ FIRMWARE OTA (nhúng trong Popup Cài đặt thiết bị)
 // Luồng thật 3 tầng: [Kiểm tra cập nhật] -> GET /api/firmware/check (200 = có bản mới,
 // 304 = mới nhất) -> [Cập nhật ngay vX] -> POST /api/devices/{mac}/ota -> Backend bắn
-// MQTT xuống chip -> chip tự tải .bin + kiểm SHA256 + báo % qua ota/progress -> thanh
+// MQTT xuống chip -> chip tự tải .bin + kiểm MD5/SHA256 + báo % qua ota/progress -> thanh
 // tiến trình realtime (đọc từ kho DPS của DeviceProvider, không mock).
 // ============================================================================
+
+/// [DỊCH LỖI OTA HẠT NHÂN] Mã ngắn firmware gửi lên (khớp otaFail()/publishOtaProgress()
+/// trong C++, namespace chuẩn hóa `ERR_*` — kiến trúc Zero-Trust OTA 2026-07) -> câu tiếng
+/// Việt CHUẨN XÁC, có hướng dẫn hành động cho người dùng cuối. Khóa map ở đây là mã ĐÃ BỎ
+/// tiền tố "ERR_" (otaErrorMessageVi tự chuẩn hóa trước khi tra) để dùng chung được với
+/// firmware CŨ (trước bản vá này) vẫn còn gửi mã KHÔNG có tiền tố "ERR_" trong lúc chờ
+/// người dùng OTA lên bản mới nhất. Không đủ trong bảng (vd firmware bản mới thêm mã lạ)
+/// -> vẫn hiện được, không rơi vào im lặng hay crash — xem otaErrorMessageVi bên dưới.
+const Map<String, String> kOtaErrorMessages = {
+  // ===== TRỤ CỘT 1 — Zero-Trust / toàn vẹn file =====
+  'SIGNATURE_MISMATCH':
+      'Chữ ký số của firmware không khớp — file có thể đã bị can thiệp trên đường truyền. '
+      'Thiết bị đã TỪ CHỐI cài đặt và vẫn chạy bản cũ an toàn. Vui lòng thử tải lại từ máy chủ chính thức.',
+  'SHA256_MISMATCH': 'File tải về không khớp mã xác thực — có thể bị hỏng hoặc bị can thiệp giữa đường. '
+      'Thiết bị đã hủy cài đặt, vẫn chạy bản cũ an toàn.',
+  'NO_INTEGRITY_HASH': 'Máy chủ không gửi mã xác thực (chữ ký/MD5/SHA256) — thiết bị từ chối nạp để an toàn.',
+  'MD5_INVALID': 'Mã xác thực (MD5) máy chủ gửi không đúng định dạng.',
+  // ===== TRỤ CỘT 2 — Anti-Brick / Self-Healing =====
+  'ROLLBACK_ACTIVATED':
+      'Thiết bị vừa cập nhật firmware nhưng không ổn định (không kết nối lại được WiFi/máy chủ) '
+      'nên đã TỰ ĐỘNG lùi về bản chạy trước đó để tránh treo cứng. Vui lòng kiểm tra lại mật khẩu WiFi '
+      'hoặc liên hệ hỗ trợ trước khi thử cập nhật lại.',
+  'PARTITION_FULL': 'File firmware lớn hơn dung lượng bộ nhớ còn trống của thiết bị.',
+  // ===== TRỤ CỘT 3 — Mạng / tải file =====
+  'LOW_MEMORY_TLS': 'Thiết bị đang thiếu bộ nhớ trống để mở kết nối bảo mật (TLS) — vui lòng thử lại sau ít phút '
+      'hoặc khởi động lại thiết bị.',
+  'NETWORK_TIMEOUT': 'Mất kết nối mạng giữa chừng khi đang tải firmware — có thể do WiFi nhà bạn yếu hoặc chập chờn. '
+      'Thiết bị vẫn giữ bản cũ an toàn, hãy thử lại khi mạng ổn định.',
+  'HTTP_BEGIN_FAILED': 'Không dựng được kết nối tới máy chủ tải firmware — kiểm tra đường link tải.',
+  'HTTP_CONNECT_FAILED': 'Không kết nối được máy chủ — có thể do mạng nhà bạn hoặc máy chủ đang gặp sự cố.',
+  'SIZE_UNKNOWN': 'Máy chủ không trả về kích thước file hợp lệ.',
+  'INSUFFICIENT_SPACE': 'File firmware lớn hơn dung lượng bộ nhớ còn trống của thiết bị.',
+  'DOWNLOAD_INCOMPLETE': 'Mất kết nối giữa chừng khi đang tải — thiết bị vẫn giữ bản cũ an toàn.',
+  // ===== Flash / kích hoạt =====
+  'UPDATE_BEGIN_FAILED': 'Thiết bị không cấp phát được vùng nhớ để chuẩn bị nạp.',
+  'UPDATE_WRITE_FAILED': 'Lỗi ghi dữ liệu vào bộ nhớ flash trong lúc nạp.',
+  'UPDATE_END_FAILED': 'Xác thực cuối cùng thất bại (thường do sai mã MD5) — thiết bị giữ nguyên bản cũ.',
+};
+
+/// [null-safe, không crash] code null/lạ vẫn trả về câu hiển thị được. Tự chuẩn hóa cả mã
+/// mới (tiền tố "ERR_", vd "ERR_SIGNATURE_MISMATCH") lẫn mã cũ (không tiền tố, vd
+/// "SIGNATURE_MISMATCH") về cùng một khóa tra cứu — tương thích cả firmware trước/sau khi
+/// vá Zero-Trust OTA.
+String otaErrorMessageVi(String? code, String? detail) {
+  String base;
+  if (code == null || code.isEmpty) {
+    base = 'Nạp thất bại không rõ nguyên nhân — thiết bị vẫn chạy bản cũ an toàn.';
+  } else {
+    final String bare = code.startsWith('ERR_') ? code.substring(4) : code;
+    if (kOtaErrorMessages.containsKey(bare)) {
+      base = kOtaErrorMessages[bare]!;
+    } else if (bare.startsWith('HTTP_STATUS_')) {
+      base = 'Máy chủ trả lỗi HTTP ${bare.substring('HTTP_STATUS_'.length)} khi tải file firmware.';
+    } else {
+      base = 'Lỗi không xác định ($code) — thiết bị vẫn chạy bản cũ an toàn.';
+    }
+  }
+  return (detail != null && detail.isNotEmpty) ? '$base\n($detail)' : base;
+}
+
 class DeviceFirmwareSection extends StatefulWidget {
   final String mac;
   final String fwType;         // dòng firmware học từ heartbeat (SMART_SWITCH, SMART_FAN_CTRL...)
@@ -3959,10 +4062,15 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
     return ListenableBuilder(
       listenable: widget.provider,
       builder: (context, _) {
-        final int? progress = widget.provider.deviceOf(widget.mac)?.otaProgress;
+        final device = widget.provider.deviceOf(widget.mac);
+        final int? progress = device?.otaProgress;
         final bool inProgress = _updating && progress != null && progress >= 0 && progress < 100;
         final bool done = progress == 100;
         final bool failed = progress == -1;
+        // [DỊCH LỖI OTA] App KHÔNG tự đoán trạng thái — chỉ dịch đúng mã/câu thiết bị
+        // đã gửi qua {mac}/ota/progress (error_code/error), null-safe khi thiếu dữ liệu.
+        final String? otaErrorText =
+            failed ? otaErrorMessageVi(device?.otaErrorCode, device?.otaErrorDetail) : null;
 
         Widget trailing;
         if (done) {
@@ -3991,7 +4099,7 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
               leading: Icon(Icons.system_update_alt, color: textSub, size: 20),
               title: Text('Firmware v${widget.currentVersion}', style: TextStyle(color: textMain, fontSize: 14)),
               subtitle: failed
-                  ? const Text('Nạp thất bại — thiết bị vẫn chạy bản cũ an toàn', style: TextStyle(color: Colors.redAccent, fontSize: 11))
+                  ? Text(otaErrorText!, style: const TextStyle(color: Colors.redAccent, fontSize: 11))
                   : (_statusNote != null ? Text(_statusNote!, style: TextStyle(color: textSub, fontSize: 11)) : null),
               trailing: trailing,
             ),

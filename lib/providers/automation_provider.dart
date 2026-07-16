@@ -27,6 +27,7 @@ const List<IconData> kSceneStepIcons = [
   Icons.thermostat, // điều kiện thời tiết / cảm biến theo ngưỡng nhiệt độ
   Icons.air, Icons.power_off, // hành động quạt: tốc độ / tắt
   Icons.water_drop, // điều kiện cảm biến theo ngưỡng độ ẩm
+  Icons.threesixty, // hành động quạt: đảo gió (oscillation)
 ];
 
 /// Tra IconData từ codePoint qua bảng CONST thay vì dựng `IconData(codePoint,...)` động
@@ -122,6 +123,10 @@ class AutomationProvider extends ChangeNotifier {
   // ===================== STATE =====================
   List<SceneItem> _scenes = [];
   String _homeId = ''; // nhà đang hoạt động — fetchScenes ghi nhớ để addScene dùng lại
+
+  /// Nhà đang hoạt động — tab "Lịch trình" gộp (automation_screen.dart) dùng để gọi
+  /// GET /api/homes/:id/schedules mà không cần Dashboard bơm thêm homeId riêng.
+  String get homeId => _homeId;
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;

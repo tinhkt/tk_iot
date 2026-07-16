@@ -8,10 +8,13 @@ import '../../widgets/scene_step_pickers.dart';
 /// CreateAutomationScreen — Tạo/Sửa Ngữ cảnh theo chuẩn IFTTT (NẾU... THÌ...).
 /// [editScene] != null -> CHẾ ĐỘ SỬA: form đổ sẵn tên/icon/loại/điều kiện/hành động
 /// của ngữ cảnh đó, nút Lưu gọi AutomationProvider.updateScene (giữ nguyên id).
+/// [embedded]=true khi nhúng làm 1 tab trong AddSceneOrScheduleScreen (bỏ Scaffold/AppBar
+/// riêng — tránh 2 AppBar lồng nhau; nút Lưu chuyển xuống cuối form thay vì nằm trong AppBar).
 class CreateAutomationScreen extends StatefulWidget {
   final SceneType initialType;
   final SceneItem? editScene;
-  const CreateAutomationScreen({super.key, this.initialType = SceneType.automation, this.editScene});
+  final bool embedded;
+  const CreateAutomationScreen({super.key, this.initialType = SceneType.automation, this.editScene, this.embedded = false});
 
   @override
   State<CreateAutomationScreen> createState() => _CreateAutomationScreenState();
@@ -61,33 +64,15 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
     final Color cardColor = Colors.white.withValues(alpha: isDark ? 0.08 : 0.55);
 
-    return Scaffold(
-      backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
-      appBar: AppBar(
-        title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),
-        backgroundColor: Colors.transparent,
-        foregroundColor: textMain,
-        elevation: 0,
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : _save,
-            child: _saving
-                // Loading mượt ngay trên nút Lưu trong lúc chờ server
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
-                : const Text('Lưu', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            // [RESPONSIVE PC] Form ghim giữa màn hình, trần 800px — không phóng to
-            // tràn hết chiều ngang trên desktop/web
-            constraints: const BoxConstraints(maxWidth: 800),
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                // --- Tên + Icon + Loại ---
+    final Widget form = Center(
+      child: ConstrainedBox(
+        // [RESPONSIVE PC] Form ghim giữa màn hình, trần 800px — không phóng to
+        // tràn hết chiều ngang trên desktop/web
+        constraints: const BoxConstraints(maxWidth: 800),
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // --- Tên + Icon + Loại ---
                 _sectionCard(cardColor, [
                   Row(children: [
                     InkWell(
@@ -136,11 +121,52 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
                 const SizedBox(height: 8),
                 ..._actions.asMap().entries.map((e) => _stepTile(cardColor, textMain, textSub, e.value, () => setState(() => _actions.removeAt(e.key)))),
                 _addButton('Thêm hành động', _pickAction),
+
+                // [embedded] Không còn AppBar để đặt nút Lưu -> chuyển xuống cuối form.
+                if (widget.embedded) ...[
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                      icon: _saving
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.save_outlined),
+                      label: Text(_isEditing ? 'Lưu thay đổi' : 'Tạo ngữ cảnh'),
+                      onPressed: _saving ? null : _save,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
-        ),
+        );
+    // "form" ở trên chỉ là Center(child: ConstrainedBox(child: ListView(...))) — KHÔNG còn
+    // Scaffold/SafeArea lồng trong biến này; 2 nhánh dưới tự quyết định có cần bọc thêm
+    // Scaffold/AppBar riêng hay không tùy [embedded].
+
+    // [embedded] Chủ (AddSceneOrScheduleScreen) đã tự lo Scaffold/AppBar/TabBar chung —
+    // trả thẳng form, KHÔNG lồng thêm Scaffold thứ 2 (2 AppBar chồng nhau).
+    if (widget.embedded) return SafeArea(child: form);
+
+    return Scaffold(
+      backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),
+        backgroundColor: Colors.transparent,
+        foregroundColor: textMain,
+        elevation: 0,
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : _save,
+            child: _saving
+                // Loading mượt ngay trên nút Lưu trong lúc chờ server
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+                : const Text('Lưu', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
+          ),
+        ],
       ),
+      body: SafeArea(child: form),
     );
   }
 

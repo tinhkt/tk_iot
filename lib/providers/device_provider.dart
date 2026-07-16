@@ -136,6 +136,22 @@ class DeviceModel {
   /// Tiến trình nạp firmware OTA (0-100, -1 khi lỗi, null khi không nạp)
   int? get otaProgress => (dps['__ota_progress'] as num?)?.toInt();
 
+  /// Mã lỗi OTA hạt nhân, namespace chuẩn hóa `ERR_*` (vd "ERR_SIGNATURE_MISMATCH",
+  /// "ERR_HTTP_STATUS_404") — firmware cũ chưa vá có thể còn gửi mã không tiền tố, cả hai
+  /// dạng đều được otaErrorMessageVi() chuẩn hóa khi tra cứu. null khi không có lỗi.
+  /// Dùng để tra bảng dịch tiếng Việt (kOtaErrorMessages) — KHÔNG hiển thị thẳng ra UI.
+  String? get otaErrorCode {
+    final v = dps['__ota_error_code']?.toString();
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  /// Câu gốc từ thư viện firmware (Update.errorString()/HTTPClient::errorToString()) —
+  /// hiện kèm bản dịch cho người dùng kỹ thuật/hỗ trợ đối chiếu, không thay thế bản dịch.
+  String? get otaErrorDetail {
+    final v = dps['__ota_error']?.toString();
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
   /// Số đo môi trường của endpoint cảm biến (null nếu không có)
   String? telemetryOf(String endpoint, String field) =>
       dps['${endpoint}_$field']?.toString();
@@ -185,6 +201,24 @@ class DeviceProvider with ChangeNotifier {
   String displayNameOf(String mac, {String? fallback}) {
     final d = _devices[_cleanMac(mac)];
     if (d != null) return d.displayName(fallback);
+    if (fallback != null && fallback.trim().isNotEmpty) return fallback.trim();
+    final sn = _cleanMac(mac);
+    return 'Thiết bị ${sn.length >= 4 ? sn.substring(sn.length - 4) : sn}';
+  }
+
+  /// [DISPLAY NAME — ĐÚNG KÊNH] Khác [displayNameOf] (tên CHUNG của cả thiết bị — với máy
+  /// nhiều relay, trả về tên của BẤT KỲ endpoint nào tìm thấy trước, không phân biệt kênh):
+  /// hàm này tra ĐÚNG tên user đặt cho [endpoint] cụ thể trước (vd "Đèn phòng khách" cho
+  /// riêng relay 1, khác "Quạt trần" của relay 2 CÙNG một MAC SSW04). Dùng cho mọi danh sách
+  /// gắn với 1 kênh xác định (Lịch trình, Đếm ngược) — sai chỗ này sẽ hiện nhầm tên relay
+  /// khác trên cùng thiết bị. Rỗng ở kênh đó -> rơi về [displayNameOf] (tên chung) -> [fallback].
+  String displayNameOfEndpoint(String mac, String endpoint, {String? fallback}) {
+    final d = _devices[_cleanMac(mac)];
+    if (d != null) {
+      final epName = endpoint.isNotEmpty ? d.nameOf(endpoint) : null;
+      if (epName != null && epName.trim().isNotEmpty) return epName.trim();
+      return d.displayName(fallback);
+    }
     if (fallback != null && fallback.trim().isNotEmpty) return fallback.trim();
     final sn = _cleanMac(mac);
     return 'Thiết bị ${sn.length >= 4 ? sn.substring(sn.length - 4) : sn}';
@@ -368,14 +402,28 @@ class DeviceProvider with ChangeNotifier {
     }
 
     // ---------- KÊNH TIẾN TRÌNH OTA: smarthub/{home_id}/{mac}/ota/progress ----------
-    // Thiết bị báo {"percent":0-100} (hoặc -1 khi lỗi) trong lúc tự nạp firmware;
-    // lưu vào dps khóa hệ thống "__ota_progress" để Popup Cài đặt vẽ thanh % realtime.
+    // Thiết bị báo {"percent":0-100} (hoặc -1 khi lỗi, kèm "error_code"/"error" — mã hạt
+    // nhân + câu gốc từ Update.h/HTTPClient) trong lúc tự nạp firmware; lưu vào dps khóa
+    // hệ thống "__ota_progress"/"__ota_error_code"/"__ota_error" để Popup Cài đặt vẽ
+    // thanh % + dịch lỗi tiếng Việt realtime.
     if (parts.length >= 2 && parts[parts.length - 2] == 'ota' && parts.last == 'progress') {
       final json = DeviceModel.safeDecode(payload);
       final percent = (json?['percent'] as num?)?.toInt();
-      if (percent != null && device.mergeDps({'__ota_progress': percent})) {
-        if (kDebugMode) print('📥 [OTA] $cleanMac nạp firmware: $percent%');
-        notifyListeners();
+      if (percent != null) {
+        final updates = <String, dynamic>{'__ota_progress': percent};
+        // Lỗi cũ phải bị XÓA khi bắt đầu lượt nạp mới (percent quay về 0) — nếu không UI
+        // vẫn hiện lỗi lần trước dù lần này đang chạy tốt.
+        if (percent == -1) {
+          updates['__ota_error_code'] = (json?['error_code'] ?? '').toString();
+          updates['__ota_error'] = (json?['error'] ?? '').toString();
+        } else {
+          updates['__ota_error_code'] = '';
+          updates['__ota_error'] = '';
+        }
+        if (device.mergeDps(updates)) {
+          if (kDebugMode) print('📥 [OTA] $cleanMac nạp firmware: $percent% ${percent == -1 ? "(${updates['__ota_error_code']}: ${updates['__ota_error']})" : ""}');
+          notifyListeners();
+        }
       }
       return;
     }

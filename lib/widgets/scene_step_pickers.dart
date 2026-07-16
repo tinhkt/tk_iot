@@ -248,8 +248,26 @@ Future<SceneStep?> showActionPicker(BuildContext context) async {
   );
 }
 
-/// Chọn hành động cho QUẠT: Tắt / Số 1 / Số 2 / Số 3 -> params {action:"speed", value:"0..3"}.
+/// [NESTED STATE] Chọn LOẠI điều khiển cho QUẠT trước — Tốc độ (power/speed) hay Đảo gió
+/// (thuộc tính con/oscillation) — rồi mới vào picker giá trị tương ứng. Trước đây chỉ có
+/// tốc độ, không có cách nào tạo hành động Bật/Tắt Đảo gió trong Ngữ cảnh/Lịch trình.
 Future<SceneStep?> _pickFanAction(BuildContext context, _EndpointOption picked) async {
+  final String? kind = await _showGlassPicker<String>(
+    context,
+    title: 'Điều khiển ${picked.name}',
+    body: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
+      _optionTile(ctx, icon: Icons.air, title: 'Tốc độ quạt', subtitle: 'Tắt hoặc Số 1/2/3', onTap: () => Navigator.pop(ctx, 'speed')),
+      _optionTile(ctx, icon: Icons.threesixty, title: 'Đảo gió (Oscillation)', subtitle: 'Bật/Tắt chế độ xoay đầu quạt', onTap: () => Navigator.pop(ctx, 'osc')),
+    ]),
+  );
+  if (kind == null || !context.mounted) return null;
+
+  if (kind == 'osc') return _pickFanOscillationAction(context, picked);
+  return _pickFanSpeedAction(context, picked);
+}
+
+/// Tốc độ quạt: Tắt / Số 1 / Số 2 / Số 3 -> params {action:"speed", value:"0..3"}.
+Future<SceneStep?> _pickFanSpeedAction(BuildContext context, _EndpointOption picked) async {
   const List<(int, String)> speeds = [(0, 'Tắt'), (1, 'Số 1'), (2, 'Số 2'), (3, 'Số 3')];
   final int? speed = await _showGlassPicker<int>(
     context,
@@ -271,6 +289,28 @@ Future<SceneStep?> _pickFanAction(BuildContext context, _EndpointOption picked) 
     Icons.air,
     label,
     params: {'mac': picked.mac, 'endpoint': picked.endpoint, 'action': 'speed', 'value': '$speed'},
+  );
+}
+
+/// [NESTED STATE — Đảo gió] Bật/Tắt oscillation, KHÔNG đụng tốc độ hiện tại của quạt —
+/// đúng hợp đồng firmware action:"osc", value:"swing"|"off" (xem fanOutSceneActions/
+/// scheduler.go Backend, cùng khuôn với action:"speed" đã dùng ở trên).
+Future<SceneStep?> _pickFanOscillationAction(BuildContext context, _EndpointOption picked) async {
+  final bool? turnOn = await _showGlassPicker<bool>(
+    context,
+    title: 'Đảo gió ${picked.name}',
+    body: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
+      _optionTile(ctx, icon: Icons.threesixty, title: 'Bật đảo gió', onTap: () => Navigator.pop(ctx, true)),
+      _optionTile(ctx, icon: Icons.power_off, title: 'Tắt đảo gió', onTap: () => Navigator.pop(ctx, false)),
+    ]),
+  );
+  if (turnOn == null) return null;
+
+  final String label = turnOn ? 'Bật đảo gió ${picked.name}' : 'Tắt đảo gió ${picked.name}';
+  return SceneStep(
+    Icons.threesixty,
+    label,
+    params: {'mac': picked.mac, 'endpoint': picked.endpoint, 'action': 'osc', 'value': turnOn ? 'swing' : 'off'},
   );
 }
 

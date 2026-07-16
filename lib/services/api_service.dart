@@ -147,4 +147,18 @@ class ApiService {
       },
     );
   }
+
+  // --- HÀM TRỢ GIÚP GỬI LỆNH POST KÈM TOKEN + BODY JSON ---
+  Future<http.Response> authorizedPost(String url, [Map<String, dynamic>? body]) async {
+    final token = await SecureStorageService.getToken();
+
+    return await http.post(
+      Uri.parse(url),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: body != null ? json.encode(body) : null,
+    );
+  }
 }
