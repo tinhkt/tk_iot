@@ -440,20 +440,28 @@ class AppIcon extends StatelessWidget {
 /// bên trong build() của chính nó) BẮT BUỘC truyền [maxWidth] khớp với kích thước gốc của
 /// nó — nếu không, ConstrainedBox 420 mặc định ở đây sẽ bóp Expanded về gần 0 width, vỡ
 /// thành chữ xếp dọc từng ký tự (đã xảy ra thật với popup Cài đặt).
+///
+/// [contentPadding] — mặc định EdgeInsets.all(24) (giữ nguyên hành vi mọi popup hiện có).
+/// Dialog TỰ vẽ padding/thẻ con riêng bên trong (vd add_device_dialog.dart — 4 thẻ tính năng
+/// tự có padding+margin nội bộ, cộng thêm 24 mặc định ở đây sẽ bị double-padding, ép cột nội
+/// dung hẹp lại "co cụm" dù viền ngoài popup thừa trắng) có thể truyền giá trị nhỏ hơn — CHỈ
+/// popup đó đổi, mọi caller không truyền vẫn y hệt 24 như trước.
 Future<T?> showAppDialog<T>({
   required BuildContext context,
   required Widget child,
   bool barrierDismissible = true,
   double? maxWidth,
+  EdgeInsetsGeometry? contentPadding,
 }) {
   final bool glass = context.read<ThemeProvider>().isGlassThemeEnabled;
+  final EdgeInsetsGeometry effectivePadding = contentPadding ?? const EdgeInsets.all(24);
   return showDialog<T>(
     context: context,
     barrierDismissible: barrierDismissible,
     barrierColor: Colors.black.withValues(alpha: glass ? 0.35 : 0.5),
     builder: (ctx) {
       if (!glass) {
-        Widget content = Padding(padding: const EdgeInsets.all(24), child: child);
+        Widget content = Padding(padding: effectivePadding, child: child);
         // Nhánh KHÔNG kính vốn không hề có maxWidth mặc định (Dialog() gốc tự do theo màn
         // hình) — chỉ áp giới hạn khi caller CHỦ ĐỘNG truyền, giữ pixel-parity cho mọi dialog
         // hiện có chưa cần [maxWidth].
@@ -483,7 +491,7 @@ Future<T?> showAppDialog<T>({
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxWidth ?? 420, minWidth: 280),
-          child: _GlassSurface(borderRadius: BorderRadius.circular(28), padding: const EdgeInsets.all(24), child: child),
+          child: _GlassSurface(borderRadius: BorderRadius.circular(28), padding: effectivePadding, child: child),
         ),
       );
     },

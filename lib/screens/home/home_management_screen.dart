@@ -6,6 +6,7 @@ import '../../services/permission_manager.dart';
 import '../../services/auth_service.dart';
 import '../../providers/home_provider.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 import 'device_list_screen.dart';
 import 'member_list_screen.dart';
 
@@ -71,6 +72,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
     final homeProvider = context.watch<HomeProvider>();
     final bool isLoading = homeProvider.isLoadingHomes && homeProvider.homes.isEmpty;
     final homes = homeProvider.homes;
+    final t = AppTranslations.of(context);
 
     if (_viewingMembersOfHome != null) {
       return MemberListScreen(
@@ -98,7 +100,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    widget.userRole == PermissionManager.superAdmin ? 'Toàn bộ hệ thống' : 'Danh sách Nhà của tôi', 
+                    widget.userRole == PermissionManager.superAdmin ? t.text('all_homes_title') : t.text('my_homes_title'),
                     style: TextStyle(color: textMain, fontSize: 28, fontWeight: FontWeight.w900),
                     overflow: TextOverflow.ellipsis, // Cắt chữ thành ... nếu quá dài
                   ),
@@ -114,7 +116,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                     icon: const Icon(Icons.add_home_work_rounded, size: 20),
-                    label: const Text('Thêm nhà mới', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    label: Text(t.text('add_home'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                     onPressed: () => _showAddOrEditHomeDialog(context, isDark, textMain, textSub),
                   ),
               ],
@@ -139,7 +141,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
           children: [
             Icon(Icons.house_siding_rounded, size: 64, color: isDark ? Colors.white24 : Colors.grey.shade300),
             const SizedBox(height: 16),
-            Text("Chưa có ngôi nhà nào trên hệ thống.", style: TextStyle(color: textSub, fontSize: 16)),
+            Text(AppTranslations.of(context).text('no_homes_yet'), style: TextStyle(color: textSub, fontSize: 16)),
           ],
         )
       );
@@ -174,6 +176,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   // THẺ NHÀ VÀ PHÂN QUYỀN CỤC BỘ — [COMPACT] padding/font đã thu gọn so với bản trước
   // =======================================================================
   Widget _buildHomeCard(Map<String, dynamic> home, int index, bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     bool isPending = home['status'] == 'PENDING';
 
     final String myRole = (home['my_role'] ?? '').toString();
@@ -184,8 +187,9 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
     // đây USER thường KHÔNG có popup nào cả nên không có cách tự rời nhà chung.
     final bool showCardMenu = isLocalOwnerOrAdmin || myRole == 'USER';
 
-    String displayRole = myRole == 'OWNER' ? 'Chủ nhà' : (myRole == 'ADMIN' ? 'Quản trị' : 'Thành viên');
-    if (isSuperAdminGlobal) displayRole = 'Super Admin';
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] myRole (OWNER/ADMIN/USER) đọc từ API — chỉ NHÃN hiển thị dịch.
+    String displayRole = myRole == 'OWNER' ? t.text('owner_role') : (myRole == 'ADMIN' ? t.text('admin_role') : t.text('member_role'));
+    if (isSuperAdminGlobal) displayRole = t.text('super_admin_role');
 
     return AppContainer(
       padding: const EdgeInsets.all(14),
@@ -270,12 +274,16 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
             Divider(color: isDark ? Colors.white10 : Colors.grey.shade200, height: 1),
             const SizedBox(height: 6),
 
+            // [SỐ CÔNG TẮC] switches_count nay do GetHomesHandler (server.go) tính động —
+            // tổng endpoint thật (S_{mac}, S_{mac}_N...) của mọi thiết bị trong nhà, cùng
+            // nguồn dữ liệu buildHomeDevices() dùng nên luôn khớp khi mở chi tiết nhà.
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Expanded(
                   child: _buildActionableStat(
-                    Icons.devices_other, '${home['devices_count']} TB', textMain, textSub,
+                    // [GIỮ NGUYÊN BIẾN ĐỘNG] devices_count/switches_count — số liệu thật, chỉ hậu tố dịch.
+                    Icons.devices_other, '${home['devices_count']}${t.text('devices_stat_suffix')} | ${home['switches_count']}${t.text('switches_stat_suffix')}', textMain, textSub,
                     () => setState(() => _viewingDevicesOfHome = home)
                   ),
                 ),
@@ -285,7 +293,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                   child: Opacity(
                     opacity: isLocalOwnerOrAdmin ? 1.0 : 0.4,
                     child: _buildActionableStat(
-                      Icons.group, '${home['members_count']} TV', textMain, textSub,
+                      Icons.group, '${home['members_count']}${t.text('members_stat_suffix')}', textMain, textSub,
                       () {
                         if (isLocalOwnerOrAdmin) setState(() => _viewingMembersOfHome = home);
                       }
@@ -319,7 +327,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 icon: const Icon(Icons.dashboard_customize_rounded, size: 15),
-                label: const Text('Vào điều khiển', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                label: Text(t.text('enter_control'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                 onPressed: () => _enterHomeDashboard(home),
               ),
             ),
@@ -332,16 +340,20 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   /// tin" + "Xóa nhà này" (đỏ); Admin/User có "Rời khỏi nhà" (cam) thay cho xóa — Admin còn
   /// giữ "Cập nhật thông tin", User (chỉ xem) thì không.
   List<PopupMenuEntry<int>> _buildHomeMenuItems(bool isLocalOwner, bool isLocalOwnerOrAdmin, Color textMain) {
+    // itemBuilder của PopupMenuButton chạy TỪ tap handler (showButtonMenu), KHÔNG phải build
+    // pass thật -> context.watch() ở đây ném assertion "outside of the widget tree" khiến cả
+    // menu 3 chấm im lặng không mở được. BẮT BUỘC listen: false.
+    final t = AppTranslations.of(context, listen: false);
     final items = <PopupMenuEntry<int>>[];
     if (isLocalOwnerOrAdmin) {
-      items.add(PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.edit_note_rounded, color: textMain, size: 20), const SizedBox(width: 12), Text('Cập nhật thông tin', style: TextStyle(color: textMain))])));
+      items.add(PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.edit_note_rounded, color: textMain, size: 20), const SizedBox(width: 12), Text(t.text('update_info'), style: TextStyle(color: textMain))])));
     }
     if (isLocalOwner) {
       items.add(const PopupMenuDivider());
-      items.add(const PopupMenuItem(value: 2, child: Row(children: [Icon(Icons.delete_outline, color: Colors.redAccent, size: 20), SizedBox(width: 12), Text('Xóa nhà này', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))])));
+      items.add(PopupMenuItem(value: 2, child: Row(children: [const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20), const SizedBox(width: 12), Text(t.text('delete_this_home'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))])));
     } else {
       if (items.isNotEmpty) items.add(const PopupMenuDivider());
-      items.add(const PopupMenuItem(value: 3, child: Row(children: [Icon(Icons.logout_rounded, color: Colors.orange, size: 20), SizedBox(width: 12), Text('Rời khỏi nhà', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold))])));
+      items.add(PopupMenuItem(value: 3, child: Row(children: [const Icon(Icons.logout_rounded, color: Colors.orange, size: 20), const SizedBox(width: 12), Text(t.text('leave_home'), style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold))])));
     }
     return items;
   }
@@ -350,6 +362,9 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   /// GIỜ gọi API xóa cả nhà. Backend (RemoveMemberHandler) đã cho phép self-leave bất kể
   /// role (chỉ chặn nếu target là owner_email — owner phải transfer-ownership trước).
   Future<void> _confirmLeaveHome(Map<String, dynamic> home) async {
+    // Gọi từ PopupMenuButton.onSelected (tap handler) -> listen: false (xem giải thích ở
+    // _buildHomeMenuItems phía trên).
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     final bool confirm = await showAppDialog<bool>(
           context: context,
@@ -359,19 +374,19 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Rời khỏi nhà', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(t.text('leave_home'), style: const TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 16),
-                const Text('Bạn có chắc chắn muốn rời khỏi ngôi nhà này? Bạn sẽ mất toàn quyền truy cập và điều khiển.'),
+                Text(t.text('leave_home_confirm_msg')),
                 const SizedBox(height: 24),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
                     const SizedBox(width: 8),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
                       onPressed: () => Navigator.pop(context, true),
-                      child: const Text('Rời khỏi nhà', style: TextStyle(color: Colors.white)),
+                      child: Text(t.text('leave_home'), style: const TextStyle(color: Colors.white)),
                     ),
                   ],
                 ),
@@ -410,6 +425,8 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   /// nên gắn nhãn rõ "suy ra từ email" để không hiểu nhầm là tên đã xác thực), Email đầy đủ,
   /// Vai trò.
   void _showOwnerInfoDialog(BuildContext context, Map<String, dynamic> home, bool isDark, Color textMain, Color textSub) {
+    // Gọi từ onTap của _buildActionableStat (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     final String ownerEmail = (home['owner_email'] ?? '').toString();
     final String displayName = ownerEmail.contains('@') ? ownerEmail.split('@')[0] : ownerEmail;
 
@@ -427,22 +444,22 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                 CircleAvatar(radius: 22, backgroundColor: Colors.orange.withValues(alpha: 0.2), child: const Icon(Icons.security_rounded, color: Colors.orange)),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: Text('Thông tin Chủ nhà', style: TextStyle(color: textMain, fontSize: 17, fontWeight: FontWeight.bold)),
+                  child: Text(t.text('owner_info_title'), style: TextStyle(color: textMain, fontSize: 17, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
             const SizedBox(height: 20),
-            _ownerInfoRow('Tên hiển thị (suy ra từ email)', displayName, textMain, textSub),
+            _ownerInfoRow(t.text('display_name_label'), displayName, textMain, textSub),
             const SizedBox(height: 12),
-            _ownerInfoRow('Email đầy đủ', ownerEmail, textMain, textSub),
+            _ownerInfoRow(t.text('full_email_label'), ownerEmail, textMain, textSub),
             const SizedBox(height: 12),
-            _ownerInfoRow('Vai trò', 'Chủ nhà', textMain, textSub),
+            _ownerInfoRow(t.text('role'), t.text('owner_role'), textMain, textSub),
             const SizedBox(height: 20),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('Đóng'),
+                child: Text(t.text('close')),
               ),
             ),
           ],
@@ -463,12 +480,13 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   }
 
   Widget _buildPendingOverlay(Map<String, dynamic> home, int index, Color textMain, Color textSub, bool isDark) {
+    final t = AppTranslations.of(context);
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         Icon(Icons.mark_email_unread_rounded, color: Colors.blueAccent, size: 36),
         const SizedBox(height: 12),
-        Text('Lời mời tham gia hệ thống', style: TextStyle(color: textSub, fontSize: 12)),
+        Text(t.text('pending_invite_title'), style: TextStyle(color: textSub, fontSize: 12)),
         Text(home['home_name'], style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
         Row(
@@ -478,15 +496,15 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
               onPressed: () async {
                 _fetchHomesFromAPI();
               },
-              child: const Text('Từ chối', style: TextStyle(color: Colors.grey)),
+              child: Text(t.text('reject'), style: const TextStyle(color: Colors.grey)),
             ),
             const SizedBox(width: 16),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
               onPressed: () async {
-                _fetchHomesFromAPI(); 
+                _fetchHomesFromAPI();
               },
-              child: const Text('Chấp nhận', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: Text(t.text('accept'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             )
           ],
         )
@@ -534,6 +552,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
       context: context,
       child: Builder(
         builder: (context) {
+          final t = AppTranslations.of(context);
           return ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 450),
             child: SingleChildScrollView(
@@ -541,24 +560,24 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(isEdit ? 'Cập nhật thông tin Nhà' : 'Thêm Nhà mới', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold)),
+                    Text(isEdit ? t.text('update_home_info_title') : t.text('add_home_title'), style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 24),
-                    TextField(controller: nameCtrl, style: TextStyle(color: textMain), decoration: InputDecoration(labelText: 'Tên ngôi nhà', hintText: 'Để trống sẽ lấy ID làm tên', labelStyle: TextStyle(color: textSub), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+                    TextField(controller: nameCtrl, style: TextStyle(color: textMain), decoration: InputDecoration(labelText: t.text('home_name_label'), hintText: t.text('home_name_hint'), labelStyle: TextStyle(color: textSub), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
                     const SizedBox(height: 16),
-                    TextField(controller: addressCtrl, style: TextStyle(color: textMain), decoration: InputDecoration(labelText: 'Địa chỉ cụ thể', labelStyle: TextStyle(color: textSub), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+                    TextField(controller: addressCtrl, style: TextStyle(color: textMain), decoration: InputDecoration(labelText: t.text('specific_address'), labelStyle: TextStyle(color: textSub), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
                     const SizedBox(height: 24),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                        TextButton(onPressed: () => Navigator.pop(context), child: Text(t.text('cancel'), style: const TextStyle(color: Colors.grey))),
                         const SizedBox(width: 16),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                           onPressed: () async {
                             if (nameCtrl.text.isEmpty && addressCtrl.text.isEmpty) return;
                             Navigator.pop(context);
-                            
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isEdit ? 'Đang cập nhật...' : 'Đang tạo nhà mới...'), backgroundColor: tkGreen));
+
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isEdit ? t.text('updating') : t.text('creating_home')), backgroundColor: tkGreen));
                             
                             try {
                               final token = await AuthService().getToken();
@@ -585,7 +604,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi kết nối: $e'), backgroundColor: Colors.redAccent));
                             }
                           },
-                          child: Text(isEdit ? 'Lưu thay đổi' : 'Tạo mới', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          child: Text(isEdit ? t.text('save_changes') : t.text('create_new'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                         )
                       ],
                     )
@@ -602,6 +621,8 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   // 3. GỌI API XÓA NHÀ
   // =======================================================================
   void _deleteHome(String homeId, String homeName) async {
+    // Gọi từ PopupMenuButton.onSelected (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     bool confirm = await showAppDialog<bool>(
       context: context,
@@ -611,19 +632,20 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(t.text('confirm_delete_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            Text('Bạn có chắc chắn muốn xóa hệ thống "$homeName"? Hành động này không thể hoàn tác.'),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] $homeName do người dùng đặt — chỉ câu văn bao quanh dịch.
+            Text('${t.text('delete_home_confirm_prefix')}$homeName${t.text('delete_home_confirm_suffix')}'),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
                 const SizedBox(width: 8),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Xóa', style: TextStyle(color: Colors.white)),
+                  child: Text(t.text('delete'), style: const TextStyle(color: Colors.white)),
                 ),
               ],
             ),

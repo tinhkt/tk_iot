@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
 import 'package:permission_handler/permission_handler.dart'; // Xin quyền Camera trước khi quét QR
 import '../../services/lan_discovery_service.dart'; // Quét thiết bị LAN qua UDP Broadcast
+import '../../localization/app_translations.dart';
 
 // ============================================================================
 // POPUP CHÍNH: THÊM THIẾT BỊ
@@ -91,6 +92,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   Future<bool> _ensureCameraPermission() async {
     if (!Platform.isAndroid && !Platform.isIOS) return true;
 
+    // Gọi từ chuỗi tap-handler (InkWell.onTap của mục "Quét mã QR") -> listen: false, tránh
+    // "liệt nút" (context.watch() ngoài pha build thật — xem app_translations.dart).
+    final t = AppTranslations.of(context, listen: false);
+
     var status = await Permission.camera.status;
     if (status.isGranted) return true;
 
@@ -102,13 +107,13 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     if (status.isPermanentlyDenied) {
       // iOS không bao giờ hiện lại hộp thoại lần 2 — chỉ còn đường vào Cài đặt
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: const Text('Quyền Camera đang bị khóa. Hãy mở Cài đặt và bật Camera cho ứng dụng để quét mã QR.'),
+        content: Text(t.text('camera_permission_locked')),
         backgroundColor: Colors.orange,
-        action: SnackBarAction(label: 'MỞ CÀI ĐẶT', textColor: Colors.white, onPressed: openAppSettings),
+        action: SnackBarAction(label: t.text('open_settings_action'), textColor: Colors.white, onPressed: openAppSettings),
       ));
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Bạn cần cho phép dùng Camera để quét mã QR trên tem thiết bị.'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(t.text('camera_permission_needed')),
         backgroundColor: Colors.redAccent,
       ));
     }
@@ -187,7 +192,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     String cleanMac = rawMac.replaceAll('MAC:', '').replaceAll('SN:', '').replaceAll(':', '').trim();
 
     if (cleanMac.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mã định danh thiết bị không hợp lệ!'), backgroundColor: Colors.redAccent));
+      // Gọi từ chuỗi tap-handler (onPressed/onDetect/onTap "Thêm ngay") -> listen: false.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AppTranslations.of(context, listen: false).text('invalid_device_id')), backgroundColor: Colors.redAccent));
       setState(() => _isProcessing = false);
       return;
     }
@@ -239,16 +245,21 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   // --- VIEW 0: MENU ---
-  Widget _buildSelectionMenu(bool isDark, Color textMain, Color textSub) {
+  Widget _buildSelectionMenu(bool isDark, Color textMain, Color textSub, AppTranslations t) {
     return Padding(
-      padding: const EdgeInsets.all(20.0),
+      // [FIX — Whitespace lãng phí] showAppDialog() ĐÃ tự thêm padding 24 quanh toàn bộ nội
+      // dung (xem app_ui_wrappers.dart) — Padding 20 cũ ở đây CỘNG DỒN thành 44px mỗi bên,
+      // ép cột nội dung hẹp lại khiến 4 thẻ tính năng trông co cụm dù viền ngoài popup lại
+      // rất thừa trắng. Giảm còn 12 — chỉ áp dụng RIÊNG cho add_device_dialog.dart, không đụng
+      // vào padding 24 dùng chung của showAppDialog (sẽ ảnh hưởng MỌI popup khác trong app).
+      padding: const EdgeInsets.all(12.0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildHeader('Thêm thiết bị mới', textMain, textSub),
+          _buildHeader(t.text('add_new_device_title'), textMain, textSub),
           const SizedBox(height: 16),
-          Text('Chọn một phương thức cấu hình thuận tiện nhất để liên kết thiết bị thông minh vào hệ thống.', style: TextStyle(color: textSub, fontSize: 13, height: 1.4)),
+          Text(t.text('add_device_intro'), style: TextStyle(color: textSub, fontSize: 13, height: 1.4)),
           const SizedBox(height: 20),
 
           // [CHỐNG LỒNG KÍNH] 4 mục menu dưới đây PHẲNG VĨNH VIỄN (Material+InkWell, không
@@ -278,8 +289,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Quét mã QR Code', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                          Text('Tự động nhận diện nhanh qua camera', style: TextStyle(color: textSub, fontSize: 11)),
+                          Text(t.text('scan_qr_title'), style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text(t.text('scan_qr_sub'), style: TextStyle(color: textSub, fontSize: 11)),
                         ],
                       ),
                     ),
@@ -289,7 +300,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           // 2. Chế độ Wi-Fi AP Tự động
           Material(
@@ -311,8 +322,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Kết nối Wi-Fi (AP Mode tự động)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                          Text('Bắt mạng của thiết bị để cấu hình tự động', style: TextStyle(color: textSub, fontSize: 11)),
+                          Text(t.text('ap_mode_title'), style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text(t.text('ap_mode_sub'), style: TextStyle(color: textSub, fontSize: 11)),
                         ],
                       ),
                     ),
@@ -322,7 +333,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           // 3. Nhập tay
           Material(
@@ -341,8 +352,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Nhập thủ công (SN/MAC)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                          Text('Điền thông tin sê-ri mã phía sau vỏ máy', style: TextStyle(color: textSub, fontSize: 11)),
+                          Text(t.text('manual_entry_title'), style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text(t.text('manual_entry_sub'), style: TextStyle(color: textSub, fontSize: 11)),
                         ],
                       ),
                     ),
@@ -352,7 +363,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           // 4. Quét mạng LAN (UDP Broadcast tự động tìm thiết bị cùng WiFi)
           Material(
@@ -371,8 +382,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Quét mạng LAN (Tự động tìm kiếm)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                          Text('Dò mọi thiết bị đang cùng mạng WiFi với bạn', style: TextStyle(color: textSub, fontSize: 11)),
+                          Text(t.text('lan_scan_title'), style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text(t.text('lan_scan_sub'), style: TextStyle(color: textSub, fontSize: 11)),
                         ],
                       ),
                     ),
@@ -388,16 +399,21 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   // --- VIEW 4: QUÉT MẠNG LAN — DANH SÁCH THIẾT BỊ TÌM THẤY ---
-  Widget _buildLanScanView(bool isDark, Color textMain, Color textSub) {
+  Widget _buildLanScanView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
     final devices = _lanDevices;
     final bool empty = devices.isEmpty;
     return Padding(
-      padding: const EdgeInsets.all(20.0),
+      // [FIX — Whitespace lãng phí] showAppDialog() ĐÃ tự thêm padding 24 quanh toàn bộ nội
+      // dung (xem app_ui_wrappers.dart) — Padding 20 cũ ở đây CỘNG DỒN thành 44px mỗi bên,
+      // ép cột nội dung hẹp lại khiến 4 thẻ tính năng trông co cụm dù viền ngoài popup lại
+      // rất thừa trắng. Giảm còn 12 — chỉ áp dụng RIÊNG cho add_device_dialog.dart, không đụng
+      // vào padding 24 dùng chung của showAppDialog (sẽ ảnh hưởng MỌI popup khác trong app).
+      padding: const EdgeInsets.all(12.0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildHeader('Quét mạng LAN', textMain, textSub),
+          _buildHeader(t.text('lan_scan_header'), textMain, textSub),
           const SizedBox(height: 16),
 
           // Dòng trạng thái: đang quét (spinner "Đang tìm kiếm...") hoặc đã xong
@@ -411,10 +427,11 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               Expanded(
                 child: Text(
                   _isScanning
-                      ? 'Đang tìm kiếm thiết bị trong mạng...'
+                      ? t.text('lan_scanning_status')
                       : (empty
-                          ? 'Không tìm thấy thiết bị nào. Đảm bảo điện thoại và thiết bị dùng chung WiFi.'
-                          : 'Đã tìm thấy ${devices.length} thiết bị.'),
+                          ? t.text('lan_scan_empty')
+                          // [GIỮ NGUYÊN BIẾN ĐỘNG] devices.length — số thiết bị tìm thấy thật.
+                          : '${t.text('found_devices_prefix')}${devices.length}${t.text('found_devices_suffix')}'),
                   style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
               ),
@@ -423,7 +440,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                 TextButton.icon(
                   onPressed: _startLanScan,
                   icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.purple),
-                  label: const Text('Thử lại', style: TextStyle(color: Colors.purple, fontWeight: FontWeight.bold, fontSize: 13)),
+                  label: Text(t.text('retry'), style: const TextStyle(color: Colors.purple, fontWeight: FontWeight.bold, fontSize: 13)),
                 ),
             ],
           ),
@@ -476,14 +493,14 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                             children: [
                               Icon(Icons.check_circle, color: tkGreen, size: 18),
                               const SizedBox(width: 6),
-                              Text('Đã thêm', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+                              Text(t.text('already_added_label'), style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
                             ],
                           )
                         else
                           ElevatedButton(
                             style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                             onPressed: _isProcessing ? null : () => _processLinkDevice(d.mac),
-                            child: const Text('Thêm ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                            child: Text(t.text('add_now_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                           ),
                       ],
                     ),
@@ -497,13 +514,18 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   // --- VIEW 1: CAMERA SCANNER ---
-  Widget _buildScannerView(Color textMain, Color textSub) {
+  Widget _buildScannerView(Color textMain, Color textSub, AppTranslations t) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: _buildHeader('Quét mã QR thiết bị', textMain, textSub),
+          // [FIX — Whitespace lãng phí] showAppDialog() ĐÃ tự thêm padding 24 quanh toàn bộ nội
+      // dung (xem app_ui_wrappers.dart) — Padding 20 cũ ở đây CỘNG DỒN thành 44px mỗi bên,
+      // ép cột nội dung hẹp lại khiến 4 thẻ tính năng trông co cụm dù viền ngoài popup lại
+      // rất thừa trắng. Giảm còn 12 — chỉ áp dụng RIÊNG cho add_device_dialog.dart, không đụng
+      // vào padding 24 dùng chung của showAppDialog (sẽ ảnh hưởng MỌI popup khác trong app).
+      padding: const EdgeInsets.all(12.0),
+          child: _buildHeader(t.text('scan_qr_header'), textMain, textSub),
         ),
         SizedBox(
           height: 300, 
@@ -537,23 +559,28 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             ),
           ),
         ),
-        const Padding(
-          padding: EdgeInsets.all(16.0),
-          child: Text('Đưa mã QR trên tem thiết bị vào trung tâm camera', style: TextStyle(color: Colors.grey, fontSize: 12)),
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Text(t.text('scan_qr_hint'), style: const TextStyle(color: Colors.grey, fontSize: 12)),
         )
       ],
     );
   }
 
   // --- VIEW 2: NHẬP THỦ CÔNG ---
-  Widget _buildManualEntryView(bool isDark, Color textMain, Color textSub) {
+  Widget _buildManualEntryView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
     return Padding(
-      padding: const EdgeInsets.all(20.0),
+      // [FIX — Whitespace lãng phí] showAppDialog() ĐÃ tự thêm padding 24 quanh toàn bộ nội
+      // dung (xem app_ui_wrappers.dart) — Padding 20 cũ ở đây CỘNG DỒN thành 44px mỗi bên,
+      // ép cột nội dung hẹp lại khiến 4 thẻ tính năng trông co cụm dù viền ngoài popup lại
+      // rất thừa trắng. Giảm còn 12 — chỉ áp dụng RIÊNG cho add_device_dialog.dart, không đụng
+      // vào padding 24 dùng chung của showAppDialog (sẽ ảnh hưởng MỌI popup khác trong app).
+      padding: const EdgeInsets.all(12.0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildHeader('Nhập thủ công mã MAC', textMain, textSub),
+          _buildHeader(t.text('manual_entry_header'), textMain, textSub),
           const SizedBox(height: 20),
           // [FORM SWEEP — GIỮ NGUYÊN TextField] Cần textCapitalization.characters +
           // style/letterSpacing tùy biến mà AppTextField chưa hỗ trợ (cùng lý do SN/MAC
@@ -563,7 +590,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             style: TextStyle(color: textMain, fontSize: 16, letterSpacing: 1.5, fontWeight: FontWeight.bold),
             textCapitalization: TextCapitalization.characters,
             decoration: InputDecoration(
-              hintText: 'Mã MAC hoặc SN của thiết bị',
+              hintText: t.text('mac_sn_hint'),
               hintStyle: TextStyle(color: textSub.withValues(alpha: 0.4), letterSpacing: 0, fontWeight: FontWeight.normal, fontSize: 14),
               filled: true,
               fillColor: isDark ? Colors.black26 : Colors.grey.shade100,
@@ -578,9 +605,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
               onPressed: () => _processLinkDevice(_macController.text),
-              child: _isProcessing 
+              child: _isProcessing
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Text('XÁC NHẬN KẾT NỐI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  : Text(t.text('confirm_connection_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           )
         ],
@@ -589,13 +616,18 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   // --- VIEW 3: LUỒNG AP MODE TỰ ĐỘNG ---
-  Widget _buildAPModeView(bool isDark, Color textMain, Color textSub) {
+  Widget _buildAPModeView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
     return Padding(
-      padding: const EdgeInsets.all(20.0),
+      // [FIX — Whitespace lãng phí] showAppDialog() ĐÃ tự thêm padding 24 quanh toàn bộ nội
+      // dung (xem app_ui_wrappers.dart) — Padding 20 cũ ở đây CỘNG DỒN thành 44px mỗi bên,
+      // ép cột nội dung hẹp lại khiến 4 thẻ tính năng trông co cụm dù viền ngoài popup lại
+      // rất thừa trắng. Giảm còn 12 — chỉ áp dụng RIÊNG cho add_device_dialog.dart, không đụng
+      // vào padding 24 dùng chung của showAppDialog (sẽ ảnh hưởng MỌI popup khác trong app).
+      padding: const EdgeInsets.all(12.0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildHeader('Kết nối Wi-Fi AP Tự động', textMain, textSub),
+          _buildHeader(t.text('ap_mode_header'), textMain, textSub),
           const SizedBox(height: 32),
 
           // HIỆU ỨNG RADAR HOẶC DẤU CHECK THÀNH CÔNG
@@ -648,15 +680,15 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
 
           // TRẠNG THÁI VÀ HƯỚNG DẪN
           Text(
-            isConnectedToHub ? 'Đã kết nối với Smart Hub!' : 'Đang tìm kiếm mạng thiết bị...',
+            isConnectedToHub ? t.text('connected_to_hub') : t.text('searching_device_network'),
             style: TextStyle(color: isConnectedToHub ? tkGreen : textMain, fontSize: 16, fontWeight: FontWeight.bold),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 12),
           Text(
-            isConnectedToHub 
-              ? 'Chuẩn bị mở màn hình Cài đặt kết nối...' 
-              : 'Vui lòng nhấn nút bên dưới để mở cài đặt Wi-Fi. Kết nối với mạng có tên "Smart_Hub_..." sau đó quay lại App.',
+            isConnectedToHub
+              ? t.text('preparing_open_settings')
+              : t.text('wifi_ap_instructions'),
             style: TextStyle(color: textSub, fontSize: 13, height: 1.5),
             textAlign: TextAlign.center,
           ),
@@ -675,7 +707,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                   elevation: 0,
                 ),
                 icon: const Icon(Icons.settings_suggest_rounded, size: 20),
-                label: const Text('MỞ CÀI ĐẶT WI-FI ĐIỆN THOẠI', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                label: Text(t.text('open_wifi_settings_btn'), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                 onPressed: _openWiFiSettings,
               ),
             ),
@@ -689,6 +721,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
+    final t = AppTranslations.of(context);
 
     // [GLASS THEME — BOSS FIGHT] Dialog/ConstrainedBox/GlassCard thủ công cũ ĐÃ BỎ khỏi
     // build() của chính class này — caller (dashboard_screen.dart ×2, device_list_screen.dart)
@@ -708,14 +741,14 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
               child: _currentView == 0
-                  ? _buildSelectionMenu(isDark, textMain, textSub)
+                  ? _buildSelectionMenu(isDark, textMain, textSub, t)
                   : _currentView == 1
-                      ? _buildScannerView(textMain, textSub)
+                      ? _buildScannerView(textMain, textSub, t)
                       : _currentView == 2
-                          ? _buildManualEntryView(isDark, textMain, textSub)
+                          ? _buildManualEntryView(isDark, textMain, textSub, t)
                           : _currentView == 3
-                              ? _buildAPModeView(isDark, textMain, textSub) // View 3: AP Mode
-                              : _buildLanScanView(isDark, textMain, textSub), // View 4: Quét LAN
+                              ? _buildAPModeView(isDark, textMain, textSub, t) // View 3: AP Mode
+                              : _buildLanScanView(isDark, textMain, textSub, t), // View 4: Quét LAN
             ),
         ),
     );

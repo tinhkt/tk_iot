@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'providers/device_provider.dart';
 import 'providers/theme_provider.dart';
+import 'providers/language_provider.dart';
 import 'screens/auth/splash_screen.dart'; // 1. NHẬP NGƯỜI GÁC CỔNG VÀO
 import 'providers/notification_provider.dart';
 import 'providers/room_group_provider.dart';
@@ -71,6 +72,7 @@ void main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => DeviceProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => LanguageProvider()), // Đa ngôn ngữ (proof-of-concept, xem app_translations.dart)
         ChangeNotifierProvider(create: (_) => NotificationProvider()),
         ChangeNotifierProvider(create: (_) => RoomGroupProvider()), // Phòng + Nhóm (mock)
         ChangeNotifierProvider(create: (_) => AutomationProvider()), // Ngữ cảnh (mock)

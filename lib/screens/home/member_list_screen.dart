@@ -7,6 +7,7 @@ import '../../providers/home_provider.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/add_member_dialog.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 
 /// Màn hình chi tiết sổ thành viên của một nhà — dữ liệu THẬT từ
 /// GET /api/homes/{id}/members qua [HomeProvider]. Thêm/gỡ thành viên đều đi qua
@@ -68,6 +69,9 @@ class _MemberListScreenState extends State<MemberListScreen> {
   }
 
   void _showAddMemberDialog() async {
+    // Gọi từ ElevatedButton.onPressed (tap handler) -> listen: false, tránh "liệt nút"
+    // (context.watch() ngoài pha build thật — xem app_translations.dart).
+    final t = AppTranslations.of(context, listen: false);
     final provider = context.read<HomeProvider>();
     // [GLASS THEME] AddMemberDialog tự trả về nội dung thô (không còn tự bọc Dialog/
     // GlassCard trong build() của nó) nên đưa thẳng vào child: của showAppDialog.
@@ -79,12 +83,14 @@ class _MemberListScreenState extends State<MemberListScreen> {
     );
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Đã thêm thành viên thành công'), backgroundColor: _tkGreen),
+        SnackBar(content: Text(t.text('add_member_success')), backgroundColor: _tkGreen),
       );
     }
   }
 
   Future<void> _confirmAndRemove(HomeMember member) async {
+    // Gọi từ PopupMenuButton.onSelected (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     final confirm = await showAppDialog<bool>(
           context: context,
@@ -94,19 +100,20 @@ class _MemberListScreenState extends State<MemberListScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(t.text('confirm_delete_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 16),
-                Text('Bạn có chắc chắn muốn xóa thành viên "${member.email}" khỏi nhà này?'),
+                // [GIỮ NGUYÊN BIẾN ĐỘNG] member.email — chỉ câu văn quanh dịch.
+                Text('${t.text('confirm_remove_member_prefix')}${member.email}${t.text('confirm_remove_member_suffix')}'),
                 const SizedBox(height: 24),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
                     const SizedBox(width: 8),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                       onPressed: () => Navigator.pop(context, true),
-                      child: const Text('Xóa', style: TextStyle(color: Colors.white)),
+                      child: Text(t.text('delete'), style: const TextStyle(color: Colors.white)),
                     ),
                   ],
                 ),
@@ -123,7 +130,8 @@ class _MemberListScreenState extends State<MemberListScreen> {
       await context.read<HomeProvider>().removeMember(_homeId, member.email);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Đã xóa ${member.email} khỏi nhà'), backgroundColor: _tkGreen),
+        // [GIỮ NGUYÊN BIẾN ĐỘNG] member.email — chỉ câu văn quanh dịch.
+        SnackBar(content: Text('${t.text('removed_member_prefix')}${member.email}${t.text('removed_member_suffix')}'), backgroundColor: _tkGreen),
       );
     } catch (e) {
       if (!mounted) return;
@@ -138,6 +146,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
     final provider = context.watch<HomeProvider>();
     final members = provider.membersOf(_homeId);
     final isLoading = provider.isLoadingMembers(_homeId);
@@ -154,9 +163,9 @@ class _MemberListScreenState extends State<MemberListScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildBreadcrumb(textMain, textSub),
+              _buildBreadcrumb(textMain, textSub, t),
               const SizedBox(height: 20),
-              _buildHeader(textMain, textSub),
+              _buildHeader(textMain, textSub, t),
               const SizedBox(height: 28),
               Expanded(
                 child: isLoading && members.isEmpty
@@ -167,28 +176,30 @@ class _MemberListScreenState extends State<MemberListScreen> {
                         child: ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           children: [
-                            _buildOwnerSection(owners, textMain, textSub, isDark),
+                            _buildOwnerSection(owners, textMain, textSub, isDark, t),
                             const SizedBox(height: 24),
                             _buildRoleSection(
-                              title: 'Quản trị viên',
+                              title: t.text('admin_role_title'),
                               icon: Icons.shield_rounded,
                               accent: _adminColor,
                               list: admins,
                               textMain: textMain,
                               textSub: textSub,
                               isDark: isDark,
-                              emptyText: 'Chưa có quản trị viên nào',
+                              emptyText: t.text('no_admins_yet'),
+                              t: t,
                             ),
                             const SizedBox(height: 24),
                             _buildRoleSection(
-                              title: 'Thành viên',
+                              title: t.text('members'),
                               icon: Icons.people_alt_rounded,
                               accent: _tkGreen,
                               list: users,
                               textMain: textMain,
                               textSub: textSub,
                               isDark: isDark,
-                              emptyText: 'Chưa có thành viên nào',
+                              emptyText: t.text('no_members_yet'),
+                              t: t,
                             ),
                             const SizedBox(height: 16),
                           ],
@@ -205,7 +216,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
   // ==========================================================================
   // BREADCRUMB — thay cho AppBar + nút Back to tướng: "Quản lý Nhà › Thành viên"
   // ==========================================================================
-  Widget _buildBreadcrumb(Color textMain, Color textSub) {
+  Widget _buildBreadcrumb(Color textMain, Color textSub, AppTranslations t) {
     return Row(
       children: [
         Material(
@@ -220,7 +231,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
                 children: [
                   Icon(Icons.arrow_back_rounded, size: 18, color: textSub),
                   const SizedBox(width: 6),
-                  Text('Quản lý Nhà', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
+                  Text(t.text('home_management'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
                 ],
               ),
             ),
@@ -229,13 +240,13 @@ class _MemberListScreenState extends State<MemberListScreen> {
         Icon(Icons.chevron_right_rounded, size: 16, color: textSub.withValues(alpha: 0.6)),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: Text('Thành viên', style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold)),
+          child: Text(t.text('members'), style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold)),
         ),
       ],
     );
   }
 
-  Widget _buildHeader(Color textMain, Color textSub) {
+  Widget _buildHeader(Color textMain, Color textSub, AppTranslations t) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -243,8 +254,9 @@ class _MemberListScreenState extends State<MemberListScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Thành viên', style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.w900)),
+              Text(t.text('members'), style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.w900)),
               const SizedBox(height: 4),
+              // [GIỮ NGUYÊN BIẾN ĐỘNG] _homeName — tên nhà do người dùng đặt, không dịch.
               Text(_homeName, style: TextStyle(color: textSub, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
             ],
           ),
@@ -259,7 +271,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
             elevation: 0,
           ),
           icon: const Icon(Icons.person_add_alt_1_rounded, size: 22),
-          label: const Text('Thêm thành viên', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          label: Text(t.text('add_member'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
           onPressed: _showAddMemberDialog,
         ),
       ],
@@ -269,10 +281,10 @@ class _MemberListScreenState extends State<MemberListScreen> {
   // ==========================================================================
   // KHU VỰC 1 — CHỦ NHÀ: đóng khung nổi bật riêng, luôn trên cùng, KHÔNG có nút xóa.
   // ==========================================================================
-  Widget _buildOwnerSection(List<HomeMember> owners, Color textMain, Color textSub, bool isDark) {
+  Widget _buildOwnerSection(List<HomeMember> owners, Color textMain, Color textSub, bool isDark, AppTranslations t) {
     if (owners.isEmpty) {
       // Không lẽ xảy ra (Backend luôn ghép owner vào danh sách) — vẫn thủ thân, không crash.
-      return _sectionHeader('Chủ nhà', Icons.workspace_premium_rounded, _ownerColor, 0, textSub);
+      return _sectionHeader(t.text('home_owner'), Icons.workspace_premium_rounded, _ownerColor, 0, textSub);
     }
     final owner = owners.first;
     final bool isSelf = _currentEmail != null && owner.email == _currentEmail;
@@ -280,7 +292,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionHeader('Chủ nhà', Icons.workspace_premium_rounded, _ownerColor, 1, textSub),
+        _sectionHeader(t.text('home_owner'), Icons.workspace_premium_rounded, _ownerColor, 1, textSub),
         const SizedBox(height: 10),
         Container(
           padding: const EdgeInsets.all(18),
@@ -299,18 +311,19 @@ class _MemberListScreenState extends State<MemberListScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      owner.email + (isSelf ? ' (Bạn)' : ''),
+                      // [GIỮ NGUYÊN BIẾN ĐỘNG] owner.email — chỉ hậu tố "(Bạn)" dịch.
+                      '${owner.email}${isSelf ? ' ${t.text('you_suffix')}' : ''}',
                       style: TextStyle(color: textMain, fontSize: 15, fontWeight: FontWeight.bold),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
-                    Text('Toàn quyền sở hữu ngôi nhà này', style: TextStyle(color: textSub, fontSize: 12)),
+                    Text(t.text('home_owner_desc'), style: TextStyle(color: textSub, fontSize: 12)),
                   ],
                 ),
               ),
               const SizedBox(width: 12),
-              _roleBadge('OWNER'),
+              _roleBadge('OWNER', t),
             ],
           ),
         ),
@@ -330,6 +343,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
     required Color textSub,
     required bool isDark,
     required String emptyText,
+    required AppTranslations t,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -353,7 +367,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
             child: Column(
               children: [
                 for (int i = 0; i < list.length; i++) ...[
-                  _buildMemberTile(list[i], textMain, textSub),
+                  _buildMemberTile(list[i], textMain, textSub, t),
                   if (i != list.length - 1) Divider(height: 1, indent: 68, color: isDark ? Colors.white10 : Colors.grey.shade200),
                 ],
               ],
@@ -379,7 +393,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
     );
   }
 
-  Widget _buildMemberTile(HomeMember mem, Color textMain, Color textSub) {
+  Widget _buildMemberTile(HomeMember mem, Color textMain, Color textSub, AppTranslations t) {
     final bool isSelf = _currentEmail != null && mem.email == _currentEmail;
     final bool canRemove = mem.role != 'OWNER' && !isSelf;
 
@@ -387,7 +401,8 @@ class _MemberListScreenState extends State<MemberListScreen> {
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       leading: CircleAvatar(backgroundColor: _tkGreen.withValues(alpha: 0.15), child: const Icon(Icons.person_rounded, color: _tkGreen)),
       title: Text(
-        mem.email + (isSelf ? ' (Bạn)' : ''),
+        // [GIỮ NGUYÊN BIẾN ĐỘNG] mem.email — chỉ hậu tố "(Bạn)" dịch.
+        '${mem.email}${isSelf ? ' ${t.text('you_suffix')}' : ''}',
         style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -395,7 +410,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _roleBadge(mem.role),
+          _roleBadge(mem.role, t),
           const SizedBox(width: 4),
           if (canRemove)
             PopupMenuButton<String>(
@@ -403,8 +418,11 @@ class _MemberListScreenState extends State<MemberListScreen> {
               onSelected: (val) {
                 if (val == 'remove') _confirmAndRemove(mem);
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'remove', child: Text('Xóa khỏi nhà', style: TextStyle(color: Colors.red))),
+              // itemBuilder của PopupMenuButton chạy TỪ tap handler, KHÔNG phải build pass thật
+              // -> KHÔNG gọi AppTranslations.of() ở đây; dùng lại `t` đã lấy an toàn từ build()
+              // (chỉ là 1 giá trị thuần, không truy cập lại context).
+              itemBuilder: (_) => [
+                PopupMenuItem(value: 'remove', child: Text(t.text('remove_from_home_menu'), style: const TextStyle(color: Colors.red))),
               ],
             )
           else
@@ -416,21 +434,21 @@ class _MemberListScreenState extends State<MemberListScreen> {
 
   /// Badge màu theo vai trò — OWNER cam/đỏ, ADMIN xanh dương, USER xanh lá nhạt (đồng bộ
   /// màu thương hiệu _tkGreen thay vì xám trung tính để nhất quán với toàn app).
-  Widget _roleBadge(String role) {
+  Widget _roleBadge(String role, AppTranslations t) {
     late final Color color;
     late final String label;
     switch (role) {
       case 'OWNER':
         color = _ownerColor;
-        label = 'CHỦ NHÀ';
+        label = t.text('home_owner').toUpperCase();
         break;
       case 'ADMIN':
         color = _adminColor;
-        label = 'QUẢN TRỊ';
+        label = t.text('admin_badge');
         break;
       default:
         color = _tkGreen;
-        label = 'THÀNH VIÊN';
+        label = t.text('member_role').toUpperCase();
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:file_picker/file_picker.dart';
 import '../../services/admin_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 
 /// AdminSystemScreen — Bảng điều khiển Quản trị Hệ thống (chỉ SUPER_USER).
 /// Tab 1: Cấp phép thiết bị (Whitelist) + công tắc Chế độ nghiêm ngặt.
@@ -35,6 +36,7 @@ class AdminSystemScreen extends StatelessWidget {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
+    final tr = AppTranslations.of(context);
 
     final Widget content = DefaultTabController(
       length: 2,
@@ -50,7 +52,7 @@ class AdminSystemScreen extends StatelessWidget {
                   const Icon(Icons.admin_panel_settings, color: tkGreen, size: 28),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Text('Quản trị Hệ thống',
+                    child: Text(tr.text('system_admin'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
@@ -62,9 +64,9 @@ class AdminSystemScreen extends StatelessWidget {
             indicatorColor: tkGreen,
             labelColor: tkGreen,
             unselectedLabelColor: textSub,
-            tabs: const [
-              Tab(icon: Icon(Icons.verified_user_outlined), text: 'Cấp phép thiết bị'),
-              Tab(icon: Icon(Icons.system_update_alt), text: 'Cập nhật OTA'),
+            tabs: [
+              Tab(icon: const Icon(Icons.verified_user_outlined), text: tr.text('provision_device_tab')),
+              Tab(icon: const Icon(Icons.system_update_alt), text: tr.text('ota_update_tab')),
             ],
           ),
           // Expanded -> TabBarView chiếm trọn chiều cao còn lại (không tràn/không co rúm)
@@ -86,7 +88,7 @@ class AdminSystemScreen extends StatelessWidget {
     return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       appBar: AppBar(
-        title: const Text('Quản trị Hệ thống'),
+        title: Text(tr.text('system_admin')),
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         foregroundColor: textMain,
         elevation: 0,
@@ -177,7 +179,8 @@ class _WhitelistTabState extends State<_WhitelistTab> {
     // [DYNAMIC INPUT] Loại thiết bị lấy từ controller — chọn gợi ý HAY gõ tay đều được.
     final deviceType = _deviceTypeCtrl.text.trim();
     if (deviceType.isEmpty) {
-      _snack('Vui lòng chọn hoặc nhập loại thiết bị', isError: true);
+      // Gọi từ nút Thêm (tap handler) -> listen: false, tránh "liệt nút".
+      _snack(AppTranslations.of(context, listen: false).text('pick_device_type_error'), isError: true);
       return;
     }
     setState(() => _adding = true);
@@ -194,13 +197,18 @@ class _WhitelistTabState extends State<_WhitelistTab> {
   }
 
   Future<void> _delete(String sn) async {
+    // [SỬA LỖI LIỆT NÚT] Ghi chú cũ ở đây SAI: "gọi trước await là an toàn" — thực ra
+    // context.watch() bị assert bằng cờ TOÀN CỤC context.owner!.debugBuilding, cờ này LUÔN
+    // false khi hàm này chạy (được gọi từ tap handler), bất kể có await hay chưa. Phải
+    // listen: false — không liên quan gì đến vị trí trước/sau await.
+    final failedText = AppTranslations.of(context, listen: false).text('delete_failed');
     final ok = await _api.deleteWhitelist(sn);
     if (!mounted) return;
     if (ok) {
       _snack('Đã thu hồi cấp phép $sn');
       _loadAll();
     } else {
-      _snack('Xóa thất bại', isError: true);
+      _snack(failedText, isError: true);
     }
   }
 
@@ -217,6 +225,7 @@ class _WhitelistTabState extends State<_WhitelistTab> {
     final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
+    final tr = AppTranslations.of(context);
 
     if (_loading) return const Center(child: CircularProgressIndicator(color: tkGreen));
 
@@ -239,10 +248,10 @@ class _WhitelistTabState extends State<_WhitelistTab> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Chế độ bảo mật nghiêm ngặt',
+                      Text(tr.text('strict_mode_title'),
                           style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
                       const SizedBox(height: 4),
-                      Text('Chỉ thiết bị trong danh sách mới được kết nối',
+                      Text(tr.text('strict_mode_desc'),
                           style: TextStyle(color: textSub, fontSize: 12)),
                     ],
                   ),
@@ -260,7 +269,7 @@ class _WhitelistTabState extends State<_WhitelistTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Thêm thiết bị được cấp phép',
+                Text(tr.text('add_whitelist_device_title'),
                     style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
                 const SizedBox(height: 12),
                 // [FORM SWEEP — GIỮ NGUYÊN TextField] Cần textCapitalization.characters (tự
@@ -271,7 +280,7 @@ class _WhitelistTabState extends State<_WhitelistTab> {
                   style: TextStyle(color: textMain),
                   textCapitalization: TextCapitalization.characters,
                   decoration: InputDecoration(
-                    labelText: 'SN / MAC (12 ký tự hex)',
+                    labelText: tr.text('sn_mac_label'),
                     labelStyle: TextStyle(color: textSub),
                     prefixIcon: Icon(Icons.qr_code_2, color: textSub),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
@@ -285,7 +294,7 @@ class _WhitelistTabState extends State<_WhitelistTab> {
                   enableFilter: true,
                   expandedInsets: EdgeInsets.zero,
                   menuHeight: 260,
-                  label: const Text('Loại thiết bị (chọn hoặc gõ mới)'),
+                  label: Text(tr.text('device_type_label')),
                   textStyle: TextStyle(color: textMain),
                   dropdownMenuEntries: _deviceTypes
                       .map((t) => DropdownMenuEntry<String>(value: t, label: t))
@@ -306,7 +315,7 @@ class _WhitelistTabState extends State<_WhitelistTab> {
                     icon: _adding
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                         : const Icon(Icons.add),
-                    label: Text(_adding ? 'Đang thêm...' : 'Thêm vào danh sách'),
+                    label: Text(_adding ? tr.text('adding_ellipsis') : tr.text('add_to_list')),
                     onPressed: _adding ? null : _add,
                   ),
                 ),
@@ -317,13 +326,13 @@ class _WhitelistTabState extends State<_WhitelistTab> {
 
           // --- Danh sách ---
           // [FIX iOS] Ép cứng fontSize + height: không để Text kế thừa DefaultTextStyle khổng lồ.
-          Text('Đã cấp phép (${_list.length})',
+          Text('${tr.text('provisioned_count_prefix')}${_list.length})',
               style: TextStyle(color: textSub, fontWeight: FontWeight.bold, fontSize: 16, height: 1.3, letterSpacing: 1)),
           const SizedBox(height: 8),
           if (_list.isEmpty)
             Padding(
               padding: const EdgeInsets.all(24),
-              child: Center(child: Text('Chưa có thiết bị nào được cấp phép.', style: TextStyle(color: textSub))),
+              child: Center(child: Text(tr.text('no_whitelist_devices'), style: TextStyle(color: textSub))),
             )
           else
             ..._list.map((e) {
@@ -429,21 +438,25 @@ class _FirmwareTabState extends State<_FirmwareTab> {
   }
 
   Future<void> _upload() async {
+    // [SỬA LỖI LIỆT NÚT] Gọi từ tap handler -> listen: false (xem giải thích ở
+    // _WhitelistTabState._delete()).
+    final tr = AppTranslations.of(context, listen: false);
     if (_pickedFile == null) {
-      _snack('Vui lòng chọn file .bin', isError: true);
+      _snack(tr.text('pick_bin_file_error'), isError: true);
       return;
     }
     final version = _versionCtrl.text.trim();
     if (version.isEmpty) {
-      _snack('Vui lòng nhập phiên bản', isError: true);
+      _snack(tr.text('enter_version_error'), isError: true);
       return;
     }
     // [DYNAMIC INPUT] Giá trị cuối cùng lấy từ controller — chọn gợi ý HAY gõ tay đều được.
     final deviceType = _deviceTypeCtrl.text.trim();
     if (deviceType.isEmpty) {
-      _snack('Vui lòng chọn hoặc nhập loại thiết bị', isError: true);
+      _snack(tr.text('pick_device_type_error'), isError: true);
       return;
     }
+    final uploadSuccessText = tr.text('upload_success');
     setState(() => _uploading = true);
     final err = await _api.uploadFirmware(
       deviceType: deviceType,
@@ -456,7 +469,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
     if (!mounted) return;
     setState(() => _uploading = false);
     if (err == null) {
-      _snack('Tải firmware lên thành công');
+      _snack(uploadSuccessText);
       _versionCtrl.clear();
       _changelogCtrl.clear();
       setState(() => _pickedFile = null);
@@ -467,6 +480,10 @@ class _FirmwareTabState extends State<_FirmwareTab> {
   }
 
   Future<void> _confirmDelete(Map<String, dynamic> fw) async {
+    // [SỬA LỖI LIỆT NÚT] Gọi từ tap handler -> listen: false (xem giải thích ở
+    // _WhitelistTabState._delete()).
+    final tr = AppTranslations.of(context, listen: false);
+    final failedText = tr.text('delete_failed');
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     final confirm = await showAppDialog<bool>(
       context: context,
@@ -476,18 +493,19 @@ class _FirmwareTabState extends State<_FirmwareTab> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(tr.text('confirm_delete_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            Text('Bạn có chắc chắn xóa file này khỏi server không?\n\n${fw['device_type']} v${fw['version']}\n${fw['file_name'] ?? ''}'),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] device_type/version/file_name đọc từ API — chỉ câu hỏi đầu dịch.
+            Text('${tr.text('confirm_delete_file_prefix')}${fw['device_type']} v${fw['version']}\n${fw['file_name'] ?? ''}'),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: Text(tr.text('cancel'))),
                 const SizedBox(width: 8),
                 TextButton(
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Xóa', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                  child: Text(tr.text('delete'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -502,7 +520,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
       _snack('Đã xóa file khỏi server');
       _loadList();
     } else {
-      _snack('Xóa thất bại', isError: true);
+      _snack(failedText, isError: true);
     }
   }
 
@@ -518,13 +536,16 @@ class _FirmwareTabState extends State<_FirmwareTab> {
   bool _fetchingKey = false;
 
   Future<void> _showPublicKeyDialog() async {
+    // [SỬA LỖI LIỆT NÚT] Gọi từ tap handler -> listen: false (xem giải thích ở
+    // _WhitelistTabState._delete()).
+    final cantGetKeyText = AppTranslations.of(context, listen: false).text('cant_get_pubkey_error');
     setState(() => _fetchingKey = true);
     final (hexKey, err) = await _api.getOtaPublicKey();
     if (!mounted) return;
     setState(() => _fetchingKey = false);
 
     if (err != null || hexKey == null) {
-      _snack(err ?? 'Không lấy được Public Key', isError: true);
+      _snack(err ?? cantGetKeyText, isError: true);
       return;
     }
 
@@ -539,13 +560,14 @@ class _FirmwareTabState extends State<_FirmwareTab> {
           final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
           final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
           final Color textSub = isDark ? Colors.white70 : Colors.black54;
+          final tr = AppTranslations.of(ctx);
           return ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Public Key ký OTA (P-256)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                Text(tr.text('public_key_dialog_title'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                 const SizedBox(height: 16),
                 Container(
                   width: double.infinity,
@@ -567,7 +589,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        'Hãy dán chuỗi này vào biến pubkey (mảng OTA_PUBLIC_KEY[65]) trong mã nguồn C++ của thiết bị trước khi biên dịch.',
+                        tr.text('public_key_help_text'),
                         style: TextStyle(color: textSub, fontSize: 12),
                       ),
                     ),
@@ -577,17 +599,20 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr.text('close'))),
                     const SizedBox(width: 8),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
                       icon: const Icon(Icons.copy_rounded, size: 18),
-                      label: const Text('Copy vào Clipboard'),
+                      label: Text(tr.text('copy_clipboard_btn')),
                       onPressed: () async {
+                        // [AN TOÀN PROVIDER] Dịch TRƯỚC await Clipboard — xem giải thích ở
+                        // _WhitelistTabState._delete().
+                        final copiedText = tr.text('copied_clipboard');
                         await Clipboard.setData(ClipboardData(text: hexKey));
                         if (!ctx.mounted) return;
                         Navigator.pop(ctx);
-                        _snack('Đã copy Public Key vào Clipboard');
+                        _snack(copiedText);
                       },
                     ),
                   ],
@@ -613,6 +638,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
     final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
+    final tr = AppTranslations.of(context);
 
     return RefreshIndicator(
       color: tkGreen,
@@ -630,7 +656,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                 Row(
                   children: [
                     Expanded(
-                      child: Text('Tải lên Firmware mới',
+                      child: Text(tr.text('upload_new_firmware_title'),
                           style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
                     ),
                     // [OTA ZERO-TRUST] Public Key không phải bí mật -> lấy tự do để nhúng vào
@@ -640,7 +666,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                       icon: _fetchingKey
                           ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
                           : const Icon(Icons.vpn_key_outlined, size: 16),
-                      label: const Text('Lấy Khóa Công Khai', style: TextStyle(fontSize: 12)),
+                      label: Text(tr.text('get_public_key_btn'), style: const TextStyle(fontSize: 12)),
                       onPressed: _fetchingKey ? null : _showPublicKeyDialog,
                     ),
                   ],
@@ -654,7 +680,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                   enableFilter: true,                    // gõ tới đâu lọc gợi ý tới đó
                   expandedInsets: EdgeInsets.zero,       // giãn full chiều rộng cột
                   menuHeight: 260,
-                  label: const Text('Loại thiết bị (chọn hoặc gõ mới)'),
+                  label: Text(tr.text('device_type_label')),
                   textStyle: TextStyle(color: textMain),
                   dropdownMenuEntries: _deviceTypes
                       .map((t) => DropdownMenuEntry<String>(value: t, label: t))
@@ -667,14 +693,14 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                 // [FORM SWEEP] 2× TextField -> AppTextField.
                 AppTextField(
                   controller: _versionCtrl,
-                  labelText: 'Phiên bản (vd: 1.0.2)',
+                  labelText: tr.text('version_hint'),
                   prefixIcon: Icon(Icons.tag, color: textSub),
                 ),
                 const SizedBox(height: 12),
                 AppTextField(
                   controller: _changelogCtrl,
                   maxLines: 3,
-                  labelText: 'Changelog (nội dung thay đổi)',
+                  labelText: tr.text('changelog_hint'),
                 ),
                 const SizedBox(height: 12),
                 // Nút chọn file
@@ -686,7 +712,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                   icon: const Icon(Icons.attach_file),
-                  label: Text(_pickedFile == null ? 'Chọn file .bin' : _pickedFile!.name),
+                  label: Text(_pickedFile == null ? tr.text('pick_bin_file_btn') : _pickedFile!.name),
                   onPressed: _uploading ? null : _pickFile,
                 ),
                 const SizedBox(height: 14),
@@ -701,7 +727,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                     icon: _uploading
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                         : const Icon(Icons.cloud_upload_outlined),
-                    label: Text(_uploading ? 'Đang tải lên...' : 'Tải lên Server'),
+                    label: Text(_uploading ? tr.text('uploading_ellipsis') : tr.text('upload_to_server_btn')),
                     onPressed: _uploading ? null : _upload,
                   ),
                 ),
@@ -712,7 +738,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
 
           // --- Danh sách firmware ---
           // [FIX iOS] Ép cứng fontSize + height: không để Text kế thừa DefaultTextStyle khổng lồ.
-          Text('Firmware trên server',
+          Text(tr.text('firmware_on_server'),
               style: TextStyle(color: textSub, fontWeight: FontWeight.bold, fontSize: 16, height: 1.3, letterSpacing: 1)),
           const SizedBox(height: 8),
           if (_loading)
@@ -720,7 +746,7 @@ class _FirmwareTabState extends State<_FirmwareTab> {
           else if (_list.isEmpty)
             Padding(
               padding: const EdgeInsets.all(24),
-              child: Center(child: Text('Kho firmware đang trống.', style: TextStyle(color: textSub))),
+              child: Center(child: Text(tr.text('firmware_repo_empty'), style: TextStyle(color: textSub))),
             )
           else
             ..._list.map((fw) {

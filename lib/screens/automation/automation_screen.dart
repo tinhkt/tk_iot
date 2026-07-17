@@ -5,6 +5,7 @@ import '../../providers/device_provider.dart';
 import '../../services/schedule_service.dart';
 import '../../widgets/adaptive_navigation.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 import 'add_scene_or_schedule_screen.dart';
 import 'create_automation_screen.dart';
 
@@ -52,6 +53,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
 
     return DefaultTabController(
       length: 3,
@@ -59,12 +61,12 @@ class _AutomationScreenState extends State<AutomationScreen> {
         backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
         appBar: widget.embedded
             ? null
-            : AppBar(title: const Text('Ngữ cảnh'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0),
+            : AppBar(title: Text(t.text('routines')), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0),
         floatingActionButton: FloatingActionButton.extended(
           backgroundColor: tkGreen,
           foregroundColor: Colors.white,
           icon: const Icon(Icons.add),
-          label: const Text('Thêm mới'),
+          label: Text(t.text('add_new_title')),
           // [RESPONSIVE NAV] PC: dialog lớn giữ nguyên Sidebar; Mobile: push như cũ
           onPressed: _openAddPopup,
         ),
@@ -77,22 +79,21 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   child: Row(children: [
                     const Icon(Icons.auto_awesome, color: tkGreen, size: 26),
                     const SizedBox(width: 12),
-                    Text('Ngữ cảnh', style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
+                    Text(t.text('routines'), style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
                   ]),
                 ),
-              // [isScrollable] 3 tab dàn hàng ngang đủ chỗ trên PC; trên Mobile (màn hẹp) chữ
-              // KHÔNG bị ép nhỏ/overflow — TabBar tự co theo nội dung + vuốt ngang để thấy
-              // "Lịch trình" ở bên phải, thay vì Flutter chia đều 3 cột cứng nhắc.
+              // [FIX DÀN ĐỀU] isScrollable: true trước đây ép 3 tab dồn về bên trái + chừa
+              // khoảng trắng thừa bên phải trên cả Mobile lẫn PC (không chia đều màn hình như
+              // yêu cầu) — false để TabBar chia 3 cột bằng nhau, chiếm trọn 100% chiều ngang.
               TabBar(
-                isScrollable: true,
-                tabAlignment: TabAlignment.start,
+                isScrollable: false,
                 indicatorColor: tkGreen,
                 labelColor: tkGreen,
                 unselectedLabelColor: textSub,
-                tabs: const [
-                  Tab(icon: Icon(Icons.touch_app), text: 'Chạm để chạy'),
-                  Tab(icon: Icon(Icons.bolt), text: 'Tự động'),
-                  Tab(icon: Icon(Icons.event_repeat), text: 'Lịch trình'),
+                tabs: [
+                  Tab(icon: const Icon(Icons.touch_app), text: t.text('tap_to_run_tab')),
+                  Tab(icon: const Icon(Icons.bolt), text: t.text('auto_tab')),
+                  Tab(icon: const Icon(Icons.event_repeat), text: t.text('schedule_tab')),
                 ],
               ),
               Expanded(
@@ -131,6 +132,10 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
   List<ScheduleItem> _schedules = [];
   bool _loading = true;
   String? _error;
+  // [AN TOÀN PROVIDER] Cờ riêng thay vì lưu sẵn chuỗi đã dịch vào _error — _load() chạy qua
+  // addPostFrameCallback (ngoài build pass), gọi AppTranslations.of(context) (context.watch)
+  // ở đó sẽ vi phạm assertion của provider. Dịch tại đúng chỗ hiển thị trong build().
+  bool _noHomeSelected = false;
 
   @override
   void initState() {
@@ -143,11 +148,11 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
     if (homeId.isEmpty) {
       setState(() {
         _loading = false;
-        _error = 'Chưa xác định được nhà hiện tại — mở lại màn hình Ngữ cảnh';
+        _noHomeSelected = true;
       });
       return;
     }
-    setState(() => _loading = true);
+    setState(() { _loading = true; _noHomeSelected = false; });
     final (list, err) = await _api.fetchHomeSchedules(homeId);
     if (!mounted) return;
     setState(() {
@@ -169,6 +174,8 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
   /// [YÊU CẦU 4 — NHẤN GIỮ ĐỂ XÓA] Xác nhận rồi DELETE + gỡ khỏi danh sách tại chỗ (không
   /// cần fetch lại cả danh sách — 1 dòng vừa bị xóa ta đã biết chắc chắn).
   Future<void> _confirmDelete(ScheduleItem s, String friendlyName) async {
+    // Gọi từ onLongPress (tap handler) -> listen: false, tránh "liệt nút" xóa lịch trình.
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     final bool? ok = await showAppDialog<bool>(
       context: context,
@@ -178,19 +185,20 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Xóa lịch trình', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(t.text('delete_schedule_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            Text('Bạn có chắc chắn muốn xóa lịch trình "$friendlyName — ${s.time}"?'),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] $friendlyName/${s.time} — chỉ câu văn quanh dịch.
+            Text('${t.text('confirm_delete_schedule_prefix')}$friendlyName — ${s.time}"?'),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
                 const SizedBox(width: 8),
                 TextButton(
                   style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Đồng ý xóa'),
+                  child: Text(t.text('confirm_delete_action')),
                 ),
               ],
             ),
@@ -221,8 +229,13 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
     // [YÊU CẦU 1 — TÊN THÂN THIỆN] context.watch: DPS đổi tên realtime (user vào Cài đặt
     // thiết bị đổi tên) -> danh sách này tự vẽ lại NGAY, không cần đóng/mở lại tab.
     final deviceProvider = context.watch<DeviceProvider>();
+    final t = AppTranslations.of(context);
 
     if (_loading) return const Center(child: CircularProgressIndicator(color: tkGreen));
+    if (_noHomeSelected) {
+      return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(t.text('no_home_selected_error'), textAlign: TextAlign.center, style: const TextStyle(color: Colors.redAccent))));
+    }
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] _error ở đây là lỗi THẬT từ API (ScheduleService) — không dịch.
     if (_error != null && _schedules.isEmpty) {
       return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.redAccent))));
     }
@@ -231,7 +244,7 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(
-            'Chưa có lịch trình nào.\nBấm "Thêm mới" > tab "Lịch trình" để tạo.',
+            t.text('no_schedules_yet'),
             textAlign: TextAlign.center,
             style: TextStyle(color: textSub),
           ),
@@ -270,7 +283,8 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              subtitle: Text('${s.repeatDays} • ${on ? 'Bật' : 'Tắt'} thiết bị • Chạm để sửa, giữ để xóa', style: TextStyle(color: textSub, fontSize: 12)),
+              // [GIỮ NGUYÊN BIẾN ĐỘNG] s.repeatDays đọc từ API — chỉ nhãn Bật/Tắt + câu mô tả dịch.
+              subtitle: Text('${s.repeatDays} • ${on ? t.text('turn_on_segment') : t.text('turn_off_segment')}${t.text('device_status_suffix')}', style: TextStyle(color: textSub, fontSize: 12)),
               trailing: Switch(value: s.isEnabled, activeThumbColor: tkGreen, onChanged: (v) => _toggle(s, v)),
             ),
           );
@@ -291,6 +305,8 @@ class _SceneList extends StatelessWidget {
   /// Provider xóa OPTIMISTIC: gỡ khỏi UI ngay khi bấm Đồng ý (notifyListeners ->
   /// Consumer vẽ lại tức thì); API lỗi thì tự gắn lại đúng vị trí cũ + SnackBar đỏ.
   Future<void> _confirmDeleteScene(BuildContext context, AutomationProvider provider, SceneItem s) async {
+    // Gọi từ onLongPress (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     final bool? ok = await showAppDialog<bool>(
       context: context,
@@ -300,19 +316,20 @@ class _SceneList extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Xóa ngữ cảnh', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(t.text('delete_scene_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            Text('Bạn có chắc chắn muốn xóa ngữ cảnh "${s.name}"?'),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] ${s.name} do người dùng đặt — chỉ câu văn quanh dịch.
+            Text('${t.text('confirm_delete_scene_prefix')}${s.name}"?'),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
                 const SizedBox(width: 8),
                 TextButton(
                   style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Đồng ý xóa'),
+                  child: Text(t.text('confirm_delete_action')),
                 ),
               ],
             ),
@@ -340,12 +357,13 @@ class _SceneList extends StatelessWidget {
     return Consumer<AutomationProvider>(
       builder: (context, provider, _) {
         final scenes = type == SceneType.tapToRun ? provider.tapToRun : provider.automations;
+        final t = AppTranslations.of(context);
         // Đang tải lần đầu từ server -> spinner thay vì chớp màn trống
         if (provider.isLoading && scenes.isEmpty) {
           return const Center(child: CircularProgressIndicator(color: tkGreen));
         }
         if (scenes.isEmpty) {
-          return Center(child: Text('Chưa có ngữ cảnh nào.\nBấm "Thêm mới" để tạo.', textAlign: TextAlign.center, style: TextStyle(color: textSub)));
+          return Center(child: Text(t.text('no_scenes_yet'), textAlign: TextAlign.center, style: TextStyle(color: textSub)));
         }
         return ListView.separated(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
@@ -353,10 +371,11 @@ class _SceneList extends StatelessWidget {
           separatorBuilder: (_, _) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final s = scenes[index];
-            // Tóm tắt điều kiện/hành động cho subtitle
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] s.conditions.first.label/s.actions.length đọc từ dữ liệu
+            // ngữ cảnh — chỉ hậu tố " hành động" dịch. Tóm tắt điều kiện/hành động cho subtitle.
             final String summary = type == SceneType.automation && s.conditions.isNotEmpty
-                ? '${s.conditions.first.label} → ${s.actions.length} hành động'
-                : '${s.actions.length} hành động';
+                ? '${s.conditions.first.label} → ${s.actions.length}${t.text('actions_count_suffix')}'
+                : '${s.actions.length}${t.text('actions_count_suffix')}';
             return Container(
               decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(16)),
               child: ListTile(
@@ -374,7 +393,7 @@ class _SceneList extends StatelessWidget {
                     ? ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                        label: const Text('Chạy'),
+                        label: Text(t.text('run_now')),
                         onPressed: () async {
                           // Giữ ref DeviceProvider TRƯỚC await — nó sống suốt vòng đời app
                           // nên gọi lại an toàn dù thẻ này đã bị dispose sau 1.5s.

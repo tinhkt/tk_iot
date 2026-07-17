@@ -4,6 +4,7 @@ import '../../providers/room_group_provider.dart';
 import '../../widgets/adaptive_navigation.dart';
 import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
+import '../../localization/app_translations.dart';
 import 'room_detail_screen.dart';
 
 /// RoomManagementScreen — Quản lý Phòng: list phòng, VUỐT để xóa, BẤM để sửa tên, FAB thêm phòng.
@@ -22,18 +23,19 @@ class RoomManagementScreen extends StatelessWidget {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
     final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
+    final t = AppTranslations.of(context);
 
     return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       // Nhúng (tab body) -> KHÔNG AppBar; đứng riêng (push) -> AppBar + Back
       appBar: embedded
           ? null
-          : AppBar(title: const Text('Quản lý phòng'), backgroundColor: cardColor, foregroundColor: textMain, elevation: 0),
+          : AppBar(title: Text(t.text('room_management_title')), backgroundColor: cardColor, foregroundColor: textMain, elevation: 0),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: tkGreen,
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
-        label: const Text('Thêm phòng'),
+        label: Text(t.text('add_room')),
         onPressed: () => _addRoom(context),
       ),
       body: SafeArea(
@@ -46,11 +48,16 @@ class RoomManagementScreen extends StatelessWidget {
                 child: Row(children: [
                   const Icon(Icons.meeting_room, color: tkGreen, size: 26),
                   const SizedBox(width: 12),
-                  Text('Quản lý phòng', style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
+                  Text(t.text('room_management_title'), style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold)),
                 ]),
               ),
             Expanded(
-              child: Consumer<RoomGroupProvider>(
+              // [FIX TRÀN MÀN HÌNH PC] Danh sách phòng trước đây giãn hết chiều ngang màn hình
+              // desktop (rất xấu trên màn rộng) — bó vào giữa, trần 1000px, giống màn Cài đặt.
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1000),
+                  child: Consumer<RoomGroupProvider>(
           builder: (context, provider, _) {
             final rooms = provider.rooms;
             // Đang tải lần đầu từ server -> spinner thay vì chớp màn "Chưa có phòng nào"
@@ -58,7 +65,7 @@ class RoomManagementScreen extends StatelessWidget {
               return const Center(child: CircularProgressIndicator(color: tkGreen));
             }
             if (rooms.isEmpty) {
-              return Center(child: Text('Chưa có phòng nào.\nBấm "Thêm phòng" để tạo mới.', textAlign: TextAlign.center, style: TextStyle(color: textSub)));
+              return Center(child: Text(t.text('no_rooms_yet'), textAlign: TextAlign.center, style: TextStyle(color: textSub)));
             }
             // [KÉO-THẢ] ReorderableListView: kéo qua icon drag_handle để sắp lại thứ tự;
             // vuốt trái vẫn xóa (Dismissible), chạm mở chi tiết. buildDefaultDragHandles=false
@@ -98,7 +105,7 @@ class RoomManagementScreen extends StatelessWidget {
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.symmetric(horizontal: 24),
                       decoration: BoxDecoration(color: Colors.redAccent, borderRadius: BorderRadius.circular(14)),
-                      child: const Row(mainAxisSize: MainAxisSize.min, children: [Text('Xóa', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), SizedBox(width: 8), Icon(Icons.delete_outline, color: Colors.white)]),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [Text(t.text('delete'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), const SizedBox(width: 8), const Icon(Icons.delete_outline, color: Colors.white)]),
                     ),
                     confirmDismiss: (_) async => await _confirmDeleteRoom(context, room.name),
                     // API lỗi -> provider tự fetch lại để khôi phục list; ở đây chỉ báo SnackBar
@@ -115,10 +122,10 @@ class RoomManagementScreen extends StatelessWidget {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                         leading: CircleAvatar(backgroundColor: tkGreen.withValues(alpha: 0.15), child: const Icon(Icons.meeting_room, color: tkGreen)),
                         title: Text(room.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.w600)),
-                        subtitle: Text('$devCount thiết bị • Chạm để xem chi tiết', style: TextStyle(color: textSub, fontSize: 12)),
+                        subtitle: Text('$devCount${t.text('devices_count_suffix')}', style: TextStyle(color: textSub, fontSize: 12)),
                         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                           IconButton(
-                            tooltip: 'Sửa tên phòng',
+                            tooltip: t.text('edit_room_name'),
                             icon: Icon(Icons.edit_outlined, color: textSub, size: 20),
                             onPressed: () => _renameRoom(context, provider, room),
                           ),
@@ -140,6 +147,8 @@ class RoomManagementScreen extends StatelessWidget {
               },
             );
           },
+                  ),
+                ),
               ),
             ),
           ],
@@ -149,7 +158,9 @@ class RoomManagementScreen extends StatelessWidget {
   }
 
   Future<void> _addRoom(BuildContext context) async {
-    final name = await _promptRoomName(context, 'Thêm phòng mới', '');
+    // Gọi từ FAB onPressed (tap handler, không phải build pass) -> BẮT BUỘC listen: false,
+    // nếu không context.watch() nội bộ ném assertion khiến FAB "liệt" (bấm không phản ứng).
+    final name = await _promptRoomName(context, AppTranslations.of(context, listen: false).text('add_room_title'), '');
     if (name == null || name.trim().isEmpty || !context.mounted) return;
     // API thật: null = thành công, chuỗi = câu báo lỗi từ Backend
     final err = await Provider.of<RoomGroupProvider>(context, listen: false).createRoom(name);
@@ -159,7 +170,8 @@ class RoomManagementScreen extends StatelessWidget {
   }
 
   Future<void> _renameRoom(BuildContext context, RoomGroupProvider provider, Room room) async {
-    final name = await _promptRoomName(context, 'Sửa tên phòng', room.name);
+    // Gọi từ IconButton onPressed (tap handler) -> listen: false.
+    final name = await _promptRoomName(context, AppTranslations.of(context, listen: false).text('edit_room_name'), room.name);
     if (name == null || name.trim().isEmpty || !context.mounted) return;
     final err = await provider.renameRoom(room.id, name);
     if (err != null && context.mounted) {
@@ -170,21 +182,24 @@ class RoomManagementScreen extends StatelessWidget {
   // [KÍNH MỜ ĐỒNG BỘ] Popup xác nhận xóa — qua showGlassPopup (PC: dialog giữa
   // màn hình; Mobile: sheet), không còn AlertDialog nền đặc
   Future<bool> _confirmDeleteRoom(BuildContext context, String name) async {
+    // Gọi từ Dismissible.confirmDismiss (cử chỉ vuốt, không phải build pass) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     final res = await showGlassPopup<bool>(
       context,
-      title: 'Xóa phòng "$name"?',
+      // [GIỮ NGUYÊN BIẾN ĐỘNG] $name (tên phòng do người dùng đặt) — chỉ câu văn quanh dịch.
+      title: '${t.text('delete_room_confirm_prefix')}$name"?',
       body: (ctx) => Padding(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Thiết bị trong phòng KHÔNG bị xóa, chỉ gỡ khỏi phòng này.'),
+          Text(t.text('room_delete_body')),
           const SizedBox(height: 16),
           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(t.text('cancel'))),
             const SizedBox(width: 8),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Xóa'),
+              child: Text(t.text('delete')),
             ),
           ]),
         ]),
@@ -196,6 +211,8 @@ class RoomManagementScreen extends StatelessWidget {
   // [KÍNH MỜ ĐỒNG BỘ] Popup nhập tên phòng — TextField an toàn bàn phím nhờ
   // showGlassPopup tự đệm viewInsets ở chế độ sheet
   Future<String?> _promptRoomName(BuildContext context, String title, String initial) {
+    // Gọi từ _addRoom/_renameRoom (cả 2 đều là tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     final ctrl = TextEditingController(text: initial);
     return showGlassPopup<String>(
       context,
@@ -205,16 +222,16 @@ class RoomManagementScreen extends StatelessWidget {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(
             controller: ctrl, autofocus: true,
-            decoration: InputDecoration(hintText: 'Tên phòng', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+            decoration: InputDecoration(hintText: t.text('room_name_hint'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
           ),
           const SizedBox(height: 16),
           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(t.text('cancel'))),
             const SizedBox(width: 8),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Lưu'),
+              child: Text(t.text('save')),
             ),
           ]),
         ]),

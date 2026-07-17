@@ -5,6 +5,7 @@ import '../../services/constraint_engine.dart';
 import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 import '../../widgets/scene_step_pickers.dart';
+import '../../localization/app_translations.dart';
 
 /// CreateAutomationScreen — Tạo/Sửa Ngữ cảnh theo chuẩn IFTTT (NẾU... THÌ...).
 /// [editScene] != null -> CHẾ ĐỘ SỬA: form đổ sẵn tên/icon/loại/điều kiện/hành động
@@ -57,6 +58,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final t = AppTranslations.of(context);
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     // [KÍNH MỜ] Màn này sống TRONG _GlassShell của openAdaptiveScreen — nền/AppBar phải
     // TRONG SUỐT, chữ contrast chuẩn kính (white / black87), thẻ nội dung dùng dải alpha
@@ -90,16 +92,16 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
                       child: TextField(
                         controller: _nameCtrl,
                         style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 16),
-                        decoration: InputDecoration(hintText: 'Tên ngữ cảnh (vd: Về nhà)', hintStyle: TextStyle(color: textSub), border: InputBorder.none),
+                        decoration: InputDecoration(hintText: t.text('scene_name_hint'), hintStyle: TextStyle(color: textSub), border: InputBorder.none),
                       ),
                     ),
                   ]),
                   const SizedBox(height: 8),
                   // Chọn loại: chạm-để-chạy vs tự động
                   SegmentedButton<SceneType>(
-                    segments: const [
-                      ButtonSegment(value: SceneType.tapToRun, icon: Icon(Icons.touch_app), label: Text('Chạm để chạy')),
-                      ButtonSegment(value: SceneType.automation, icon: Icon(Icons.bolt), label: Text('Tự động')),
+                    segments: [
+                      ButtonSegment(value: SceneType.tapToRun, icon: const Icon(Icons.touch_app), label: Text(t.text('tap_to_run_tab'))),
+                      ButtonSegment(value: SceneType.automation, icon: const Icon(Icons.bolt), label: Text(t.text('auto_tab'))),
                     ],
                     selected: {_type},
                     onSelectionChanged: (s) => setState(() => _type = s.first),
@@ -110,18 +112,18 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
 
                 // --- NẾU... (điều kiện) — ẩn với "Chạm để chạy" (kích hoạt thủ công) ---
                 if (_type == SceneType.automation) ...[
-                  _ifThenHeader('NẾU...', Icons.help_outline, textMain),
+                  _ifThenHeader(t.text('if_label'), Icons.help_outline, textMain),
                   const SizedBox(height: 8),
                   ..._conditions.asMap().entries.map((e) => _stepTile(cardColor, textMain, textSub, e.value, () => setState(() => _conditions.removeAt(e.key)))),
-                  _addButton('Thêm điều kiện', _pickCondition),
+                  _addButton(t.text('add_condition'), _pickCondition),
                   const SizedBox(height: 16),
                 ],
 
                 // --- THÌ... (hành động) ---
-                _ifThenHeader('THÌ...', Icons.play_circle_outline, textMain),
+                _ifThenHeader(t.text('then_label'), Icons.play_circle_outline, textMain),
                 const SizedBox(height: 8),
                 ..._actions.asMap().entries.map((e) => _stepTile(cardColor, textMain, textSub, e.value, () => setState(() => _actions.removeAt(e.key)))),
-                _addButton('Thêm hành động', _pickAction),
+                _addButton(t.text('add_action'), _pickAction),
 
                 // [embedded] Không còn AppBar để đặt nút Lưu -> chuyển xuống cuối form.
                 if (widget.embedded) ...[
@@ -133,7 +135,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
                       icon: _saving
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                           : const Icon(Icons.save_outlined),
-                      label: Text(_isEditing ? 'Lưu thay đổi' : 'Tạo ngữ cảnh'),
+                      label: Text(_isEditing ? t.text('save_changes') : t.text('create_scene_title')),
                       onPressed: _saving ? null : _save,
                     ),
                   ),
@@ -153,7 +155,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
     return AppScaffold(
       backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
       appBar: AppBar(
-        title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),
+        title: Text(_isEditing ? t.text('edit_scene_title') : t.text('create_scene_title')),
         backgroundColor: Colors.transparent,
         foregroundColor: textMain,
         elevation: 0,
@@ -163,7 +165,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
             child: _saving
                 // Loading mượt ngay trên nút Lưu trong lúc chờ server
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
-                : const Text('Lưu', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
+                : Text(t.text('save'), style: const TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 16)),
           ),
         ],
       ),
@@ -257,10 +259,13 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
   void _pickIcon() {
     // Dùng chung bảng icon CONST với provider (kSceneIcons) — codePoint lưu ra luôn tra ngược được.
     // [KÍNH MỜ ĐỒNG BỘ] Qua showGlassPopup: PC = dialog giữa màn hình, Mobile = sheet.
+    // Gọi từ InkWell onTap (tap handler, KHÔNG phải build pass dù chạy đồng bộ trước await
+    // nào) -> listen: false, nếu không context.watch() ném assertion khiến bấm icon vô tác dụng.
+    final t = AppTranslations.of(context, listen: false);
     const icons = kSceneIcons;
     showGlassPopup(
       context,
-      title: 'Chọn biểu tượng',
+      title: t.text('pick_icon_title'),
       body: (ctx) => Padding(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
         child: Wrap(
@@ -275,10 +280,18 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
   }
 
   Future<void> _save() async {
+    // [SỬA LỖI LIỆT NÚT] Ghi chú cũ ở đây từng cho rằng "gọi trước await trong tap handler là
+    // an toàn" — SAI: context.watch() được Provider assert bằng cờ TOÀN CỤC
+    // context.owner!.debugBuilding (chỉ true khi Flutter đang thực sự chạy buildScope() của 1
+    // khung hình), cờ này LUÔN false khi đang xử lý sự kiện chạm — bất kể có await hay chưa.
+    // Gọi ở đây từng khiến nút "Lưu"/"Tạo ngữ cảnh" bấm không phản ứng gì (exception rơi vào
+    // Future lỗi không ai bắt, không hiện đỏ màn hình). BẮT BUỘC listen: false.
+    final t = AppTranslations.of(context, listen: false);
     if (_actions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Hãy thêm ít nhất 1 hành động (THÌ...)'), backgroundColor: Colors.redAccent));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.text('need_one_action')), backgroundColor: Colors.redAccent));
       return;
     }
+    final String savedMsg = _isEditing ? t.text('scene_updated') : t.text('scene_created');
     final provider = Provider.of<AutomationProvider>(context, listen: false);
     setState(() => _saving = true);
 
@@ -308,7 +321,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
       return; // giữ nguyên form cho user sửa/thử lại — không mất dữ liệu đã nhập
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(_isEditing ? 'Đã lưu thay đổi ngữ cảnh' : 'Đã tạo ngữ cảnh mới'),
+        content: Text(savedMsg),
         backgroundColor: tkGreen));
     Navigator.pop(context);
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 
 // ============================================================================
 // GIAO DIỆN CHÍNH: QUẢN LÝ PHÂN QUYỀN TRONG VẬN HÀNH THỰC TẾ
@@ -17,7 +18,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
   List<dynamic> _allUsers = [];
   List<dynamic> _filteredUsers = [];
   bool _isLoading = true;
-  String? _errorMessage;
+  bool _hasFetchError = false;
 
   // --- BỘ ĐIỀU KHIỂN TÌM KIẾM & LỌC HÀNG LOẠT ---
   final TextEditingController _searchController = TextEditingController();
@@ -39,7 +40,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
   }
 
   Future<void> _fetchUsers() async {
-    setState(() { _isLoading = true; _errorMessage = null; _selectedEmails.clear(); });
+    setState(() { _isLoading = true; _hasFetchError = false; _selectedEmails.clear(); });
     final data = await _authService.getHomeUsers();
     
     if (data != null) {
@@ -53,9 +54,13 @@ class _RoleManagementViewState extends State<RoleManagementView> {
       }
     } else {
       if (mounted) {
-        setState(() { 
-          _isLoading = false; 
-          _errorMessage = "Bạn không có quyền truy cập, hoặc máy chủ đang gặp sự cố."; 
+        // [AN TOÀN PROVIDER] KHÔNG gọi AppTranslations.of(context) ở đây — context.watch()
+        // bên trong chỉ hợp lệ khi đang TRONG build(), còn hàm này chạy sau await (ngoài mọi
+        // build pass) nên sẽ vi phạm assertion của package provider. Lưu cờ lỗi TRUNG LẬP
+        // ngôn ngữ (_hasFetchError), dịch tại đúng chỗ hiển thị trong build().
+        setState(() {
+          _isLoading = false;
+          _hasFetchError = true;
         });
       }
     }
@@ -105,6 +110,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
         final Color textSub = isDark ? Colors.white70 : Colors.black54;
+        final t = AppTranslations.of(context);
 
         return StatefulBuilder(
           builder: (context, setDialogState) {
@@ -114,17 +120,17 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Cấp quyền thành viên', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 18)),
+                    Text(t.text('grant_member_access'), style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 18)),
                     const SizedBox(height: 12),
                     Text(user['email'], style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 14)),
                     const SizedBox(height: 20),
-                    Text('Cấp độ tương tác:', style: TextStyle(fontSize: 13, color: textSub, fontWeight: FontWeight.bold)),
+                    Text(t.text('interaction_level_label'), style: TextStyle(fontSize: 13, color: textSub, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
                       decoration: BoxDecoration(
                         color: isDark ? Colors.black26 : Colors.grey.shade50,
-                        border: Border.all(color: isDark ? Colors.white10 : Colors.grey.shade200), 
+                        border: Border.all(color: isDark ? Colors.white10 : Colors.grey.shade200),
                         borderRadius: BorderRadius.circular(12)
                       ),
                       child: DropdownButtonHideUnderline(
@@ -133,10 +139,10 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                           value: selectedRole,
                           dropdownColor: isDark ? const Color(0xFF0F172A) : Colors.white,
                           style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600),
-                          items: const [
-                            DropdownMenuItem(value: 'HOME_OWNER', child: Text('CHỦ NHÀ (Toàn quyền hệ thống)')),
-                            DropdownMenuItem(value: 'ADMIN', child: Text('ADMIN (Quản trị viên thiết bị)')),
-                            DropdownMenuItem(value: 'USER', child: Text('USER (Giới hạn thiết bị)')),
+                          items: [
+                            DropdownMenuItem(value: 'HOME_OWNER', child: Text(t.text('role_owner_full'))),
+                            DropdownMenuItem(value: 'ADMIN', child: Text(t.text('role_admin_full'))),
+                            DropdownMenuItem(value: 'USER', child: Text(t.text('role_user_full'))),
                           ],
                           onChanged: (val) => setDialogState(() => selectedRole = val!),
                         ),
@@ -148,9 +154,9 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                         controller: endpointCtrl,
                         style: TextStyle(color: textMain),
                         decoration: InputDecoration(
-                          labelText: 'Thiết bị được phép điều khiển',
+                          labelText: t.text('allowed_devices_label'),
                           labelStyle: TextStyle(color: textSub, fontSize: 13),
-                          hintText: 'Ví dụ: S_1706, S_6456',
+                          hintText: t.text('allowed_devices_hint'),
                           filled: true,
                           fillColor: isDark ? Colors.black26 : Colors.grey.shade50,
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
@@ -161,7 +167,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        TextButton(onPressed: isUpdating ? null : () => Navigator.pop(context), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                        TextButton(onPressed: isUpdating ? null : () => Navigator.pop(context), child: Text(t.text('cancel'), style: const TextStyle(color: Colors.grey))),
                         const SizedBox(width: 12),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
@@ -176,14 +182,14 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                               if (!context.mounted) return;
                               Navigator.pop(context);
                               _fetchUsers();
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cập nhật thành công!'), backgroundColor: Color(0xFF00A651)));
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.text('update_success')), backgroundColor: const Color(0xFF00A651)));
                             } else {
                               setDialogState(() => isUpdating = false);
                               if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent));
                             }
                           },
-                          child: isUpdating ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Text('Lưu thay đổi', style: TextStyle(color: Colors.white)),
+                          child: isUpdating ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : Text(t.text('save_changes'), style: const TextStyle(color: Colors.white)),
                         ),
                       ],
                     )
@@ -199,6 +205,8 @@ class _RoleManagementViewState extends State<RoleManagementView> {
 
   // --- HÀM THU HỒI TRUY CẬP (XÓA 1 HOẶC NHIỀU) ---
   void _confirmDeleteBatch(List<String> emails) async {
+    // Gọi từ onPressed/PopupMenuButton.onSelected (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog() — gộp
     // title+content+actions vào 1 Column, logic xóa hàng loạt giữ nguyên 100%.
     bool confirm = await showAppDialog<bool>(
@@ -209,19 +217,20 @@ class _RoleManagementViewState extends State<RoleManagementView> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Thu hồi quyền truy cập', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            Text(t.text('revoke_access_title'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            Text('Bạn có chắc chắn muốn loại bỏ ${emails.length} tài khoản được chọn khỏi hệ thống ngôi nhà này?'),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] ${emails.length} — chỉ câu văn quanh dịch.
+            Text('${t.text('confirm_revoke_prefix')}${emails.length}${t.text('confirm_revoke_suffix')}'),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'), style: const TextStyle(color: Colors.grey))),
                 const SizedBox(width: 8),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Xóa truy cập', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  child: Text(t.text('revoke_access_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -248,19 +257,20 @@ class _RoleManagementViewState extends State<RoleManagementView> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
 
     if (_isLoading) return Center(child: CircularProgressIndicator(color: tkGreen));
 
-    if (_errorMessage != null) {
+    if (_hasFetchError) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.security_rounded, size: 80, color: Colors.redAccent),
             const SizedBox(height: 16),
-            Text(_errorMessage!, style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+            Text(t.text('fetch_error_role'), style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: tkGreen), onPressed: _fetchUsers, child: const Text('Thử lại')),
+            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: tkGreen), onPressed: _fetchUsers, child: Text(t.text('retry'))),
           ],
         ),
       );
@@ -283,8 +293,8 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Hệ thống bảo mật vận hành', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.bold)),
-                      Text('Quản lý Phân quyền', style: TextStyle(color: textMain, fontSize: isMobile ? 22 : 26, fontWeight: FontWeight.w900)),
+                      Text(t.text('security_header_eyebrow'), style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.bold)),
+                      Text(t.text('permissions_title'), style: TextStyle(color: textMain, fontSize: isMobile ? 22 : 26, fontWeight: FontWeight.w900)),
                     ],
                   ),
                   IconButton(icon: Icon(Icons.sync_rounded, color: tkGreen), onPressed: _fetchUsers)
@@ -296,13 +306,13 @@ class _RoleManagementViewState extends State<RoleManagementView> {
               if (!isMobile)
                 Row(
                   children: [
-                    _buildMetricCard('TỔNG THÀNH VIÊN', metrics['TOTAL'].toString(), Colors.blue, isDark),
+                    _buildMetricCard(t.text('total_members_metric'), metrics['TOTAL'].toString(), Colors.blue, isDark),
                     const SizedBox(width: 16),
-                    _buildMetricCard('CHỦ NHÀ (OWNER)', metrics['BODY'] == null ? metrics['OWNER'].toString() : '0', Colors.orange, isDark),
+                    _buildMetricCard(t.text('owner_metric'), metrics['BODY'] == null ? metrics['OWNER'].toString() : '0', Colors.orange, isDark),
                     const SizedBox(width: 16),
-                    _buildMetricCard('QUẢN TRỊ VIÊN (ADMIN)', metrics['ADMIN'].toString(), Colors.teal, isDark),
+                    _buildMetricCard(t.text('admin_metric'), metrics['ADMIN'].toString(), Colors.teal, isDark),
                     const SizedBox(width: 16),
-                    _buildMetricCard('GIỚI HẠN (USER)', metrics['USER'].toString(), Colors.purple, isDark),
+                    _buildMetricCard(t.text('limited_metric'), metrics['USER'].toString(), Colors.purple, isDark),
                   ],
                 ),
               const SizedBox(height: 20),
@@ -319,7 +329,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                         onChanged: (_) => _applyFilterAndSearch(),
                         style: TextStyle(color: textMain, fontSize: 14),
                         decoration: InputDecoration(
-                          hintText: 'Tìm kiếm tài khoản email...',
+                          hintText: t.text('search_email_hint'),
                           hintStyle: TextStyle(color: textSub.withValues(alpha: 0.5)),
                           prefixIcon: Icon(Icons.search_rounded, color: textSub, size: 20),
                           border: InputBorder.none,
@@ -333,11 +343,11 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                           dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                           style: TextStyle(color: textMain, fontWeight: FontWeight.w600, fontSize: 13),
                           icon: Icon(Icons.filter_list_rounded, color: tkGreen, size: 20),
-                          items: const [
-                            DropdownMenuItem(value: 'ALL', child: Text('Tất cả cấp quyền')),
-                            DropdownMenuItem(value: 'HOME_OWNER', child: Text('Cấp: Chủ nhà')),
-                            DropdownMenuItem(value: 'ADMIN', child: Text('Cấp: Admin')),
-                            DropdownMenuItem(value: 'USER', child: Text('Cấp: Thành viên')),
+                          items: [
+                            DropdownMenuItem(value: 'ALL', child: Text(t.text('all_roles_filter'))),
+                            DropdownMenuItem(value: 'HOME_OWNER', child: Text(t.text('filter_owner'))),
+                            DropdownMenuItem(value: 'ADMIN', child: Text(t.text('filter_admin'))),
+                            DropdownMenuItem(value: 'USER', child: Text(t.text('filter_member'))),
                           ],
                           onChanged: (val) {
                             setState(() => _selectedRoleFilter = val!);
@@ -357,7 +367,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                           onChanged: (_) => _applyFilterAndSearch(),
                           style: TextStyle(color: textMain, fontSize: 14),
                           decoration: InputDecoration(
-                            hintText: 'Tìm kiếm nhanh theo tài khoản email...',
+                            hintText: t.text('search_email_hint2'),
                             hintStyle: TextStyle(color: textSub.withValues(alpha: 0.5)),
                             prefixIcon: Icon(Icons.search_rounded, color: textSub, size: 20),
                             border: InputBorder.none,
@@ -374,11 +384,11 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                             dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                             style: TextStyle(color: textMain, fontWeight: FontWeight.w600, fontSize: 13),
                             icon: Icon(Icons.filter_list_rounded, color: tkGreen, size: 20),
-                            items: const [
-                              DropdownMenuItem(value: 'ALL', child: Text('Tất cả cấp quyền')),
-                              DropdownMenuItem(value: 'HOME_OWNER', child: Text('Cấp: Chủ nhà')),
-                              DropdownMenuItem(value: 'ADMIN', child: Text('Cấp: Admin')),
-                              DropdownMenuItem(value: 'USER', child: Text('Cấp: Thành viên')),
+                            items: [
+                              DropdownMenuItem(value: 'ALL', child: Text(t.text('all_roles_filter'))),
+                              DropdownMenuItem(value: 'HOME_OWNER', child: Text(t.text('filter_owner'))),
+                              DropdownMenuItem(value: 'ADMIN', child: Text(t.text('filter_admin'))),
+                              DropdownMenuItem(value: 'USER', child: Text(t.text('filter_member'))),
                             ],
                             onChanged: (val) {
                               setState(() => _selectedRoleFilter = val!);
@@ -402,12 +412,12 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Đang chọn xử lý hàng loạt: ${_selectedEmails.length} tài khoản', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text('${t.text('bulk_selection_prefix')}${_selectedEmails.length}${t.text('bulk_selection_suffix')}', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13)),
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                           onPressed: () => _confirmDeleteBatch(_selectedEmails),
                           icon: const Icon(Icons.delete_sweep_rounded, color: Colors.white, size: 18),
-                          label: const Text('THU HỒI TẤT CẢ QUYỀN', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                          label: Text(t.text('revoke_all_btn'), style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                         )
                       ],
                     ),
@@ -418,7 +428,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
               // --- THÀNH PHẦN 3: KHO KHÔNG GIAN CUỘN ĐỘC LẬP DANH SÁCH USER VIRTUAL ---
               Expanded(
                 child: _filteredUsers.isEmpty
-                    ? Center(child: Text('Không tìm thấy tài khoản người dùng nào khớp điều kiện.', style: TextStyle(color: textSub)))
+                    ? Center(child: Text(t.text('no_users_found'), style: TextStyle(color: textSub)))
                     : (isMobile 
                         ? ListView.separated(
                             physics: const BouncingScrollPhysics(),
@@ -447,18 +457,20 @@ class _RoleManagementViewState extends State<RoleManagementView> {
 
   // --- HÀM VẼ TẤT CẢ CÁC LOẠI USER THẺ CHUẨN KHOA HỌC ---
   Widget _buildRowUser(Map<String, dynamic> user, bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     final bool isHardcoded = user['is_hardcoded'] == true;
     final bool isSelected = _selectedEmails.contains(user['email']);
 
-    String friendlyRole = 'Thành viên';
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] user['role'] (giá trị API) chỉ dùng để CHỌN nhãn — nhãn hiển thị dịch.
+    String friendlyRole = t.text('member_role');
     IconData roleIcon = Icons.person_rounded;
     Color roleColor = Colors.blue;
 
     switch (user['role']) {
-      case 'SUPER_USER': friendlyRole = 'Phát triển'; roleIcon = Icons.developer_board_rounded; roleColor = Colors.purple; break;
-      case 'HOME_OWNER': friendlyRole = 'Chủ nhà'; roleIcon = Icons.home_work_rounded; roleColor = Colors.orange; break;
-      case 'ADMIN': friendlyRole = 'Quản trị viên'; roleIcon = Icons.admin_panel_settings_rounded; roleColor = Colors.teal; break;
-      default: friendlyRole = 'Giới hạn'; roleIcon = Icons.person_rounded; roleColor = Colors.blue; break;
+      case 'SUPER_USER': friendlyRole = t.text('friendly_role_dev'); roleIcon = Icons.developer_board_rounded; roleColor = Colors.purple; break;
+      case 'HOME_OWNER': friendlyRole = t.text('owner_role'); roleIcon = Icons.home_work_rounded; roleColor = Colors.orange; break;
+      case 'ADMIN': friendlyRole = t.text('friendly_role_admin'); roleIcon = Icons.admin_panel_settings_rounded; roleColor = Colors.teal; break;
+      default: friendlyRole = t.text('friendly_role_limited'); roleIcon = Icons.person_rounded; roleColor = Colors.blue; break;
     }
 
     return GestureDetector(
@@ -520,7 +532,7 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            'Khu vực: ${(user['accessible_endpoints'] as List).join(', ')}', 
+                            '${t.text('zone_prefix')}${(user['accessible_endpoints'] as List).join(', ')}',
                             style: TextStyle(color: textSub, fontSize: 11),
                             maxLines: 1, overflow: TextOverflow.ellipsis,
                           ),
@@ -543,9 +555,9 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                   if (val == 1) _confirmDeleteBatch([user['email']]);
                 },
                 itemBuilder: (context) => [
-                  PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.shield_outlined, color: textMain, size: 18), const SizedBox(width: 10), Text('Sửa cấp quyền', style: TextStyle(color: textMain, fontSize: 13))])),
+                  PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.shield_outlined, color: textMain, size: 18), const SizedBox(width: 10), Text(t.text('edit_access'), style: TextStyle(color: textMain, fontSize: 13))])),
                   const PopupMenuDivider(),
-                  PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18), const SizedBox(width: 10), Text('Thu hồi quyền', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13))])),
+                  PopupMenuItem(value: 1, child: Row(children: [const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18), const SizedBox(width: 10), Text(t.text('revoke_access_menu'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13))])),
                 ],
               )
           ],

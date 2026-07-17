@@ -10,6 +10,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/device_provider.dart';
 import '../providers/theme_provider.dart';
+import '../providers/language_provider.dart';
+import '../localization/app_translations.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/dashboard_sync_service.dart';
@@ -758,20 +760,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (MediaQuery.of(context).size.width < 900) { setState(() => _selectedIndex = 4); } else { _showSettingsMenu(initialTab: tabIndex); }
   }
 
+  // [FIX — Menu Avatar trắng đục trên nền Kính] PopupMenuButton.itemBuilder CHỈ điều khiển
+  // List<PopupMenuEntry> — lớp Material bọc ngoài (nền/elevation/shape) do chính PopupMenuButton
+  // tự dựng, itemBuilder không với tới được để thay bằng _GlassSurface. Giải pháp: làm Material
+  // ngoài ấy TRONG SUỐT (color/elevation/shadow/surfaceTint = 0/transparent), rồi tự dựng ĐÚNG
+  // 1 PopupMenuItem (padding zero, enabled: false — không tranh chấp tap với các hàng con) chứa
+  // AppContainer bọc toàn bộ 4 dòng — đây mới là lớp kính thật. `onSelected` GIỮ NGUYÊN 100% —
+  // mỗi hàng tự gọi Navigator.pop(context, value), đúng cơ chế PopupMenuItem mặc định vẫn dùng.
   Widget _buildUserAvatarMenu(Color textMain) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final t = AppTranslations.of(context);
+    final Color menuTextMain = isGlass ? Colors.white : textMain;
+    final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+
+    Widget menuRow(int value, IconData icon, String label, {Color? color, bool bold = false}) {
+      final Color c = color ?? menuTextMain;
+      return InkWell(
+        onTap: () => Navigator.pop(context, value),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(children: [
+            Icon(icon, color: c, size: 20, shadows: sh),
+            const SizedBox(width: 12),
+            Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: c, fontWeight: bold ? FontWeight.bold : FontWeight.normal, shadows: sh))),
+          ]),
+        ),
+      );
+    }
+
     return PopupMenuButton<int>(
-      offset: const Offset(0, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), color: isDark ? const Color(0xFF1E293B) : Colors.white, tooltip: 'Tài khoản của tôi',
+      offset: const Offset(0, 50),
+      tooltip: t.text('account_tooltip'),
+      color: Colors.transparent,
+      elevation: 0,
+      shadowColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      padding: EdgeInsets.zero,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
       child: const CircleAvatar(radius: 20, backgroundColor: Color(0xFF00A651), child: Icon(Icons.person, color: Colors.white)),
       onSelected: (value) { switch (value) { case 0: _openProfileOrSettings(0); break; case 1: _openProfileOrSettings(2); break; case 2: _onMenuTapped(6); break; case 3: _performLogout(context); break; } },
-      // [FIX OVERFLOW] Text trong item bọc Flexible + ellipsis: khi popup bị kẹp bề ngang
-      // trên màn hẹp, chữ tự co lại thay vì tràn vàng-đen (RenderFlex overflow).
       itemBuilder: (context) => [
-        PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.account_circle_outlined, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Hồ sơ tài khoản', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
-        PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.lock_reset, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Đổi mật khẩu', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
-        PopupMenuItem(value: 2, child: Row(children: [Icon(Icons.security, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Quản lý phân quyền', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
-        const PopupMenuDivider(),
-        const PopupMenuItem(value: 3, child: Row(children: [Icon(Icons.logout, color: Colors.redAccent), SizedBox(width: 12), Flexible(child: Text('Đăng xuất', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)))])),
+        PopupMenuItem<int>(
+          enabled: false,
+          padding: EdgeInsets.zero,
+          child: AppContainer(
+            width: 240,
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                menuRow(0, Icons.account_circle_outlined, t.text('profile')),
+                menuRow(1, Icons.lock_reset, t.text('change_password')),
+                menuRow(2, Icons.security, t.text('manage_permissions')),
+                Divider(height: 1, color: isDark ? Colors.white10 : Colors.grey.shade200),
+                menuRow(3, Icons.logout, t.text('logout'), color: Colors.redAccent, bold: true),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -800,6 +848,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Builder(
         builder: (context) {
           final themeProvider = Provider.of<ThemeProvider>(context);
+          final languageProvider = Provider.of<LanguageProvider>(context);
+          final t = AppTranslations.of(context);
           final bool isGlass = themeProvider.isGlassThemeEnabled;
           final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
           return SizedBox(
@@ -807,7 +857,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Giao diện', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: tkGreen)), IconButton(icon: Icon(Icons.close, color: textMain), onPressed: () => Navigator.pop(context))]),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t.text('appearance'), style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: tkGreen)), IconButton(icon: Icon(Icons.close, color: textMain), onPressed: () => Navigator.pop(context))]),
                 const SizedBox(height: 8),
                 // [LINT] Chuẩn Flutter mới: RadioGroup tổ tiên quản lý groupValue/onChanged chung,
                 // từng RadioListTile chỉ khai báo value (groupValue/onChanged per-tile đã deprecated).
@@ -815,9 +865,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   groupValue: themeProvider.themeMode,
                   onChanged: (val) { if (val != null) themeProvider.setThemeMode(val); },
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    RadioListTile<ThemeMode>(title: Text('Chế độ Sáng', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.light, activeColor: tkGreen),
-                    RadioListTile<ThemeMode>(title: Text('Chế độ Tối', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.dark, activeColor: tkGreen),
-                    RadioListTile<ThemeMode>(title: Text('Tự động theo thiết bị', style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), subtitle: const Text('Đổi màu theo ban ngày/ban đêm'), value: ThemeMode.system, activeColor: tkGreen),
+                    RadioListTile<ThemeMode>(title: Text(t.text('light_mode'), style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.light, activeColor: tkGreen),
+                    RadioListTile<ThemeMode>(title: Text(t.text('dark_mode'), style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: ThemeMode.dark, activeColor: tkGreen),
+                    RadioListTile<ThemeMode>(title: Text(t.text('system_mode'), style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), subtitle: const Text('Đổi màu theo ban ngày/ban đêm'), value: ThemeMode.system, activeColor: tkGreen),
                   ]),
                 ),
                 const SizedBox(height: 20),
@@ -834,9 +884,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Giao diện Kính (Glass Theme)', style: TextStyle(color: textMain, fontWeight: FontWeight.w600, shadows: sh)),
+                            Text(t.text('glass_theme'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600, shadows: sh)),
                             const SizedBox(height: 2),
-                            Text('Kính mờ 3D — nền Aurora nhiều màu, thẻ kính bo sáng', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
+                            Text(t.text('glass_theme_desc'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
                           ],
                         ),
                       ),
@@ -847,6 +897,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onChanged: (v) => themeProvider.setGlassThemeEnabled(v),
                       ),
                     ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // [ĐA NGÔN NGỮ — PROOF OF CONCEPT] Đồng bộ CÙNG cấu trúc với bản Desktop
+                // (_buildAppearanceTab) — RadioGroup<String> 'vi'/'en', cùng boxColor/layout với
+                // nhóm Sáng/Tối phía trên để không lệch giao diện.
+                Text(t.text('language'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 8),
+                Container(
+                  decoration: BoxDecoration(color: boxColor, borderRadius: BorderRadius.circular(12)),
+                  child: RadioGroup<String>(
+                    groupValue: languageProvider.locale.languageCode,
+                    onChanged: (val) { if (val != null) languageProvider.changeLanguage(val); },
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      RadioListTile<String>(title: Text(t.text('vietnamese'), style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: 'vi', activeColor: tkGreen),
+                      RadioListTile<String>(title: Text(t.text('english'), style: TextStyle(fontWeight: FontWeight.w600, color: textMain)), value: 'en', activeColor: tkGreen),
+                    ]),
                   ),
                 ),
               ],
@@ -1216,9 +1282,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: Colors.transparent,
                   child: AppContainer(
                     padding: EdgeInsets.zero, borderRadius: BorderRadius.circular(16),
-                    child: Consumer<NotificationProvider>( 
+                    child: Consumer<NotificationProvider>(
                       builder: (context, notifProvider, child) {
                         final listNotif = notifProvider.list;
+                        final t = AppTranslations.of(context);
                         return Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -1227,16 +1294,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('Thông báo hệ thống', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+                                  Text(t.text('notifications_title'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
                                   // Nút "Đọc tất cả" chỉ bật khi còn tin chưa đọc
                                   notifProvider.unreadCount > 0
                                       ? TextButton.icon(
                                           onPressed: () => notifProvider.markAllRead(),
                                           icon: Icon(Icons.done_all_rounded, size: 16, color: tkGreen),
-                                          label: Text('Đọc tất cả', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.w600)),
+                                          label: Text(t.text('mark_all_read'), style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.w600)),
                                           style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                                         )
-                                      : Text('Tổng số: ${listNotif.length}', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
+                                      : Text('${t.text('total_count_prefix')}${listNotif.length}', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
                                 ],
                               ),
                             ),
@@ -1245,7 +1312,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('Nhận thông báo đẩy (Push)', style: TextStyle(color: textMain, fontSize: 13)),
+                                  Text(t.text('push_notif_toggle'), style: TextStyle(color: textMain, fontSize: 13)),
                                   Switch(
                                     value: _isPushEnabled, activeThumbColor: tkGreen,
                                     onChanged: (val) { setState(() => _isPushEnabled = val); setDialogState(() => _isPushEnabled = val); },
@@ -1255,7 +1322,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                             Divider(height: 1, color: isDark ? Colors.white10 : Colors.grey.shade200),
                             if (listNotif.isEmpty)
-                              Padding(padding: const EdgeInsets.all(32.0), child: Center(child: Text('Không có thông báo nào gần đây.', style: TextStyle(color: textSub, fontSize: 13))))
+                              Padding(padding: const EdgeInsets.all(32.0), child: Center(child: Text(t.text('no_notifications'), style: TextStyle(color: textSub, fontSize: 13))))
                             else
                               ConstrainedBox(
                                 constraints: const BoxConstraints(maxHeight: 400),
@@ -1295,11 +1362,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   //   2. MAC trần còn lại -> thay bằng tên thân thiện từ kho DPS (cùng bộ quy tắc
   //      DeviceProvider.displayNameOf toàn app); thiết bị chưa sync tên -> "Thiết bị lạ".
   String _friendlyNotifMessage(NotificationItem notif) {
+    final t = AppTranslations.of(context);
     String msg = notif.message.replaceAll(RegExp(r'\s*\(MAC:\s*[0-9A-Fa-f]{12}\)'), '');
     final deviceProv = Provider.of<DeviceProvider>(context, listen: false);
     msg = msg.replaceAllMapped(RegExp(r'\b[0-9A-F]{12}\b'), (m) {
       final d = deviceProv.deviceOf(m.group(0)!);
-      return d == null ? 'Thiết bị lạ' : d.displayName();
+      return d == null ? t.text('unknown_device') : d.displayName();
     });
     return msg;
   }
@@ -1317,6 +1385,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required NotificationProvider notifProvider,
     VoidCallback? onTap,
   }) {
+    final t = AppTranslations.of(context);
     IconData icon = Icons.info_outline_rounded;
     if (notif.type == 'ALERT') {
       icon = Icons.warning_amber_rounded;
@@ -1376,11 +1445,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Vuốt sang phải (đầu->cuối) = đánh dấu đã đọc; không cho phép nếu đã đọc rồi
       background: Container(
         color: tkGreen.withValues(alpha: 0.85), alignment: Alignment.centerLeft, padding: const EdgeInsets.symmetric(horizontal: 24),
-        child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.done_all_rounded, color: Colors.white), SizedBox(width: 8), Text('Đã đọc', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))]),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.done_all_rounded, color: Colors.white), const SizedBox(width: 8), Text(t.text('read'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))]),
       ),
       secondaryBackground: Container(
         color: Colors.redAccent, alignment: Alignment.centerRight, padding: const EdgeInsets.symmetric(horizontal: 24),
-        child: const Row(mainAxisSize: MainAxisSize.min, children: [Text('Xóa', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), SizedBox(width: 8), Icon(Icons.delete_outline_rounded, color: Colors.white)]),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [Text(t.text('delete'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), const SizedBox(width: 8), const Icon(Icons.delete_outline_rounded, color: Colors.white)]),
       ),
       confirmDismiss: (direction) async {
         if (direction == DismissDirection.startToEnd) {
@@ -1400,6 +1469,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (context, notifProvider, child) {
         // Badge chỉ đếm tin CHƯA ĐỌC (chuẩn Tuya/Mi Home) — đọc hết là chuông sạch số
         int count = notifProvider.unreadCount;
+        final t = AppTranslations.of(context);
         return Stack(
           clipBehavior: Clip.none,
           alignment: Alignment.center,
@@ -1413,7 +1483,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               padding: const EdgeInsets.all(12),
               splashRadius: 24,
               constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-              tooltip: 'Thông báo',
+              tooltip: t.text('new_notifications_tooltip'),
               onPressed: () => _showNotificationPanel(textMain, textSub),
             ),
             if (count > 0)
@@ -1439,6 +1509,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Consumer<NotificationProvider>(
         builder: (context, notifProvider, child) {
           final listNotif = notifProvider.list;
+          final t = AppTranslations.of(context);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1447,7 +1518,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Expanded(child: Text('Tất cả thông báo', style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                    Expanded(child: Text(t.text('notifications_full_title'), style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1455,10 +1526,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           TextButton.icon(
                             onPressed: () => notifProvider.markAllRead(),
                             icon: Icon(Icons.done_all_rounded, size: 18, color: tkGreen),
-                            label: Text('Đọc tất cả', style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.w600)),
+                            label: Text(t.text('mark_all_read'), style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.w600)),
                           ),
                         const SizedBox(width: 8),
-                        Text('Đẩy (Push)', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
+                        Text(t.text('push_short'), style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
                         Switch(value: _isPushEnabled, activeThumbColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
                       ],
                     )
@@ -1468,7 +1539,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Divider(height: 1, color: isDark ? Colors.white10 : Colors.grey.shade200),
               Expanded(
                 child: listNotif.isEmpty
-                    ? Center(child: Text('Không có thông báo nào.', style: TextStyle(color: textSub)))
+                    ? Center(child: Text(t.text('no_notifications'), style: TextStyle(color: textSub)))
                     : ListView.separated(
                         physics: const BouncingScrollPhysics(), padding: const EdgeInsets.all(16), itemCount: listNotif.length,
                         separatorBuilder: (_, _) => Divider(height: 1, indent: 64, color: isDark ? Colors.white10 : Colors.grey.shade100),
@@ -1491,6 +1562,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // --- THANH CÔNG CỤ HIỆN LÊN KHI CHỌN NHIỀU THIẾT BỊ ---
   Widget _buildSelectionActionBar(bool isDark) {
+    final t = AppTranslations.of(context);
     return Material(
       elevation: 20,
       borderRadius: BorderRadius.circular(24),
@@ -1507,7 +1579,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
-                  tooltip: 'Đổi tên hàng loạt',
+                  tooltip: t.text('rename_bulk_tooltip'),
                   icon: const Icon(Icons.edit_rounded, color: Colors.blueAccent),
                   onPressed: () {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tính năng đổi tên hàng loạt đang phát triển')));
@@ -1516,33 +1588,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 // [PHÒNG] Chuyển hàng loạt thiết bị đã chọn vào một phòng
                 IconButton(
-                  tooltip: 'Chuyển vào phòng',
+                  tooltip: t.text('move_room_bulk_tooltip'),
                   icon: const Icon(Icons.meeting_room, color: Color(0xFF00A651)),
                   onPressed: _bulkAssignRoom,
                 ),
                 // [NHÓM] Tạo Công tắc ảo từ các thiết bị đã chọn
                 IconButton(
-                  tooltip: 'Tạo nhóm công tắc',
+                  tooltip: t.text('create_group_bulk_tooltip'),
                   icon: const Icon(Icons.category, color: Colors.purpleAccent),
                   onPressed: _bulkCreateGroup,
                 ),
                 IconButton(
-                  tooltip: 'Ẩn / Hiện hàng loạt',
+                  tooltip: t.text('hide_show_bulk_tooltip'),
                   icon: Icon(_showHiddenFilter ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.orange),
                   onPressed: () {
-                    setState(() { 
+                    setState(() {
                       if (_showHiddenFilter) {
                         _hiddenDevices.removeAll(_selectedDevices);
                       } else {
                         _hiddenDevices.addAll(_selectedDevices);
-                      } 
-                      _isSelectionMode = false; _selectedDevices.clear(); 
+                      }
+                      _isSelectionMode = false; _selectedDevices.clear();
                     });
                   }
                 ),
                 IconButton(
-                  tooltip: 'Xóa hàng loạt',
-                  icon: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent), 
+                  tooltip: t.text('delete_bulk_tooltip'),
+                  icon: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
                   onPressed: () {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đang xóa ${_selectedDevices.length} thiết bị...')));
                     setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
@@ -1592,7 +1664,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onPressed: () async {
                     // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                     // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                    final result = await showAppDialog(context: context, child: AddDeviceDialog(ownedMacs: _ownedMacs));
+                    final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs));
                     await _linkScannedDevice(result);
                     _handleRefresh();
                   },
@@ -1643,6 +1715,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildMobileSettingsView(bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     Widget buildSettingGroup(List<Widget> children) => Padding(padding: const EdgeInsets.only(bottom: 24.0), child: AppContainer(padding: EdgeInsets.zero, child: Column(children: children)));
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(), padding: const EdgeInsets.all(16.0),
@@ -1656,14 +1729,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // [FIX OVERFLOW] Email dài + trailing menu từng làm tràn ngang tile trên Mobile:
               // ép 1 dòng + ellipsis để title/subtitle luôn nằm gọn trong phần Expanded của ListTile.
               title: Text(userEmail, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 16)),
-              subtitle: Padding(padding: const EdgeInsets.only(top: 4.0), child: Text('Quyền: $userRole', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textSub, fontWeight: FontWeight.w600))),
+              subtitle: Padding(padding: const EdgeInsets.only(top: 4.0), child: Text('${t.text('role_label')}: $userRole', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textSub, fontWeight: FontWeight.w600))),
               trailing: PopupMenuButton<int>(
                 icon: Icon(Icons.edit_outlined, color: textSub), offset: const Offset(0, 40), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), color: isDark ? const Color(0xFF1E293B) : Colors.white,
                 onSelected: (value) {
                   switch (value) {
-                    case 0: Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: const Text('Hồ sơ tài khoản'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: ProfileManagementView(currentRole: userRole, currentEmail: userEmail))))); break;
+                    case 0: Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: Text(t.text('profile')), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: ProfileManagementView(currentRole: userRole, currentEmail: userEmail))))); break;
                     case 1: _showChangePasswordDialog(); break;
-                    case 2: Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: const Text('Phân quyền'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: const SafeArea(child: RoleManagementView())))); break;
+                    case 2: Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: Text(t.text('permissions')), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: const SafeArea(child: RoleManagementView())))); break;
                     // [ADMIN DASHBOARD] Chỉ SUPER_USER thấy mục này (item chỉ được render khi đủ quyền)
                     case 4: Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminSystemScreen())); break;
                     case 3: _performLogout(context); break;
@@ -1672,41 +1745,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 // [FIX OVERFLOW] Text trong item bọc Flexible + ellipsis — popup bị kẹp bề ngang
                 // trên Mobile màn hẹp thì chữ tự co, không còn tràn/vỡ hàng.
                 itemBuilder: (context) => [
-                  PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.account_circle_outlined, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Hồ sơ tài khoản', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
-                  PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.lock_reset, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Đổi mật khẩu', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
-                  PopupMenuItem(value: 2, child: Row(children: [Icon(Icons.security, color: textMain), const SizedBox(width: 12), Flexible(child: Text('Quản lý phân quyền', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
+                  PopupMenuItem(value: 0, child: Row(children: [Icon(Icons.account_circle_outlined, color: textMain), const SizedBox(width: 12), Flexible(child: Text(t.text('profile'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
+                  PopupMenuItem(value: 1, child: Row(children: [Icon(Icons.lock_reset, color: textMain), const SizedBox(width: 12), Flexible(child: Text(t.text('change_password'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
+                  PopupMenuItem(value: 2, child: Row(children: [Icon(Icons.security, color: textMain), const SizedBox(width: 12), Flexible(child: Text(t.text('manage_permissions'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain)))])),
                   // [PHÂN QUYỀN] Mục 'Quản trị Hệ thống' chỉ hiển thị cho tài khoản admin (SUPER_USER)
                   if (_isSuperUser)
-                    PopupMenuItem(value: 4, child: Row(children: [Icon(Icons.admin_panel_settings_outlined, color: tkGreen), const SizedBox(width: 12), Flexible(child: Text('Quản trị Hệ thống', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontWeight: FontWeight.w600)))])),
+                    PopupMenuItem(value: 4, child: Row(children: [Icon(Icons.admin_panel_settings_outlined, color: tkGreen), const SizedBox(width: 12), Flexible(child: Text(t.text('system_admin'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontWeight: FontWeight.w600)))])),
                   const PopupMenuDivider(),
-                  PopupMenuItem(value: 3, child: Row(children: [Icon(Icons.logout, color: Colors.redAccent), const SizedBox(width: 12), Flexible(child: Text('Đăng xuất', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)))])),
+                  PopupMenuItem(value: 3, child: Row(children: [Icon(Icons.logout, color: Colors.redAccent), const SizedBox(width: 12), Flexible(child: Text(t.text('logout'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)))])),
                 ],
               ),
-              onTap: () { Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: const Text('Hồ sơ tài khoản'), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: ProfileManagementView(currentRole: userRole, currentEmail: userEmail))))); }
+              onTap: () { Navigator.push(context, MaterialPageRoute(builder: (context) => AppScaffold(appBar: AppBar(title: Text(t.text('profile')), backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white, foregroundColor: textMain, elevation: 0), backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2), body: SafeArea(child: ProfileManagementView(currentRole: userRole, currentEmail: userEmail))))); }
             ),
           ]),
-          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('CHUNG', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
-          buildSettingGroup([ListTile(leading: Icon(Icons.palette_outlined, color: textMain), title: Text('Giao diện màu sắc', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showThemeDialog())]),
-          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('BẢO MẬT', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
-          buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text('Đổi mật khẩu', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
+          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('general_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+          buildSettingGroup([ListTile(leading: Icon(Icons.palette_outlined, color: textMain), title: Text(t.text('appearance_color'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showThemeDialog())]),
+          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('security_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+          buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text(t.text('change_password'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
           // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)
           if (_isSuperUser) ...[
-            Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('QUẢN TRỊ', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+            Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('admin_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
             buildSettingGroup([ListTile(
               leading: Icon(Icons.admin_panel_settings_outlined, color: tkGreen),
-              title: Text('Quản trị Hệ thống', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
-              subtitle: Text('Whitelist thiết bị & Cập nhật OTA', style: TextStyle(color: textSub, fontSize: 12)),
+              title: Text(t.text('system_admin'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+              subtitle: Text(t.text('system_admin_desc'), style: TextStyle(color: textSub, fontSize: 12)),
               trailing: Icon(Icons.chevron_right, color: textSub),
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminSystemScreen())),
             )]),
           ],
-          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('HỆ THỐNG', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('system_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([
-            ListTile(leading: Icon(Icons.dns_outlined, color: textMain), title: Text('Máy chủ', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('Armbian OS', style: TextStyle(color: textSub))),
+            ListTile(leading: Icon(Icons.dns_outlined, color: textMain), title: Text(t.text('server'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('Armbian OS', style: TextStyle(color: textSub))),
             Divider(height: 1, indent: 16, endIndent: 16, color: isDark ? Colors.white10 : Colors.grey.withValues(alpha: 0.2)),
-            ListTile(leading: Icon(Icons.info_outline, color: textMain), title: Text('Phiên bản phần mềm', style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('3.0.1 (Stable)', style: TextStyle(color: textSub))),
+            ListTile(leading: Icon(Icons.info_outline, color: textMain), title: Text(t.text('software_version_label'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('3.0.1 (Stable)', style: TextStyle(color: textSub))),
           ]),
-          buildSettingGroup([ListTile(leading: const Icon(Icons.logout, color: Colors.redAccent), title: const Text('Đăng xuất khỏi thiết bị', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)), onTap: () => _performLogout(context))]),
+          buildSettingGroup([ListTile(leading: const Icon(Icons.logout, color: Colors.redAccent), title: Text(t.text('logout_device'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)), onTap: () => _performLogout(context))]),
           const SizedBox(height: 40),
         ],
       ),
@@ -1733,6 +1806,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDesktopFloatingSidebar(bool isDark, Color txtMain, Color txtSub) {
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    final t = AppTranslations.of(context);
     return Container(
       width: 260, margin: const EdgeInsets.only(left: 24, bottom: 24, top: 16),
       child: AppContainer(
@@ -1754,15 +1828,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 physics: const BouncingScrollPhysics(),
                 children: [
-                  _buildMenuItem(0, Icons.dashboard_rounded, 'Bảng điều khiển', txtMain, txtSub),
-                  _buildMenuItem(5, Icons.maps_home_work_rounded, 'Quản lý Nhà', txtMain, txtSub), 
-                  _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng', txtMain, txtSub),
-                  _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub),
-                  _buildMenuItem(3, Icons.notifications_active_rounded, 'Thông báo', txtMain, txtSub), 
-                  _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub),
+                  _buildMenuItem(0, Icons.dashboard_rounded, t.text('dashboard'), txtMain, txtSub),
+                  _buildMenuItem(5, Icons.maps_home_work_rounded, t.text('home_management'), txtMain, txtSub),
+                  _buildMenuItem(1, Icons.meeting_room_rounded, t.text('rooms'), txtMain, txtSub),
+                  _buildMenuItem(2, Icons.auto_awesome_rounded, t.text('routines'), txtMain, txtSub),
+                  _buildMenuItem(3, Icons.notifications_active_rounded, t.text('notifications'), txtMain, txtSub),
+                  _buildMenuItem(6, Icons.security_rounded, t.text('permissions'), txtMain, txtSub),
                   // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
                   if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub),
-                  _buildMenuItem(4, Icons.settings_rounded, 'Cài đặt', txtMain, txtSub),
+                  _buildMenuItem(4, Icons.settings_rounded, t.text('settings'), txtMain, txtSub),
                 ],
               ),
             ),
@@ -1782,6 +1856,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildMobileDrawer(bool isDark, Color surface, Color txtMain, Color txtSub) {
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    final t = AppTranslations.of(context);
     return Drawer(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -1808,14 +1883,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                 children: [
-                  _buildMenuItem(0, Icons.dashboard_rounded, 'Điều khiển', txtMain, txtSub, isFromDrawer: true),
-                  _buildMenuItem(5, Icons.maps_home_work_rounded, 'Quản lý Nhà', txtMain, txtSub, isFromDrawer: true),
-                  _buildMenuItem(1, Icons.meeting_room_rounded, 'Phòng', txtMain, txtSub, isFromDrawer: true),
-                  _buildMenuItem(2, Icons.auto_awesome_rounded, 'Ngữ cảnh', txtMain, txtSub, isFromDrawer: true),
-                  _buildMenuItem(6, Icons.security_rounded, 'Phân quyền', txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(0, Icons.dashboard_rounded, t.text('dashboard_short'), txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(5, Icons.maps_home_work_rounded, t.text('home_management'), txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(1, Icons.meeting_room_rounded, t.text('rooms'), txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(2, Icons.auto_awesome_rounded, t.text('routines'), txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(6, Icons.security_rounded, t.text('permissions'), txtMain, txtSub, isFromDrawer: true),
                   // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
                   if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub, isFromDrawer: true),
-                  _buildMenuItem(4, Icons.settings_rounded, 'Cài đặt', txtMain, txtSub, isFromDrawer: true),
+                  _buildMenuItem(4, Icons.settings_rounded, t.text('settings'), txtMain, txtSub, isFromDrawer: true),
                 ],
               ),
             ),
@@ -1859,6 +1934,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final bool isSelected = _selectedIndex == kAdminIndex;
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    final t = AppTranslations.of(context);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       margin: const EdgeInsets.only(bottom: 12),
@@ -1872,7 +1948,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: ListTile(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           leading: Icon(Icons.admin_panel_settings, color: isSelected ? tkGreen : txtSub, size: 22, shadows: sh),
-          title: Text('Quản trị hệ thống',
+          title: Text(t.text('system_admin'),
               style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
           onTap: () {
             if (isFromDrawer) Navigator.of(context).pop(); // đóng Drawer trượt (Mobile) trước khi đổi tab
@@ -1884,22 +1960,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildBottomNav(Color surface, Color txtSub) {
+    final t = AppTranslations.of(context);
     return BottomNavigationBar(
       backgroundColor: surface, selectedItemColor: tkGreen, unselectedItemColor: txtSub, type: BottomNavigationBarType.fixed,
       // [FIX CRASH] BottomNav chỉ có 5 item (0-4); các tab nhúng ngoài dải (5 Quản lý Nhà,
       // 6 Phân quyền, 7 Quản trị) sẽ vượt currentIndex -> assert. Kẹp về 0 để an toàn.
       currentIndex: _selectedIndex < 5 ? _selectedIndex : 0, onTap: (index) => _onMenuTapped(index),
-      items: const [
-        BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Điều khiển'),
-        BottomNavigationBarItem(icon: Icon(Icons.meeting_room_rounded), label: 'Phòng'),
-        BottomNavigationBarItem(icon: Icon(Icons.auto_awesome), label: 'Ngữ cảnh'),
-        BottomNavigationBarItem(icon: Icon(Icons.notifications_active_rounded), label: 'Thông báo'), 
-        BottomNavigationBarItem(icon: Icon(Icons.settings_rounded), label: 'Cài đặt'),
+      // [ĐA NGÔN NGỮ] items KHÔNG còn const — label giờ đọc runtime qua AppTranslations.
+      items: [
+        BottomNavigationBarItem(icon: const Icon(Icons.dashboard_rounded), label: t.text('dashboard_short')),
+        BottomNavigationBarItem(icon: const Icon(Icons.meeting_room_rounded), label: t.text('rooms')),
+        BottomNavigationBarItem(icon: const Icon(Icons.auto_awesome), label: t.text('routines')),
+        BottomNavigationBarItem(icon: const Icon(Icons.notifications_active_rounded), label: t.text('notifications')),
+        BottomNavigationBarItem(icon: const Icon(Icons.settings_rounded), label: t.text('settings')),
       ],
     );
   }
 
   Widget _buildBentoDashboard(bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1913,12 +1992,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 // (vd: 'Xin chào, tinhkt.ipca (SUPER_USER)'). Role lấy nguyên văn từ JWT.
                 // KHÔNG dùng Flexible/Expanded ở đây: Row này nằm trong ngữ cảnh chiều rộng
                 // vô hạn (Column trong Row) -> Flexible sẽ vỡ layout ("never laid out").
+                // [GIỮ NGUYÊN BIẾN ĐỘNG] userEmail/$userRole đọc thẳng từ JWT — KHÔNG dịch.
                 Row(mainAxisSize: MainAxisSize.min, children: [
-                  Text('Xin chào, ', style: TextStyle(color: textSub, fontSize: 16)),
+                  Text('${t.text('hello')}, ', style: TextStyle(color: textSub, fontSize: 16)),
                   Text(userEmail.split('@')[0], style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold)),
                   Text(' ($userRole)', style: TextStyle(color: _isSuperUser ? tkGreen : textSub, fontSize: 14, fontWeight: FontWeight.w600)),
                 ]),
-                Text('Tổng quan Hệ thống', style: TextStyle(color: textMain, fontSize: 28, fontWeight: FontWeight.w900)),
+                Text(t.text('system_overview'), style: TextStyle(color: textMain, fontSize: 28, fontWeight: FontWeight.w900)),
               ],
             ),
             Row(children: [_buildNotificationBell(textMain, textSub), const SizedBox(width: 16), _buildUserAvatarMenu(textMain)])
@@ -1952,21 +2032,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Row(
                                 children: [
                                   IconButton(icon: Icon(Icons.arrow_back_rounded, color: textMain), onPressed: () { setState(() => _selectedHomeForSuperUser = null); _initializeHome(); }),
-                                  Expanded(child: Text('Tất cả thiết bị - ${_selectedHomeForSuperUser!['home_name']}', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                                  Expanded(child: Text('${t.text('all_devices')} - ${_selectedHomeForSuperUser!['home_name']}', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
                                 ],
                               ),
                             )
                           else
-                            Text('Tất cả thiết bị', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
+                            Text(t.text('all_devices'), style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
                           
                           if (userRole != 'SUPER_USER' || _selectedHomeForSuperUser != null) 
                             ElevatedButton.icon(
                               style: ElevatedButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), foregroundColor: tkGreen, elevation: 0, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-                              icon: const Icon(Icons.add, size: 20), label: const Text('Thêm', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                              icon: const Icon(Icons.add, size: 20), label: Text(t.text('add_device'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               onPressed: () async {
                                 // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                                 // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                                final result = await showAppDialog(context: context, child: AddDeviceDialog(ownedMacs: _ownedMacs));
+                                final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs));
                                 await _linkScannedDevice(result);
                                 _handleRefresh();
                               },
@@ -2008,6 +2088,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildMobileContent(bool isDark, Color surfaceLight, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()), 
@@ -2031,14 +2112,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   physics: const BouncingScrollPhysics(), 
                   clipBehavior: Clip.none,
                   children: [
-                    // Gắn biến thời tiết thực tế và truyền itemWidth vào từng thẻ
-                    _buildMiniStatusMobile(Icons.thermostat, 'Nhiệt độ', '${_weatherData['temp'] ?? '--'}°C', Colors.orange, textMain, textSub, itemWidth), 
+                    // [GIỮ NGUYÊN BIẾN ĐỘNG] '${_weatherData['temp']}°C'/'%' đọc thẳng từ API thời
+                    // tiết — CHỈ nhãn (Nhiệt độ/Độ ẩm/Tiêu thụ/An ninh) và 'BẬT' được dịch.
+                    _buildMiniStatusMobile(Icons.thermostat, t.text('temperature'), '${_weatherData['temp'] ?? '--'}°C', Colors.orange, textMain, textSub, itemWidth),
                     const SizedBox(width: 12),
-                    _buildMiniStatusMobile(Icons.water_drop, 'Độ ẩm', '${_weatherData['humidity'] ?? '--'}%', Colors.blue, textMain, textSub, itemWidth), 
+                    _buildMiniStatusMobile(Icons.water_drop, t.text('humidity'), '${_weatherData['humidity'] ?? '--'}%', Colors.blue, textMain, textSub, itemWidth),
                     const SizedBox(width: 12),
-                    _buildMiniStatusMobile(Icons.bolt, 'Tiêu thụ', '2.1 kW', tkGreen, textMain, textSub, itemWidth), 
+                    _buildMiniStatusMobile(Icons.bolt, t.text('power_load'), '2.1 kW', tkGreen, textMain, textSub, itemWidth),
                     const SizedBox(width: 12),
-                    _buildMiniStatusMobile(Icons.security, 'An ninh', 'BẬT', Colors.redAccent, textMain, textSub, itemWidth),
+                    _buildMiniStatusMobile(Icons.security, t.text('security'), t.text('on_state'), Colors.redAccent, textMain, textSub, itemWidth),
                   ],
                 ),
               );
@@ -2059,7 +2141,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 )
               else
-                Text('Tất cả thiết bị', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
+                Text(t.text('all_devices'), style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
             ],
           ),
           const SizedBox(height: 12),
@@ -2113,8 +2195,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildWeatherBento(bool isDark, Color txtMain, Color txtSub) {
   // Lấy dữ liệu từ Map, nếu chưa có thì hiển thị giá trị mặc định
+  // [GIỮ NGUYÊN BIẾN ĐỘNG] condition ('mây cụm', 'nắng'...) đọc thẳng từ API thời tiết — chỉ
+  // câu fallback "Đang cập nhật..." (khi API CHƯA có dữ liệu) là copy UI của ta, được dịch.
   final String temp = _weatherData['temp']?.toString() ?? '--';
-  final String condition = _weatherData['condition']?.toString() ?? 'Đang cập nhật...';
+  final String condition = _weatherData['condition']?.toString() ?? AppTranslations.of(context).text('updating');
 
     return AppContainer(
       child: Row(
@@ -2148,20 +2232,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildSensorsBento(bool isDark, Color txtMain, Color txtSub) {
+    final t = AppTranslations.of(context);
     return AppContainer(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      // [GIỮ NGUYÊN BIẾN ĐỘNG] '${_weatherData['humidity']}%' đọc thẳng từ API — chỉ nhãn dịch.
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildMiniStatusDesktop(Icons.water_drop, 'Độ ẩm', '${_weatherData['humidity'] ?? '--'}%', Colors.blue, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
-          _buildMiniStatusDesktop(Icons.bolt, 'Tiêu thụ', '2.1 kW', tkGreen, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
-          _buildMiniStatusDesktop(Icons.security, 'An ninh', 'BẬT', Colors.redAccent, txtMain, txtSub),
+          _buildMiniStatusDesktop(Icons.water_drop, t.text('humidity'), '${_weatherData['humidity'] ?? '--'}%', Colors.blue, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
+          _buildMiniStatusDesktop(Icons.bolt, t.text('power_load'), '2.1 kW', tkGreen, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
+          _buildMiniStatusDesktop(Icons.security, t.text('security'), t.text('on_state'), Colors.redAccent, txtMain, txtSub),
         ],
       ),
     );
   }
 
   Widget _buildEnergyWidget(bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] '14.5'/'kWh'/'2,104 W'/'124 kWh' là số liệu điện năng (mock chờ
+    // tích hợp thật) — CHỈ nhãn (Điện năng/Hôm nay/Đang tiêu thụ/Tháng này) được dịch.
     return AppContainer(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -2170,7 +2259,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(children: [Icon(Icons.bolt_rounded, color: tkGreen, size: 22), const SizedBox(width: 8), Text('Điện năng', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
+              Row(children: [Icon(Icons.bolt_rounded, color: tkGreen, size: 22), const SizedBox(width: 8), Text(t.text('energy'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
               IconButton(icon: Icon(Icons.open_in_new_rounded, color: textSub, size: 20), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () {})
             ],
           ),
@@ -2178,15 +2267,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text('Hôm nay', style: TextStyle(color: textSub, fontSize: 13)), const SizedBox(height: 4),
+              Text(t.text('today'), style: TextStyle(color: textSub, fontSize: 13)), const SizedBox(height: 4),
               Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [Text('14.5', style: TextStyle(color: textMain, fontSize: 40, fontWeight: FontWeight.w900)), const SizedBox(width: 4), Text('kWh', style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold))]),
               const SizedBox(height: 16), Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1), const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  Expanded(child: Column(children: [Text('Đang tiêu thụ', style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('2,104 W', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
+                  Expanded(child: Column(children: [Text(t.text('consuming'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('2,104 W', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
                   Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.black12, margin: const EdgeInsets.symmetric(horizontal: 8)),
-                  Expanded(child: Column(children: [Text('Tháng này', style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('124 kWh', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
+                  Expanded(child: Column(children: [Text(t.text('this_month'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('124 kWh', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
                 ],
               )
             ],
@@ -2197,6 +2286,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildCameraWidget(bool isDark, Color textMain, Color textSub) {
+    final t = AppTranslations.of(context);
     return AppContainer(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -2206,7 +2296,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Wrap(
             alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, spacing: 8, runSpacing: 8,
             children: [
-              Row(children: [const Icon(Icons.videocam_rounded, color: Colors.blueAccent, size: 22), const SizedBox(width: 8), Text('Camera', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
+              Row(children: [const Icon(Icons.videocam_rounded, color: Colors.blueAccent, size: 22), const SizedBox(width: 8), Text(t.text('camera'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2228,7 +2318,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 16),
           _cameraViewMode == 1 
-            ? AspectRatio(aspectRatio: 16 / 9, child: Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_off_rounded, color: textSub, size: 32), const SizedBox(height: 8), Text('Ngoại tuyến', style: TextStyle(color: textSub, fontSize: 12))]))))
+            ? AspectRatio(aspectRatio: 16 / 9, child: Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_off_rounded, color: textSub, size: 32), const SizedBox(height: 8), Text(t.text('offline'), style: TextStyle(color: textSub, fontSize: 12))]))))
             : GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3), itemCount: 4, itemBuilder: (context, index) { return Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(8)), child: Center(child: Icon(Icons.videocam_off_rounded, color: textSub))); })
         ],
       ),
@@ -2251,6 +2341,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
         final Color chipBg = isDark ? const Color(0xFF1E293B) : Colors.white;
         final sel = roomProv.selectedRoomId;
+        final t = AppTranslations.of(context);
 
         Widget chip({required String label, IconData? icon, required bool active, required VoidCallback onTap}) {
           return Padding(
@@ -2279,7 +2370,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
             children: [
-              chip(label: 'Tất cả', icon: Icons.widgets_rounded, active: sel == null, onTap: () => roomProv.selectRoom(null)),
+              // [GIỮ NGUYÊN BIẾN ĐỘNG] r.name (tên phòng) đọc từ API/RoomGroupProvider — không dịch.
+              chip(label: t.text('all'), icon: Icons.widgets_rounded, active: sel == null, onTap: () => roomProv.selectRoom(null)),
               ...roomProv.rooms.map((r) => chip(label: r.name, icon: Icons.meeting_room, active: sel == r.id, onTap: () => roomProv.selectRoom(r.id))),
               // Nút Quản lý phòng
               Material(
@@ -3102,6 +3194,9 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
     final Color textMain = isGlass ? Colors.white : (isDark ? Colors.white : const Color(0xFF0F172A));
     final Color textSub = isGlass ? Colors.white70 : (isDark ? Colors.white54 : const Color(0xFF64748B));
     final Color sidebarColor = isDark ? Colors.white.withValues(alpha: 0.02) : Colors.grey.withValues(alpha: 0.05);
+    // [ĐA NGÔN NGỮ — PROOF OF CONCEPT] AppTranslations.of(context) dùng context.watch() nội bộ
+    // -> build() này tự rebuild khi đổi ngôn ngữ, không cần Hot Restart.
+    final t = AppTranslations.of(context);
 
     // [GLASS THEME] Dialog/ConstrainedBox/AppContainer thủ công cũ ĐÃ BỎ khỏi build() của
     // chính class này — caller (_showSettingsMenu) nay đưa thẳng WindowsSettingsDialog vào
@@ -3116,13 +3211,13 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
             child: Column(
               children: [
                 Padding(padding: const EdgeInsets.fromLTRB(16.0, 24.0, 16.0, 16.0), child: Container(height: 32, decoration: BoxDecoration(color: isDark ? Colors.black26 : Colors.white70, borderRadius: BorderRadius.circular(8), border: Border.all(color: isDark ? Colors.white10 : Colors.grey.withValues(alpha: 0.3))), child: Row(children: [const SizedBox(width: 8), Icon(Icons.search, size: 16, color: textSub), const SizedBox(width: 8), Text('Tìm kiếm', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: isGlass ? kGlassTextShadow : null))]))),
-                _buildTabButton(0, Icons.person_outline, 'Hồ sơ tài khoản', textMain, isGlass), _buildTabButton(1, Icons.palette_outlined, 'Giao diện', textMain, isGlass), _buildTabButton(2, Icons.shield_outlined, 'Bảo mật & Mật khẩu', textMain, isGlass), _buildTabButton(3, Icons.info_outline, 'Thông tin hệ thống', textMain, isGlass), const Spacer(),
+                _buildTabButton(0, Icons.person_outline, t.text('profile'), textMain, isGlass), _buildTabButton(1, Icons.palette_outlined, t.text('appearance'), textMain, isGlass), _buildTabButton(2, Icons.shield_outlined, t.text('security_password'), textMain, isGlass), _buildTabButton(3, Icons.info_outline, t.text('system_info'), textMain, isGlass), const Spacer(),
                 Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: InkWell(
                     onTap: () async { Navigator.pop(context); await AuthService().logout(); if (context.mounted) Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context) => const LoginScreen()), (route) => false); },
                     borderRadius: BorderRadius.circular(8),
-                    child: Container(padding: const EdgeInsets.symmetric(vertical: 10), alignment: Alignment.center, decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text('Đăng xuất', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null))),
+                    child: Container(padding: const EdgeInsets.symmetric(vertical: 10), alignment: Alignment.center, decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text(t.text('logout'), style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null))),
                   ),
                 )
               ],
@@ -3139,7 +3234,7 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (_selectedTab != 0) ...[Text(_selectedTab == 1 ? 'Giao diện (Appearance)' : _selectedTab == 2 ? 'Bảo mật & Mật khẩu' : 'Thông tin hệ thống', style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null)), const SizedBox(height: 32)],
+                        if (_selectedTab != 0) ...[Text(_selectedTab == 1 ? t.text('appearance') : _selectedTab == 2 ? t.text('security_password') : t.text('system_info'), style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null)), const SizedBox(height: 32)],
                         Expanded(child: _selectedTab == 0 ? ProfileManagementView(currentRole: widget.currentRole, currentEmail: widget.currentEmail) : _selectedTab == 1 ? _buildAppearanceTab(textMain, textSub, isGlass) : _selectedTab == 2 ? _buildSecurityTab(textMain, textSub, isGlass) : _buildInfoTab(textMain, textSub, isGlass)),
                       ],
                     ),
@@ -3166,13 +3261,15 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
 
   Widget _buildAppearanceTab(Color textMain, Color textSub, bool isGlass) {
     final themeProvider = Provider.of<ThemeProvider>(context);
+    final languageProvider = Provider.of<LanguageProvider>(context);
+    final t = AppTranslations.of(context);
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color boxColor = isDark ? Colors.white10 : Colors.grey.withValues(alpha: 0.1);
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Chủ đề màu sắc', style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 12),
+        Text(t.text('color_theme'), style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 12),
         Container(
           decoration: BoxDecoration(color: boxColor, borderRadius: BorderRadius.circular(12)),
           // [LINT] RadioGroup tổ tiên thay cho groupValue/onChanged per-tile (deprecated Flutter 3.32+)
@@ -3180,9 +3277,9 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
             groupValue: themeProvider.themeMode,
             onChanged: (val) { if (val != null) themeProvider.setThemeMode(val); },
             child: Column(children: [
-              RadioListTile<ThemeMode>(title: Text('Chế độ Sáng (Light)', style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.light, activeColor: tkGreen), Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12, indent: 50),
-              RadioListTile<ThemeMode>(title: Text('Chế độ Tối (Dark)', style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.dark, activeColor: tkGreen), Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12, indent: 50),
-              RadioListTile<ThemeMode>(title: Text('Tự động theo hệ thống', style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.system, activeColor: tkGreen),
+              RadioListTile<ThemeMode>(title: Text(t.text('light_mode'), style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.light, activeColor: tkGreen), Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12, indent: 50),
+              RadioListTile<ThemeMode>(title: Text(t.text('dark_mode'), style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.dark, activeColor: tkGreen), Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12, indent: 50),
+              RadioListTile<ThemeMode>(title: Text(t.text('system_mode'), style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: ThemeMode.system, activeColor: tkGreen),
             ]),
           ),
         ),
@@ -3190,7 +3287,7 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
         // [GLASS THEME — VÍ DỤ ÁP DỤNG] Trục ĐỘC LẬP với Sáng/Tối ở trên — bật/tắt lớp "vỏ"
         // Ultra-Glassmorphism (AppScaffold/AppCard/... trong app_ui_wrappers.dart tự đọc cờ
         // này qua ThemeProvider, không cần khởi động lại App).
-        Text('Hiệu ứng giao diện', style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 12),
+        Text(t.text('interface_effect'), style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 12),
         Container(
           decoration: BoxDecoration(color: boxColor, borderRadius: BorderRadius.circular(12)),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -3204,9 +3301,9 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Giao diện Kính (Glass Theme)', style: TextStyle(color: textMain, fontWeight: FontWeight.w600, shadows: sh)),
+                    Text(t.text('glass_theme'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600, shadows: sh)),
                     const SizedBox(height: 2),
-                    Text('Kính mờ 3D — nền Aurora nhiều màu, thẻ kính bo sáng', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
+                    Text(t.text('glass_theme_desc'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
                   ],
                 ),
               ),
@@ -3219,23 +3316,41 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
             ],
           ),
         ),
+        const SizedBox(height: 24),
+        // [ĐA NGÔN NGỮ — PROOF OF CONCEPT] Mục "Ngôn ngữ / Language" mới — cùng layout
+        // Container(boxColor, borderRadius:12) + RadioGroup như khối Sáng/Tối phía trên, để
+        // không lệch giao diện. Đổi ngôn ngữ gọi languageProvider.changeLanguage() ->
+        // notifyListeners() -> mọi AppTranslations.of(context) trong cây widget tự vẽ lại NGAY.
+        Text(t.text('language'), style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: sh)), const SizedBox(height: 12),
+        Container(
+          decoration: BoxDecoration(color: boxColor, borderRadius: BorderRadius.circular(12)),
+          child: RadioGroup<String>(
+            groupValue: languageProvider.locale.languageCode,
+            onChanged: (val) { if (val != null) languageProvider.changeLanguage(val); },
+            child: Column(children: [
+              RadioListTile<String>(title: Text(t.text('vietnamese'), style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: 'vi', activeColor: tkGreen), Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12, indent: 50),
+              RadioListTile<String>(title: Text(t.text('english'), style: TextStyle(color: textMain, fontWeight: FontWeight.w500, shadows: sh)), value: 'en', activeColor: tkGreen),
+            ]),
+          ),
+        ),
       ],
     );
   }
 
   Widget _buildSecurityTab(Color textMain, Color textSub, bool isGlass) {
+    final t = AppTranslations.of(context);
     final oldPassCtrl = TextEditingController(), newPassCtrl = TextEditingController(), confirmPassCtrl = TextEditingController();
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Thay đổi mật khẩu tài khoản hiện tại', style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null)), const SizedBox(height: 16),
+          Text(t.text('change_password_title'), style: TextStyle(color: textSub, fontWeight: FontWeight.bold, shadows: isGlass ? kGlassTextShadow : null)), const SizedBox(height: 16),
           // [FIX — Input mờ trên nền kính] TextField trần (fillColor/border tự chế) ĐÃ THAY
           // bằng AppTextField — dùng đúng khối kính "chìm" trung tâm (_GlassSurface inverted)
           // của cả hệ thống thay vì tự vẽ lại một phiên bản viền/fill khác ở đây.
-          AppTextField(controller: oldPassCtrl, obscureText: true, labelText: 'Mật khẩu cũ'), const SizedBox(height: 16),
-          AppTextField(controller: newPassCtrl, obscureText: true, labelText: 'Mật khẩu mới'), const SizedBox(height: 16),
-          AppTextField(controller: confirmPassCtrl, obscureText: true, labelText: 'Xác nhận lại mật khẩu mới'), const SizedBox(height: 24),
+          AppTextField(controller: oldPassCtrl, obscureText: true, labelText: t.text('old_password')), const SizedBox(height: 16),
+          AppTextField(controller: newPassCtrl, obscureText: true, labelText: t.text('new_password')), const SizedBox(height: 16),
+          AppTextField(controller: confirmPassCtrl, obscureText: true, labelText: t.text('confirm_new_password')), const SizedBox(height: 24),
           SizedBox(
             width: double.infinity, height: 45,
             child: ElevatedButton(
@@ -3243,16 +3358,16 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
               onPressed: () async {
                 final oldPass = oldPassCtrl.text.trim(), newPass = newPassCtrl.text.trim();
                 if (oldPass.isEmpty || newPass.isEmpty) return;
-                if (newPass != confirmPassCtrl.text.trim()) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mật khẩu xác nhận không khớp!'), backgroundColor: Colors.redAccent)); return; }
+                if (newPass != confirmPassCtrl.text.trim()) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.text('password_mismatch')), backgroundColor: Colors.redAccent)); return; }
                 String? error = await AuthService().changePassword(oldPass, newPass);
                 // context ở đây là context của State -> guard bằng mounted của State
                 if (!mounted) return;
                 if (error == null) {
                   oldPassCtrl.clear(); newPassCtrl.clear(); confirmPassCtrl.clear();
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đổi mật khẩu thành công!'), backgroundColor: Color(0xFF00A651)));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.text('password_change_success')), backgroundColor: const Color(0xFF00A651)));
                 } else { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.redAccent)); }
               },
-              child: const Text('Cập nhật mật khẩu', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: Text(t.text('update_password_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           )
         ],
@@ -3261,14 +3376,19 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
   }
 
   Widget _buildInfoTab(Color textMain, Color textSub, bool isGlass) {
+    final t = AppTranslations.of(context);
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] Tên thương hiệu "TK_IOT CloudPlatform", số phiên bản "3.0.1
+    // (Stable)", giá trị kỹ thuật "MQTT Core Golang (Armbian)" và dòng bản quyền "© 2026 Tuan
+    // Kiet Solutions." KHÔNG dịch — đây là tên riêng/số liệu thật, không phải câu UI chung.
+    // Chỉ NHÃN đứng trước (Phiên bản/Máy chủ/Bản quyền) được bọc AppTranslations.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Center(child: Column(children: [Container(width: 80, height: 80, decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(20)), child: Icon(Icons.home_rounded, color: tkGreen, size: 48)), const SizedBox(height: 16), Text('TK_IOT CloudPlatform', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.w900, shadows: sh)), Text('Phiên bản 3.0.1 (Stable)', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w500, shadows: sh))])),
+        Center(child: Column(children: [Container(width: 80, height: 80, decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(20)), child: Icon(Icons.home_rounded, color: tkGreen, size: 48)), const SizedBox(height: 16), Text('TK_IOT CloudPlatform', style: TextStyle(color: textMain, fontSize: 20, fontWeight: FontWeight.w900, shadows: sh)), Text('${t.text('app_version_label')} 3.0.1 (Stable)', style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w500, shadows: sh))])),
         const SizedBox(height: 40),
-        ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.dns, color: textSub), title: Text('Máy chủ', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('MQTT Core Golang (Armbian)', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
-        ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.copyright, color: textSub), title: Text('Bản quyền', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('© 2026 Tuan Kiet Solutions.', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
+        ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.dns, color: textSub), title: Text(t.text('server'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('MQTT Core Golang (Armbian)', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
+        ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.copyright, color: textSub), title: Text(t.text('copyright'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('© 2026 Tuan Kiet Solutions.', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
       ],
     );
   }
@@ -3432,6 +3552,7 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final bool offline = widget.isOffline;
+    final t = AppTranslations.of(context);
     // Ngoại tuyến: ép toàn thẻ về tông xám mờ (Greyscale), bỏ qua màu bật/tắt
     final Color bgColor = offline
         ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200)
@@ -3460,7 +3581,7 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
                   if (widget.isGroup && !widget.isSelected)
                     Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.purpleAccent.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(8)), child: const Text('NHÓM', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w900)))),
                   // Nhãn "Ngoại tuyến" nhỏ ở góc phải trên khi mất kết nối
-                  if (offline && !widget.isSelected) Positioned(top: 10, right: 8, child: Text('Ngoại tuyến', style: TextStyle(color: Colors.grey.withValues(alpha: 0.9), fontSize: 9, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic))),
+                  if (offline && !widget.isSelected) Positioned(top: 10, right: 8, child: Text(t.text('offline'), style: TextStyle(color: Colors.grey.withValues(alpha: 0.9), fontSize: 9, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic))),
                   if (widget.isSelected) Positioned(top: 8, right: 8, child: Container(padding: const EdgeInsets.all(2), decoration: BoxDecoration(color: tkGreen, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.check, color: Colors.white, size: 14))),
                   // Nút tổng: icon "power" viền tròn nổi bật; kênh lẻ: power thường
                   Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Icon(widget.isMaster ? Icons.settings_power_rounded : Icons.power_settings_new_rounded, color: powerIconColor, size: 36))),
@@ -3557,11 +3678,21 @@ class _SmartFanCardState extends State<SmartFanCard> {
     final bool offline = widget.isOffline;
     bool isOnline = speed > 0 && !offline, isSwingActive = swing && isOnline;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A), textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
 
     return Container(
       width: double.infinity, constraints: const BoxConstraints(maxWidth: 450),
-      child: AppContainer(
+      // [FIX BO GÓC] AppContainer (chế độ KHÔNG kính) chỉ vẽ BoxDecoration.borderRadius —
+      // KHÔNG tự clip nội dung con, nên nút "Xoay"/dải nút tốc độ bên trong (Material/InkWell
+      // riêng, có ripple splash) có thể tràn nét vuông ra ngoài góc bo của thẻ. Bọc thêm
+      // ClipRRect cùng bán kính với AppContainer bên dưới để ép MỌI nội dung con cắt đúng
+      // theo góc bo — khớp chuẩn 16px đã dùng ở SmartSwitchCard (ClipRRect + circular(16)).
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: AppContainer(
         padding: const EdgeInsets.all(20),
+        borderRadius: BorderRadius.circular(16),
         // Ngoại tuyến: toàn thẻ mờ xám (Greyscale); đang ẩn (xem qua bộ lọc thiết bị ẩn):
         // mờ nhẹ để phân biệt — nút menu (...) vẫn bấm được để hiện lại/xóa
         child: Opacity(
@@ -3581,7 +3712,9 @@ class _SmartFanCardState extends State<SmartFanCard> {
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(widget.backendName ?? 'Quạt thông minh', style: TextStyle(color: offline ? Colors.grey : textMain, fontSize: 16, fontWeight: FontWeight.w900)),
                     const SizedBox(height: 4),
-                    Text(offline ? 'Ngoại tuyến' : (isOnline ? 'Đang bật • Số $speed' : 'Đã tắt'), style: TextStyle(color: offline ? Colors.grey : (isOnline ? tkGreen : textSub), fontSize: 13, fontWeight: FontWeight.w600, fontStyle: offline ? FontStyle.italic : FontStyle.normal))
+                    // [GIỮ NGUYÊN BIẾN ĐỘNG] "Số $speed" — số thứ tự tốc độ quạt, KHÔNG dịch
+                    // (đúng yêu cầu); chỉ 2 từ trạng thái Đang bật/Đã tắt/Ngoại tuyến được dịch.
+                    Text(offline ? t.text('offline') : (isOnline ? '${t.text('turned_on')} • Số $speed' : t.text('turned_off')), style: TextStyle(color: offline ? Colors.grey : (isOnline ? tkGreen : textSub), fontSize: 13, fontWeight: FontWeight.w600, fontStyle: offline ? FontStyle.italic : FontStyle.normal))
                   ])),
                   IconButton(icon: Icon(Icons.more_vert, color: textSub, size: 22), onPressed: () => _showDeviceOptions(context, isDark), splashRadius: 20)
                 ],
@@ -3600,6 +3733,7 @@ class _SmartFanCardState extends State<SmartFanCard> {
               )
             ],
           ),
+        ),
         ),
       ),
     );
@@ -3658,6 +3792,7 @@ class SmartSensorCard extends StatelessWidget {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
 
     Widget reading(IconData icon, String? value, String unit, Color color) => Expanded(
       child: Column(
@@ -3695,7 +3830,7 @@ class SmartSensorCard extends StatelessWidget {
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(name, style: TextStyle(color: isOffline ? Colors.grey : textMain, fontSize: 16, fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 4),
-                    Text(isOffline ? 'Ngoại tuyến' : 'Cảm biến môi trường', style: TextStyle(color: isOffline ? Colors.grey : tkGreen, fontSize: 13, fontWeight: FontWeight.w600, fontStyle: isOffline ? FontStyle.italic : FontStyle.normal)),
+                    Text(isOffline ? t.text('offline') : 'Cảm biến môi trường', style: TextStyle(color: isOffline ? Colors.grey : tkGreen, fontSize: 13, fontWeight: FontWeight.w600, fontStyle: isOffline ? FontStyle.italic : FontStyle.normal)),
                   ])),
                   // [REFACTOR] Nút 3 chấm nay gọi DeviceMenuHelper dùng chung (đủ Cài đặt/Đổi tên/
                   // Ẩn/Chuyển nhà/Xóa) — cảm biến tự có full tính năng Admin mà không chép menu.
@@ -3809,6 +3944,10 @@ class DeviceSettingsPopup extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    // An toàn: build() của StatelessWidget này LÀ 1 pha build thật -> context.watch() nội bộ
+    // của AppTranslations.of() hợp lệ; các closure bên dưới (kể cả trong ListenableBuilder)
+    // dùng lại biến `t` này qua closure capture, không cần gọi lại .of(context) lần nữa.
+    final t = AppTranslations.of(context);
 
     // ---- BÓC GÓI SYSTEM THẬT TỪ REST (device_system:{mac} do firmware tự khai) ----
     final sysWrap = _asMap(rawDeviceData['system_data']);
@@ -3873,7 +4012,7 @@ class DeviceSettingsPopup extends StatelessWidget {
                                 Row(children: [
                                   Container(width: 8, height: 8, decoration: BoxDecoration(color: online ? tkGreen : Colors.grey, shape: BoxShape.circle)),
                                   const SizedBox(width: 6),
-                                  Text(online ? 'Trực tuyến' : 'Ngoại tuyến', style: TextStyle(color: online ? tkGreen : Colors.grey, fontSize: 12, fontWeight: FontWeight.w700)),
+                                  Text(online ? t.text('online') : t.text('offline'), style: TextStyle(color: online ? tkGreen : Colors.grey, fontSize: 12, fontWeight: FontWeight.w700)),
                                 ]),
                               ],
                             ),
@@ -3885,7 +4024,7 @@ class DeviceSettingsPopup extends StatelessWidget {
                       // ---------- CỤM ĐIỀU KHIỂN QUẠT (đồng bộ hệt thẻ ngoài lưới) ----------
                       if (fanEndpoint != null) ...[
                         const SizedBox(height: 20),
-                        Text('ĐIỀU KHIỂN QUẠT', style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        Text(t.text('fan_control_header'), style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         const SizedBox(height: 10),
                         Builder(builder: (context) {
                           final int speed = live?.speedOf(fanEndpoint!) ?? 0;
@@ -3931,13 +4070,14 @@ class DeviceSettingsPopup extends StatelessWidget {
 
                       // ---------- THÔNG SỐ KỸ THUẬT THẬT (không mock) ----------
                       const SizedBox(height: 20),
-                      Text('THÔNG SỐ KỸ THUẬT', style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      Text(t.text('technical_specs_header'), style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                       const SizedBox(height: 6),
-                      specRow(Icons.qr_code_2_rounded, 'Địa chỉ MAC / Serial', mac),
-                      specRow(Icons.lan_rounded, 'Địa chỉ IP LAN', ip),
-                      specRow(Icons.network_check_rounded, 'Cường độ sóng (RSSI)', rssi),
-                      specRow(Icons.wifi_rounded, 'Mạng Wi-Fi kết nối', ssid.isEmpty ? '—' : ssid),
-                      if (fwType.isNotEmpty) specRow(Icons.memory_rounded, 'Dòng firmware', fwType),
+                      // [GIỮ NGUYÊN BIẾN ĐỘNG] mac/ip/rssi/ssid/fwType — giá trị thật từ thiết bị, chỉ nhãn dịch.
+                      specRow(Icons.qr_code_2_rounded, t.text('mac_serial_label'), mac),
+                      specRow(Icons.lan_rounded, t.text('lan_ip_label'), ip),
+                      specRow(Icons.network_check_rounded, t.text('rssi_label'), rssi),
+                      specRow(Icons.wifi_rounded, t.text('connected_wifi_label'), ssid.isEmpty ? '—' : ssid),
+                      if (fwType.isNotEmpty) specRow(Icons.memory_rounded, t.text('firmware_branch_label'), fwType),
 
                       // ---------- TRẠNG THÁI KHI CÓ ĐIỆN (chỉ thiết bị có relay) ----------
                       // Cảm biến không có relay, Hub điều khiển thiết bị RF (tự nhớ qua LittleFS)
@@ -3973,13 +4113,13 @@ class DeviceSettingsPopup extends StatelessWidget {
                             TextButton.icon(
                               onPressed: () { Navigator.pop(context); onRename!(); },
                               icon: Icon(Icons.edit_rounded, size: 18, color: textSub),
-                              label: Text('Sửa tên', style: TextStyle(color: textSub, fontWeight: FontWeight.w600)),
+                              label: Text(t.text('rename_short_btn'), style: TextStyle(color: textSub, fontWeight: FontWeight.w600)),
                             ),
                           const SizedBox(width: 8),
                           ElevatedButton(
                             style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                             onPressed: () => Navigator.pop(context),
-                            child: const Text('Đóng', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            child: Text(t.text('close'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                           ),
                         ],
                       ),
@@ -4016,10 +4156,11 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
   late int _mode;
   bool _saving = false;
 
-  static const Map<int, String> _labels = {
-    0: 'Nhớ trạng thái cũ',
-    1: 'Luôn Tắt',
-    2: 'Luôn Bật',
+  // [ĐA NGÔN NGỮ] Không còn const — nhãn phải tra theo ngôn ngữ hiện tại, xem _labels(t).
+  Map<int, String> _labels(AppTranslations t) => {
+    0: t.text('remember_state_option'),
+    1: t.text('always_off_option'),
+    2: t.text('always_on_option'),
   };
 
   @override
@@ -4030,6 +4171,8 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
 
   Future<void> _change(int? newMode) async {
     if (newMode == null || newMode == _mode || _saving) return;
+    // Gọi từ DropdownButton.onChanged (tap handler) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
     final int oldMode = _mode;
     // Đổi giao diện trước cho mượt, nhưng LƯU THẬT qua API — thất bại thì trả về như cũ
     setState(() { _mode = newMode; _saving = true; });
@@ -4038,7 +4181,7 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
     setState(() => _saving = false);
     if (ok) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Đã lưu "Khi có điện lại: ${_labels[newMode]}" — mạch áp dụng từ lần mất điện kế tiếp.'),
+        content: Text('Đã lưu "Khi có điện lại: ${_labels(t)[newMode]}" — mạch áp dụng từ lần mất điện kế tiếp.'),
         backgroundColor: const Color(0xFF00A651),
       ));
     } else {
@@ -4054,12 +4197,13 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
   Widget build(BuildContext context) {
     final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
       leading: Icon(Icons.power_rounded, color: textSub, size: 20),
-      title: Text('Khi có điện lại', style: TextStyle(color: textMain, fontSize: 14)),
-      subtitle: Text('Trạng thái relay sau khi mất điện', style: TextStyle(color: textSub, fontSize: 11)),
+      title: Text(t.text('power_on_state_label'), style: TextStyle(color: textMain, fontSize: 14)),
+      subtitle: Text(t.text('relay_state_after_loss_label'), style: TextStyle(color: textSub, fontSize: 11)),
       trailing: _saving
           ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
           : DropdownButton<int>(
@@ -4068,7 +4212,7 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
               borderRadius: BorderRadius.circular(12),
               dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
               style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
-              items: _labels.entries
+              items: _labels(t).entries
                   .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
                   .toList(),
               onChanged: _change,
@@ -4211,6 +4355,7 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
     return ListenableBuilder(
       listenable: widget.provider,
       builder: (context, _) {
+        final t = AppTranslations.of(context);
         final device = widget.provider.deviceOf(widget.mac);
         final int? progress = device?.otaProgress;
         final bool inProgress = _updating && progress != null && progress >= 0 && progress < 100;
@@ -4238,7 +4383,7 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
           trailing = TextButton(
             onPressed: _checkUpdate,
             style: TextButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-            child: Text('Kiểm tra cập nhật', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+            child: Text(t.text('check_update_btn'), style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
           );
         }
 

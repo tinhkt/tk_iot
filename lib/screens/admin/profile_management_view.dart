@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../providers/theme_provider.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 
 class ProfileManagementView extends StatefulWidget {
   final String currentRole;
@@ -162,6 +163,7 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
     final Color textSub = isGlass ? Colors.white70 : (isDark ? Colors.white54 : const Color(0xFF64748B));
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     final bool isSuperUser = widget.currentRole == 'SUPER_USER';
+    final t = AppTranslations.of(context);
 
     if (_isLoading) return Center(child: CircularProgressIndicator(color: tkGreen));
 
@@ -177,10 +179,10 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _editingEmail == widget.currentEmail ? 'Hồ sơ của tôi' : 'Chỉnh sửa tài khoản hệ thống',
+                  _editingEmail == widget.currentEmail ? t.text('my_profile') : t.text('edit_system_account'),
                   style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.bold, shadows: sh),
                 ),
-                Text('Cập nhật đầy đủ thông tin hành chính và phương thức liên hệ.', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)),
+                Text(t.text('profile_desc'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)),
                 const SizedBox(height: 32),
                 
                 // KHU VỰC THAY ĐỔI AVATAR
@@ -216,14 +218,14 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                 const SizedBox(height: 32),
 
                 // CÁC TRƯỜNG NHẬP LIỆU CHI TIẾT
-                _buildField('Tài khoản Email (Cố định)', TextEditingController(text: _editingEmail), Icons.email_outlined, enabled: false, isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
+                _buildField(t.text('email_fixed'), TextEditingController(text: _editingEmail), Icons.email_outlined, enabled: false, isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Họ tên / Tên Công ty', _nameCtrl, Icons.business_rounded, hint: 'Nhập tên thực thể vận hành', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
+                _buildField(t.text('full_name_company'), _nameCtrl, Icons.business_rounded, hint: t.text('full_name_hint'), isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Số điện thoại liên hệ', _phoneCtrl, Icons.phone_android_rounded, hint: 'Số hotline hoặc sđt cá nhân', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
+                _buildField(t.text('phone_number'), _phoneCtrl, Icons.phone_android_rounded, hint: t.text('phone_hint'), isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Địa chỉ văn phòng / Nhà ở', _addressCtrl, Icons.location_on_outlined, hint: 'Nhập địa chỉ chi tiết', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
-                
+                _buildField(t.text('address'), _addressCtrl, Icons.location_on_outlined, hint: t.text('address_hint'), isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
+
                 const SizedBox(height: 32),
                 SizedBox(
                   width: double.infinity,
@@ -231,12 +233,12 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                     onPressed: _isSaving ? null : _saveProfile,
-                    child: _isSaving 
+                    child: _isSaving
                         ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                        : const Text('CẬP NHẬT THÔNG TIN HỒ SƠ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        : Text(t.text('update_profile_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 ),
-                
+
                 // Nút quay về sửa chính mình
                 if (_editingEmail != widget.currentEmail) ...[
                   const SizedBox(height: 12),
@@ -244,7 +246,7 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                     style: TextButton.styleFrom(foregroundColor: textSub),
                     onPressed: _loadInitialData,
                     icon: const Icon(Icons.arrow_back, size: 16),
-                    label: const Text('Quay lại sửa hồ sơ cá nhân của tôi'),
+                    label: Text(t.text('back_to_my_profile')),
                   )
                 ]
               ],
@@ -263,8 +265,8 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Hồ sơ toàn hệ thống', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold, shadows: sh)),
-                  Text('Bấm vào một tài khoản để sửa đổi thông tin của họ.', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
+                  Text(t.text('system_wide_profiles'), style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold, shadows: sh)),
+                  Text(t.text('tap_to_edit_account'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
                   const SizedBox(height: 20),
                   Expanded(
                     child: ListView.separated(
@@ -283,7 +285,7 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                             child: Icon(Icons.person, color: isTarget ? Colors.white : Colors.blue, size: 18),
                           ),
                           title: Text(u['email'], style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold, shadows: sh), maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('Quyền: ${u['role'] ?? 'USER'}', style: TextStyle(fontSize: 11, color: textSub, fontWeight: FontWeight.w500, shadows: sh)),
+                          subtitle: Text('${t.text('role_label')}: ${u['role'] ?? 'USER'}', style: TextStyle(fontSize: 11, color: textSub, fontWeight: FontWeight.w500, shadows: sh)),
                           trailing: const Icon(Icons.edit_note_rounded, size: 18),
                           onTap: () => _selectUserToEdit(u),
                         );

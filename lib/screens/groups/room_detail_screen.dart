@@ -4,6 +4,7 @@ import '../../providers/device_provider.dart';
 import '../../providers/room_group_provider.dart';
 import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
+import '../../localization/app_translations.dart';
 
 /// RoomDetailScreen — Chi tiết MỘT phòng: danh sách thiết bị đang thuộc phòng
 /// (VUỐT sang trái hoặc bấm nút gỡ để xóa khỏi phòng), nút "Thêm thiết bị" mở
@@ -40,6 +41,7 @@ class RoomDetailScreen extends StatelessWidget {
       builder: (context, roomProvider, deviceProvider, _) {
         final macs = roomProvider.devicesInRoom(roomId);
         final String roomName = roomProvider.roomName(roomId);
+        final t = AppTranslations.of(context);
 
         return AppScaffold(
           backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
@@ -53,13 +55,13 @@ class RoomDetailScreen extends StatelessWidget {
             backgroundColor: tkGreen,
             foregroundColor: Colors.white,
             icon: const Icon(Icons.add),
-            label: const Text('Thêm thiết bị'),
+            label: Text(t.text('add_device_label')),
             onPressed: () => _pickDevices(context, roomProvider, deviceProvider),
           ),
           body: SafeArea(
             child: macs.isEmpty
                 ? Center(
-                    child: Text('Phòng chưa có thiết bị nào.\nBấm "Thêm thiết bị" để gán vào phòng.',
+                    child: Text(t.text('no_devices_in_room'),
                         textAlign: TextAlign.center, style: TextStyle(color: textSub)),
                   )
                 : ListView.separated(
@@ -75,10 +77,10 @@ class RoomDetailScreen extends StatelessWidget {
                           alignment: Alignment.centerRight,
                           padding: const EdgeInsets.symmetric(horizontal: 24),
                           decoration: BoxDecoration(color: Colors.redAccent, borderRadius: BorderRadius.circular(14)),
-                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                            Text('Gỡ khỏi phòng', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                            SizedBox(width: 8),
-                            Icon(Icons.remove_circle_outline, color: Colors.white),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Text(t.text('remove_from_room'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.remove_circle_outline, color: Colors.white),
                           ]),
                         ),
                         onDismissed: (_) => _removeDevice(context, roomProvider, deviceProvider, mac, roomName),
@@ -97,7 +99,7 @@ class RoomDetailScreen extends StatelessWidget {
                             subtitle: Text(mac, maxLines: 1, overflow: TextOverflow.ellipsis,
                                 style: TextStyle(color: textSub, fontSize: 11)),
                             trailing: IconButton(
-                              tooltip: 'Gỡ khỏi phòng',
+                              tooltip: t.text('remove_from_room'),
                               icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
                               onPressed: () => _removeDevice(context, roomProvider, deviceProvider, mac, roomName),
                             ),
@@ -126,17 +128,20 @@ class RoomDetailScreen extends StatelessWidget {
   /// Picker chọn thiết bị CHƯA thuộc phòng nào — [KÍNH MỜ ĐỒNG BỘ] qua showGlassPopup
   /// (PC: dialog giữa màn hình; Mobile: sheet). Màu chữ kế thừa panel kính (ép tương phản).
   void _pickDevices(BuildContext context, RoomGroupProvider roomProvider, DeviceProvider deviceProvider) {
+    // Gọi từ FAB onPressed (tap handler) -> listen: false, tránh "liệt nút" (xem giải thích ở
+    // app_translations.dart).
+    final t = AppTranslations.of(context, listen: false);
     final candidates = deviceProvider.devices.keys
         .where((mac) => roomProvider.roomOf(mac) == null && !roomProvider.isGroupMac(mac))
         .toList();
 
     showGlassPopup(
       context,
-      title: 'Chọn thiết bị thêm vào phòng',
+      title: t.text('pick_devices_title'),
       body: (ctx) => candidates.isEmpty
-          ? const Padding(
-              padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
-              child: Text('Không còn thiết bị trống — tất cả đã thuộc một phòng.'),
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+              child: Text(t.text('no_unassigned_devices')),
             )
           : ListView.builder(
               shrinkWrap: true,

@@ -128,6 +128,9 @@ class HomeProvider extends ChangeNotifier {
           'address': m['address'] ?? 'Chưa cập nhật địa chỉ',
           'owner_email': m['owner_email'] ?? m['owner'] ?? 'Chưa xác định',
           'devices_count': m['devices_count'] ?? 0,
+          // [SỐ CÔNG TẮC] switches_count do GetHomesHandler (server.go) tính động — tổng
+          // endpoint thật (S_{mac}, S_{mac}_N...) của mọi thiết bị trong nhà, KHÔNG phải số MAC.
+          'switches_count': m['switches_count'] ?? 0,
           'members_count': m['members_count'] ?? 1,
           'my_role': m['my_role'] ?? 'OWNER',
           'status': m['status'] ?? 'ACCEPTED',

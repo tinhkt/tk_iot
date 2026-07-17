@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../providers/device_provider.dart';
 import '../../services/schedule_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import '../../localization/app_translations.dart';
 import 'create_automation_screen.dart';
 
 /// AddSceneOrScheduleScreen — Popup "Thêm mới" GỘP 2 loại: Ngữ cảnh (Scene) và Lịch trình
@@ -22,6 +23,7 @@ class AddSceneOrScheduleScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final t = AppTranslations.of(context);
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : Colors.black87;
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
@@ -32,7 +34,7 @@ class AddSceneOrScheduleScreen extends StatelessWidget {
       child: AppScaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
-          title: const Text('Thêm mới'),
+          title: Text(t.text('add_new_title')),
           backgroundColor: Colors.transparent,
           foregroundColor: textMain,
           elevation: 0,
@@ -40,9 +42,9 @@ class AddSceneOrScheduleScreen extends StatelessWidget {
             indicatorColor: tkGreen,
             labelColor: tkGreen,
             unselectedLabelColor: textSub,
-            tabs: const [
-              Tab(icon: Icon(Icons.auto_awesome), text: 'Ngữ cảnh'),
-              Tab(icon: Icon(Icons.event_repeat), text: 'Lịch trình'),
+            tabs: [
+              Tab(icon: const Icon(Icons.auto_awesome), text: t.text('routines')),
+              Tab(icon: const Icon(Icons.event_repeat), text: t.text('schedule_tab')),
             ],
           ),
         ),
@@ -141,12 +143,16 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
   }
 
   Future<void> _save() async {
+    // [SỬA LỖI LIỆT NÚT] context.watch() được Provider assert bằng cờ TOÀN CỤC
+    // context.owner!.debugBuilding — luôn false khi đang xử lý sự kiện chạm, kể cả TRƯỚC
+    // await đầu tiên. Gọi listen:true ở đây từng khiến nút Lưu lịch trình bấm không phản ứng.
+    final t = AppTranslations.of(context, listen: false);
     if (_selectedMac == null || _selectedEndpoint == null || _selectedEndpoint!.isEmpty) {
-      _snack('Hãy chọn thiết bị và nút/kênh cụ thể', isError: true);
+      _snack(t.text('pick_device_channel_error'), isError: true);
       return;
     }
     if (_actionKind == 'custom' && _customValueCtrl.text.trim().isEmpty) {
-      _snack('Hãy nhập Value cho hành động tùy chỉnh', isError: true);
+      _snack(t.text('pick_custom_value_error'), isError: true);
       return;
     }
     setState(() => _saving = true);
@@ -219,6 +225,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
 
   @override
   Widget build(BuildContext context) {
+    final t = AppTranslations.of(context);
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : Colors.black87;
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
@@ -279,14 +286,14 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _sectionCard(cardColor, [
-                Text('Thiết bị & kênh', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
+                Text(t.text('device_and_channel'), style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
                 const SizedBox(height: 10),
                 // [FORM SWEEP] DropdownButtonFormField -> AppDropdown. Dropdown 1: Thiết bị
                 // (KHÔNG cascading — danh sách macList không phụ thuộc lựa chọn nào khác nên
                 // không cần key: ValueKey).
                 AppDropdown<String>(
                   value: macList.contains(_selectedMac) ? _selectedMac : null,
-                  labelText: 'Chọn thiết bị',
+                  labelText: t.text('pick_device'),
                   prefixIcon: Icon(Icons.devices_other_rounded, color: textSub, size: 20),
                   items: [
                     for (final mac in macList)
@@ -311,7 +318,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                   AppDropdown<String>(
                     key: ValueKey('ep-$_selectedMac'),
                     value: endpoints.contains(_selectedEndpoint) ? _selectedEndpoint : null,
-                    labelText: 'Chọn nút / kênh',
+                    labelText: t.text('pick_channel'),
                     prefixIcon: Icon(Icons.toggle_on_outlined, color: textSub, size: 20),
                     items: [
                       for (final ep in endpoints)
@@ -338,8 +345,8 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                         Expanded(
                           child: Text(
                             endpoints.isEmpty
-                                ? 'Thiết bị này chưa ghi nhận kênh điều khiển nào — lịch sẽ áp dụng cho cả thiết bị.'
-                                : 'Thiết bị này chỉ có 1 kênh điều khiển — tự động áp dụng cho "${deviceProvider.displayNameOfEndpoint(_selectedMac!, endpoints.first, fallback: endpoints.first)}".',
+                                ? t.text('no_channels_info')
+                                : '${t.text('single_channel_info_prefix')}${deviceProvider.displayNameOfEndpoint(_selectedMac!, endpoints.first, fallback: endpoints.first)}".',
                             style: TextStyle(color: textSub, fontSize: 12),
                           ),
                         ),
@@ -350,7 +357,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
               const SizedBox(height: 16),
 
               _sectionCard(cardColor, [
-                Text('Hành động', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
+                Text(t.text('action_label'), style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
                 const SizedBox(height: 8),
                 // [YÊU CẦU 3 — ACTION MAPPING] Kênh phức tạp (quạt: có _speed và/hoặc _swing)
                 // -> cho chọn LOẠI hành động trước; kênh công tắc/relay đơn giản -> giữ nguyên
@@ -358,10 +365,10 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                 if (isComplexChannel) ...[
                   SegmentedButton<String>(
                     segments: [
-                      const ButtonSegment(value: 'set', icon: Icon(Icons.power_settings_new), label: Text('Bật/Tắt')),
-                      if (hasSpeed) const ButtonSegment(value: 'speed', icon: Icon(Icons.speed), label: Text('Tốc độ')),
-                      if (hasSwing) const ButtonSegment(value: 'osc', icon: Icon(Icons.autorenew), label: Text('Đảo gió')),
-                      const ButtonSegment(value: 'custom', icon: Icon(Icons.edit_note), label: Text('Tùy chỉnh')),
+                      ButtonSegment(value: 'set', icon: const Icon(Icons.power_settings_new), label: Text(t.text('toggle_segment'))),
+                      if (hasSpeed) ButtonSegment(value: 'speed', icon: const Icon(Icons.speed), label: Text(t.text('speed_segment'))),
+                      if (hasSwing) ButtonSegment(value: 'osc', icon: const Icon(Icons.autorenew), label: Text(t.text('swing_segment'))),
+                      ButtonSegment(value: 'custom', icon: const Icon(Icons.edit_note), label: Text(t.text('custom_segment'))),
                     ],
                     selected: {_actionKind},
                     onSelectionChanged: (s) => setState(() => _actionKind = s.first),
@@ -387,8 +394,8 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                     controller: _customValueCtrl,
                     style: TextStyle(color: textMain),
                     decoration: InputDecoration(
-                      labelText: 'Value tùy chỉnh',
-                      helperText: 'Giá trị thô gửi thẳng xuống thiết bị (vd: "2", "swing", "45")',
+                      labelText: t.text('custom_value_label'),
+                      helperText: t.text('custom_value_helper'),
                       labelStyle: TextStyle(color: textSub),
                       helperStyle: TextStyle(color: textSub, fontSize: 11),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
@@ -399,8 +406,8 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                   // chỉ khác nhãn hiển thị.
                   SegmentedButton<bool>(
                     segments: [
-                      ButtonSegment(value: true, icon: const Icon(Icons.power_settings_new), label: Text(_actionKind == 'osc' ? 'Đảo gió' : 'Bật')),
-                      ButtonSegment(value: false, icon: const Icon(Icons.power_off), label: Text(_actionKind == 'osc' ? 'Đứng yên' : 'Tắt')),
+                      ButtonSegment(value: true, icon: const Icon(Icons.power_settings_new), label: Text(_actionKind == 'osc' ? t.text('swing_segment') : t.text('turn_on_segment'))),
+                      ButtonSegment(value: false, icon: const Icon(Icons.power_off), label: Text(_actionKind == 'osc' ? t.text('standing_still') : t.text('turn_off_segment'))),
                     ],
                     selected: {_turnOn},
                     onSelectionChanged: (s) => setState(() => _turnOn = s.first),
@@ -410,12 +417,12 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
               const SizedBox(height: 16),
 
               _sectionCard(cardColor, [
-                Text('Kiểu lịch', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
+                Text(t.text('schedule_type_label'), style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
                 const SizedBox(height: 8),
                 SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, icon: Icon(Icons.access_time), label: Text('Giờ cố định')),
-                    ButtonSegment(value: true, icon: Icon(Icons.timelapse), label: Text('Đếm ngược')),
+                  segments: [
+                    ButtonSegment(value: false, icon: const Icon(Icons.access_time), label: Text(t.text('fixed_time'))),
+                    ButtonSegment(value: true, icon: const Icon(Icons.timelapse), label: Text(t.text('countdown'))),
                   ],
                   selected: {_isCountdown},
                   // Sửa lịch luôn khóa ở Cron — 2 bảng dữ liệu Backend hoàn toàn khác nhau,
@@ -428,7 +435,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.access_time, color: tkGreen),
-                    title: Text('Thời gian', style: TextStyle(color: textSub, fontSize: 12)),
+                    title: Text(t.text('time_label'), style: TextStyle(color: textSub, fontSize: 12)),
                     subtitle: Text(
                       '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}',
                       style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.bold),
@@ -440,7 +447,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                     },
                   ),
                   const SizedBox(height: 4),
-                  Text('Lặp lại', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold)),
+                  Text(t.text('repeat_label'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -487,7 +494,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                   icon: _saving
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.save_outlined),
-                  label: Text(_isEditing ? 'Lưu thay đổi' : (_isCountdown ? 'Bắt đầu đếm ngược' : 'Thêm lịch trình')),
+                  label: Text(_isEditing ? t.text('save_changes') : (_isCountdown ? t.text('start_countdown') : t.text('add_schedule'))),
                   onPressed: _saving ? null : _save,
                 ),
               ),

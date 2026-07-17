@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/automation_provider.dart';
 import '../providers/device_provider.dart';
+import '../localization/app_translations.dart';
 import 'glass_popup.dart';
 
 /// scene_step_pickers — Bộ picker chọn Hành động (THÌ) / Điều kiện (NẾU) THẬT cho
@@ -414,29 +415,35 @@ String _fmtNum(num v) => v == v.roundToDouble() ? v.round().toString() : v.toStr
 /// Params khớp Sensor Trigger Engine (edge-trigger) phía Backend:
 /// {"type":"sensor","mac","endpoint","attribute":"temperature|humidity","operator":">|<|==","value":N}
 Future<SceneStep?> _pickSensorCondition(BuildContext context, _EndpointOption picked) async {
+  // Gọi từ chuỗi tap-handler (_pickCondition -> showConditionPicker -> _pickDeviceStateCondition
+  // -> đây) -> listen: false, tránh "liệt nút" (context.watch() ngoài pha build thật).
+  final t = AppTranslations.of(context, listen: false);
   final d = Provider.of<DeviceProvider>(context, listen: false).deviceOf(picked.mac);
   String? currentOf(String attr) => d?.telemetryOf(picked.endpoint, attr);
 
   // Bộ thuộc tính khả dụng: (id, nhãn, icon, đơn vị, ngưỡng mặc định)
   var attrs = <(String, String, IconData, String, double)>[
-    if (currentOf('temperature') != null) ('temperature', 'Nhiệt độ', Icons.thermostat, '°C', 30),
-    if (currentOf('humidity') != null) ('humidity', 'Độ ẩm', Icons.water_drop, '%', 80),
+    if (currentOf('temperature') != null) ('temperature', t.text('temp_attr_label'), Icons.thermostat, '°C', 30),
+    if (currentOf('humidity') != null) ('humidity', t.text('humidity_attr_label'), Icons.water_drop, '%', 80),
   ];
   // Cảm biến vừa cắm chưa báo số đo nào: vẫn cho cấu hình đủ 2 thuộc tính chuẩn DHT11
   if (attrs.isEmpty) {
     attrs = [
-      ('temperature', 'Nhiệt độ', Icons.thermostat, '°C', 30),
-      ('humidity', 'Độ ẩm', Icons.water_drop, '%', 80),
+      ('temperature', t.text('temp_attr_label'), Icons.thermostat, '°C', 30),
+      ('humidity', t.text('humidity_attr_label'), Icons.water_drop, '%', 80),
     ];
   }
 
   final Map<String, dynamic>? result = await _showGlassPicker<Map<String, dynamic>>(
     context,
-    title: 'Điều kiện cho "${picked.name}"',
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] picked.name (tên thiết bị/kênh) — chỉ câu văn quanh dịch.
+    title: '${t.text('condition_for_prefix')}${picked.name}"',
     body: (ctx) {
       final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
       final Color textMain = isDark ? Colors.white : Colors.black87;
       final Color hintColor = isDark ? Colors.white70 : Colors.black54;
+      // Builder body: (ctx) chạy TRONG pha build thật của route popup -> an toàn dùng ctx riêng.
+      final tIn = AppTranslations.of(ctx);
 
       var selected = attrs.first;
       String operator = '>';
@@ -496,7 +503,7 @@ Future<SceneStep?> _pickSensorCondition(BuildContext context, _EndpointOption pi
               dropdownColor: isDark ? const Color(0xFF2A2D31) : Colors.white,
               style: TextStyle(color: textMain, fontWeight: FontWeight.w600, fontSize: 15),
               decoration: InputDecoration(
-                labelText: 'Phép so sánh',
+                labelText: tIn.text('operator_label'),
                 labelStyle: TextStyle(color: hintColor),
                 enabledBorder: fieldBorder(textMain.withValues(alpha: 0.25)),
                 focusedBorder: fieldBorder(_tkGreen),
@@ -515,7 +522,7 @@ Future<SceneStep?> _pickSensorCondition(BuildContext context, _EndpointOption pi
               style: TextStyle(color: textMain, fontSize: 22, fontWeight: FontWeight.w800),
               textAlign: TextAlign.center,
               decoration: InputDecoration(
-                labelText: 'Ngưỡng ${selected.$2.toLowerCase()}',
+                labelText: selected.$1 == 'temperature' ? tIn.text('temp_threshold_label') : tIn.text('humidity_threshold_label'),
                 labelStyle: TextStyle(color: hintColor),
                 suffixText: selected.$4,
                 suffixStyle: TextStyle(color: textMain.withValues(alpha: 0.7), fontSize: 18, fontWeight: FontWeight.w700),
@@ -541,7 +548,7 @@ Future<SceneStep?> _pickSensorCondition(BuildContext context, _EndpointOption pi
                   }
                   Navigator.pop(ctx, {'attribute': selected.$1, 'operator': operator, 'value': value, 'label': selected.$2, 'unit': selected.$4});
                 },
-                child: const Text('Dùng điều kiện này', style: TextStyle(fontWeight: FontWeight.bold)),
+                child: Text(tIn.text('use_this_condition_btn'), style: const TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
           ]),
@@ -569,9 +576,10 @@ Future<SceneStep?> _pickSensorCondition(BuildContext context, _EndpointOption pi
 /// hoặc "đang ở đúng tốc độ N" (đi qua Sensor Trigger Engine với attribute:"speed",
 /// operator:"==" — backend bắn hook speed kèm mỗi gói state feedback của quạt).
 Future<SceneStep?> _pickFanTriggerCondition(BuildContext context, _EndpointOption picked) async {
+  // Gọi từ chuỗi tap-handler -> listen: false (cùng lý do _pickSensorCondition ở trên).
   final String? mode = await _showGlassPicker<String>(
     context,
-    title: 'Điều kiện cho "${picked.name}"',
+    title: '${AppTranslations.of(context, listen: false).text('condition_for_prefix')}${picked.name}"',
     body: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
       _optionTile(ctx, icon: Icons.power_settings_new, title: 'Trạng thái BẬT/TẮT',
           subtitle: 'Khi quạt được bật hoặc tắt hẳn', onTap: () => Navigator.pop(ctx, 'state')),
