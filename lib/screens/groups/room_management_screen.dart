@@ -140,6 +140,10 @@ class RoomManagementScreen extends StatelessWidget {
                         ]),
                         // Bấm cả khối -> mở chi tiết phòng (PC: dialog lớn giữ Sidebar; Mobile: push)
                         onTap: () => openAdaptiveScreen(context, RoomDetailScreen(roomId: room.id)),
+                        // [NHIỆM VỤ 1] Nhấn giữ -> xóa phòng — thêm SONG SONG với vuốt-xóa
+                        // (Dismissible) đã có, không đụng logic vuốt cũ. Hữu ích trên PC/chuột
+                        // (không có cử chỉ vuốt) hoặc khi thẻ nằm trong layout không hỗ trợ vuốt.
+                        onLongPress: () => _confirmDeleteRoomLongPress(context, provider, room),
                       ),
                     ),
                   ),
@@ -206,6 +210,50 @@ class RoomManagementScreen extends StatelessWidget {
       ),
     );
     return res ?? false;
+  }
+
+  // [NHIỆM VỤ 1 — NHẤN GIỮ ĐỂ XÓA] Dialog xác nhận riêng cho cử chỉ nhấn giữ (long-press) —
+  // nội dung gộp 1 câu hỏi + giải thích (khác cấu trúc title/body tách rời của
+  // _confirmDeleteRoom ở trên, vốn dùng cho vuốt-xóa) theo đúng yêu cầu. Xác nhận xong gọi
+  // THẲNG provider.deleteRoom — không đụng _confirmDeleteRoom/Dismissible hiện có.
+  Future<void> _confirmDeleteRoomLongPress(BuildContext context, RoomGroupProvider provider, Room room) async {
+    // Gọi từ ListTile.onLongPress (tap handler, không phải build pass) -> listen: false.
+    final t = AppTranslations.of(context, listen: false);
+    final confirm = await showAppDialog<bool>(
+          context: context,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(t.text('confirm_delete_title'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Text(t.text('delete_room_confirm')),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t.text('cancel'))),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: Text(t.text('delete')),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ) ??
+        false;
+    if (!confirm || !context.mounted) return;
+
+    final err = await provider.deleteRoom(room.id);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err), backgroundColor: Colors.redAccent));
+    }
   }
 
   // [KÍNH MỜ ĐỒNG BỘ] Popup nhập tên phòng — TextField an toàn bàn phím nhờ

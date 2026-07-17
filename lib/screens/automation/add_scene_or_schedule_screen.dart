@@ -226,6 +226,24 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
   @override
   Widget build(BuildContext context) {
     final t = AppTranslations.of(context);
+    // [MAPPING HIỂN THỊ] _repeatOptions vẫn giữ NGUYÊN giá trị tiếng Việt gốc (gửi thẳng
+    // xuống Backend làm 'repeat_days', so khớp với lịch trình đã lưu) — hàm này CHỈ ánh xạ
+    // sang nhãn hiển thị theo ngôn ngữ hiện tại, không đổi giá trị lưu/gửi đi.
+    String getRepeatLabel(String val) {
+      switch (val) {
+        case 'Một lần':
+          return t.text('repeat_once');
+        case 'Hàng ngày':
+          return t.text('repeat_daily');
+        case 'T2 - T6':
+          return t.text('repeat_weekdays');
+        case 'Cuối tuần':
+          return t.text('repeat_weekend');
+        default:
+          return val;
+      }
+    }
+
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : Colors.black87;
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
@@ -381,7 +399,9 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                     spacing: 8,
                     children: [1, 2, 3]
                         .map((n) => ChoiceChip(
-                              label: Text('Số $n'),
+                              // [MAPPING HIỂN THỊ] Chỉ đổi NHÃN hiển thị — _speedValue (int gửi
+                              // API) không hề đổi, vẫn nguyên giá trị 0..3 như trước.
+                              label: Text('${t.text('fan_speed_prefix')} $n'),
                               selected: _speedValue == n,
                               selectedColor: tkGreen.withValues(alpha: 0.2),
                               labelStyle: TextStyle(color: _speedValue == n ? tkGreen : null, fontWeight: FontWeight.w600),
@@ -454,7 +474,7 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                     runSpacing: 8,
                     children: _repeatOptions
                         .map((r) => ChoiceChip(
-                              label: Text(r),
+                              label: Text(getRepeatLabel(r)),
                               selected: _repeat == r,
                               selectedColor: tkGreen.withValues(alpha: 0.2),
                               labelStyle: TextStyle(color: _repeat == r ? tkGreen : null, fontWeight: FontWeight.w600),

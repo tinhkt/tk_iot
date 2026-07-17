@@ -477,6 +477,63 @@ class AppTranslations {
       'add_member_success': 'Đã thêm thành viên thành công',
       'removed_member_prefix': 'Đã xóa ',
       'removed_member_suffix': ' khỏi nhà',
+
+      // --- Đợt 8: Mapping hiển thị — Lặp lại/Tốc độ quạt/Popup Điều kiện/Gỡ thiết bị ---
+      'fan_speed_prefix': 'Số',
+      'choose_condition_title': 'Chọn điều kiện (NẾU...)',
+      'cond_time': 'Theo thời gian',
+      'cond_time_desc': 'Chạy vào một giờ cố định trong ngày',
+      'cond_device': 'Thiết bị thay đổi trạng thái',
+      'cond_device_desc': 'Công tắc BẬT/TẮT, hoặc cảm biến vượt ngưỡng nhiệt độ/độ ẩm',
+      'cond_weather': 'Thời tiết thay đổi',
+      'cond_weather_desc': 'Nhiệt độ vượt ngưỡng hoặc trời mưa',
+      'removed_success_1': 'Đã gỡ "',
+      'removed_success_2': '" khỏi phòng ',
+
+      // --- Đợt 10: Popup Chọn hành động (THÌ...) + nút Cập nhật OTA ---
+      'choose_action_title': 'Chọn hành động (THÌ...)',
+      'action_control_device': 'Điều khiển thiết bị',
+      'action_control_device_desc': 'Bật/Tắt một thiết bị thật trong nhà',
+      'action_send_noti': 'Gửi thông báo',
+      'action_delay': 'Chờ (Delay)',
+      'update_now': 'Cập nhật ngay',
+
+      // --- Đợt 11: Xóa phòng (nhấn giữ) ---
+      'delete_room_confirm': 'Bạn có chắc chắn muốn xóa phòng này không? Các thiết bị trong phòng sẽ được đưa về danh sách chung.',
+
+      // --- Đợt 11: Tách kênh (relay) khi thêm vào phòng ---
+      'channel_number_prefix': ' - Số ',
+      'pick_channels_hint': 'Tick chọn từng kênh muốn thêm vào phòng này (một thiết bị nhiều nút có thể chia vào các phòng khác nhau).',
+
+      // --- Đợt 12: Menu nhấn giữ — Ẩn khỏi Bảng điều khiển (hideLabel/hideSubtitle sót ở 3 thẻ) ---
+      'hide_from_dashboard': 'Ẩn khỏi Bảng điều khiển',
+      'hide_from_dashboard_desc': 'Vẫn hiển thị trong danh sách thiết bị',
+
+      // --- Đợt 13: Dialog Tạo nhóm công tắc + thanh Đa chọn ---
+      'create_group_title': 'Tạo nhóm công tắc',
+      'group_name_hint': 'Tên nhóm (vd: Đèn toàn nhà)',
+      'choose_icon_label': 'Chọn biểu tượng:',
+      'group_type_label': 'Loại nhóm:',
+      'type_normal': 'Thường',
+      'type_stair': 'Cầu thang',
+      'type_fan': 'Quạt',
+      'btn_create_group': 'Tạo nhóm',
+      'selected_count': 'Đã chọn ',
+
+      // --- Đợt 14: Menu nhấn giữ — mục đặc thù công tắc (Chọn nhiều/Xem thiết bị ẩn) ---
+      'select_multiple_devices': 'Chọn nhiều thiết bị',
+      'close_hidden_view': 'Đóng chế độ xem thiết bị ẩn',
+      'show_hidden_devices': 'Hiển thị các thiết bị đã ẩn',
+
+      // --- Đợt 17: Thời tiết GPS — trạng thái ---
+      // [ĐỢT 19] 'refresh_location_tooltip' đã XÓA — nút làm mới vị trí thủ công bị thay bằng
+      // Text địa danh tự động (_locationName), key không còn nơi nào dùng.
+      'weather_clear': 'Nắng',
+      'weather_clouds': 'Nhiều mây',
+      'weather_rain': 'Mưa',
+      'weather_thunderstorm': 'Giông bão',
+      'weather_snow': 'Tuyết',
+      'weather_mist': 'Sương mù',
     },
     'en': {
       // --- Round 1: Appearance ---
@@ -684,7 +741,7 @@ class AppTranslations {
       'repeat_once': 'Once',
       'repeat_daily': 'Daily',
       'repeat_weekdays': 'Mon - Fri',
-      'repeat_weekend': 'Weekend',
+      'repeat_weekend': 'Weekends',
       'pick_device_channel_error': 'Please select a specific device and channel',
       'pick_custom_value_error': 'Please enter a Value for the custom action',
       'device_and_channel': 'Device & Channel',
@@ -895,6 +952,61 @@ class AppTranslations {
       'add_member_success': 'Member added successfully',
       'removed_member_prefix': 'Removed ',
       'removed_member_suffix': ' from home',
+
+      // --- Round 8: Display Mapping — Repeat/Fan Speed/Condition Popup/Remove Device ---
+      'fan_speed_prefix': 'Speed',
+      'choose_condition_title': 'Choose Condition (IF...)',
+      'cond_time': 'Time-based',
+      'cond_time_desc': 'Run at a specific time',
+      'cond_device': 'Device State Changed',
+      'cond_device_desc': 'Switch ON/OFF, or sensor threshold exceeded',
+      'cond_weather': 'Weather Changed',
+      'cond_weather_desc': 'Temperature threshold or raining',
+      'removed_success_1': 'Removed "',
+      'removed_success_2': '" from room ',
+
+      // --- Round 10: Choose Action (THEN...) popup + OTA Update button ---
+      'choose_action_title': 'Choose Action (THEN...)',
+      'action_control_device': 'Control Device',
+      'action_control_device_desc': 'Turn ON/OFF a physical device',
+      'action_send_noti': 'Send Notification',
+      'action_delay': 'Delay',
+      'update_now': 'Update Now',
+
+      // --- Round 11: Delete Room (long-press) ---
+      'delete_room_confirm': 'Are you sure you want to delete this room? Devices in the room will be moved back to the general list.',
+
+      // --- Round 11: Split Channels (relay) when adding to room ---
+      'channel_number_prefix': ' - Channel ',
+      'pick_channels_hint': 'Tick each channel you want to add to this room (a multi-relay device can be split across different rooms).',
+
+      // --- Round 12: Long-press menu — Hide from Dashboard (hideLabel/hideSubtitle missed on 3 cards) ---
+      'hide_from_dashboard': 'Hide from Dashboard',
+      'hide_from_dashboard_desc': 'Still visible in the device list',
+
+      // --- Round 13: Create Switch Group dialog + Multi-select bar ---
+      'create_group_title': 'Create Switch Group',
+      'group_name_hint': 'Group name (e.g., Whole house lights)',
+      'choose_icon_label': 'Choose icon:',
+      'group_type_label': 'Group type:',
+      'type_normal': 'Normal',
+      'type_stair': 'Staircase',
+      'type_fan': 'Fan',
+      'btn_create_group': 'Create Group',
+      'selected_count': 'Selected ',
+
+      // --- Round 14: Long-press menu — switch-specific items (Select multiple/Show hidden) ---
+      'select_multiple_devices': 'Select Multiple Devices',
+      'close_hidden_view': 'Close Hidden Devices View',
+      'show_hidden_devices': 'Show Hidden Devices',
+
+      // --- Round 17: GPS Weather — condition labels ---
+      'weather_clear': 'Clear',
+      'weather_clouds': 'Cloudy',
+      'weather_rain': 'Rain',
+      'weather_thunderstorm': 'Thunderstorm',
+      'weather_snow': 'Snow',
+      'weather_mist': 'Misty',
     },
   };
 }

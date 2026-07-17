@@ -230,6 +230,83 @@ class RoomGroupProvider extends ChangeNotifier {
   String? roomOf(String mac) => _deviceRoom[mac.toUpperCase()];
   String roomName(String roomId) => _rooms.firstWhere((r) => r.id == roomId, orElse: () => Room(id: '', name: '—')).name;
 
+  // ===================== [TÁCH RELAY] KÊNH (ENDPOINT) GÁN RIÊNG VÀO PHÒNG =====================
+  // Bảng SONG SONG với _deviceRoom (gán CẢ thiết bị) — HOÀN TOÀN ADDITIVE, không đụng bất kỳ
+  // hàm/field nào ở trên. "MAC|endpoint" -> roomId, cùng quy ước khóa với GroupMemberRef.key.
+  final Map<String, String> _endpointRoom = {};
+  static String _epKey(String mac, String endpoint) => '${mac.toUpperCase()}|$endpoint';
+
+  /// Danh sách kênh ĐÃ TÁCH riêng đang thuộc phòng [roomId] — KHÔNG bao gồm thiết bị gán
+  /// nguyên khối qua [devicesInRoom] (2 nguồn tách biệt, màn hình gọi cả hai để ghép danh sách).
+  List<({String mac, String endpoint})> endpointsInRoom(String roomId) => _endpointRoom.entries
+      .where((e) => e.value == roomId)
+      .map((e) {
+        final parts = e.key.split('|');
+        return (mac: parts[0], endpoint: parts.length > 1 ? parts[1] : '');
+      })
+      .toList();
+
+  /// Phòng đang chứa kênh cụ thể này (đã tách riêng) — null nếu kênh chưa được tách gán
+  /// riêng (vẫn đi theo phòng của cả thiết bị qua [roomOf], nếu có).
+  String? endpointRoomOf(String mac, String endpoint) => _endpointRoom[_epKey(mac, endpoint)];
+
+  /// POST /api/rooms/:id/endpoints — gán RIÊNG từng kênh vào phòng, KHÁC [assignDevicesToRoom]
+  /// (gán cả thiết bị). Dùng khi công tắc đa kênh cần chia mỗi relay vào một phòng khác nhau.
+  Future<String?> assignEndpointsToRoom(List<({String mac, String endpoint})> items, String roomId) async {
+    if (items.isEmpty) return null;
+    try {
+      final res = await http.post(
+        Uri.parse('$_apiBase/rooms/${Uri.encodeComponent(roomId)}/endpoints'),
+        headers: await _authHeaders(),
+        body: jsonEncode({
+          'items': [for (final it in items) {'mac': it.mac, 'endpoint': it.endpoint}],
+        }),
+      );
+      if (res.statusCode != 200) return _errorFrom(res, 'Không gán được kênh vào phòng');
+
+      for (final it in items) {
+        _endpointRoom[_epKey(it.mac, it.endpoint)] = roomId;
+      }
+      notifyListeners();
+      // [HỘI TỤ SỰ THẬT] cùng nguyên tắc assignDevicesToRoom — kéo lại từ server để chắc
+      // chắn đã persist, tránh cảnh "tưởng đã lưu" rồi mất khi mở lại App.
+      if (_homeId.isNotEmpty) fetchRooms(_homeId);
+      return null;
+    } catch (e) {
+      if (kDebugMode) print('❌ [ROOMS] Lỗi gán kênh: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
+  /// DELETE /api/rooms/endpoints/:mac/:endpoint — gỡ MỘT kênh khỏi phòng, không đụng các
+  /// kênh khác cùng thiết bị.
+  Future<String?> removeEndpointFromRoom(String mac, String endpoint) async {
+    final key = _epKey(mac, endpoint);
+    final rid = _endpointRoom[key];
+    if (rid == null) return null; // vốn không thuộc phòng nào — idempotent
+
+    _endpointRoom.remove(key); // optimistic
+    notifyListeners();
+    try {
+      final res = await http.delete(
+        Uri.parse('$_apiBase/rooms/endpoints/${Uri.encodeComponent(mac)}/${Uri.encodeComponent(endpoint)}'),
+        headers: await _authHeaders(),
+      );
+      if (res.statusCode != 200) {
+        _endpointRoom[key] = rid; // hoàn tác
+        notifyListeners();
+        return _errorFrom(res, 'Không gỡ được kênh khỏi phòng');
+      }
+      if (_homeId.isNotEmpty) fetchRooms(_homeId);
+      return null;
+    } catch (e) {
+      _endpointRoom[key] = rid;
+      notifyListeners();
+      if (kDebugMode) print('❌ [ROOMS] Lỗi gỡ kênh: $e');
+      return 'Lỗi kết nối máy chủ';
+    }
+  }
+
   /// GET /api/rooms?home_id=... — nạp danh sách phòng (Backend đã sort mới nhất trước)
   /// KÈM device_macs từng phòng -> dựng lại map MAC->room trong MỘT lời gọi.
   /// Dashboard gọi sau khi biết home_id (cả luồng user thường lẫn SUPER_USER chọn nhà).
@@ -250,10 +327,20 @@ class RoomGroupProvider extends ChangeNotifier {
       _rooms = list.map((e) => Room.fromJson(Map<String, dynamic>.from(e))).toList();
 
       _deviceRoom.clear();
+      _endpointRoom.clear();
       for (final e in list) {
         final roomId = (e['id'] ?? '').toString();
         for (final mac in (e['device_macs'] as List? ?? [])) {
           _deviceRoom[mac.toString().toUpperCase()] = roomId;
+        }
+        // [TÁCH RELAY] Kênh đã gán riêng — thiếu field này ở Backend cũ (chưa deploy) vẫn
+        // an toàn: (e['endpoints'] as List?) rơi về [] rỗng, không crash.
+        for (final ep in (e['endpoints'] as List? ?? [])) {
+          if (ep is! Map) continue;
+          final mac = (ep['mac'] ?? '').toString().toUpperCase();
+          final endpoint = (ep['endpoint'] ?? '').toString();
+          if (mac.isEmpty || endpoint.isEmpty) continue;
+          _endpointRoom[_epKey(mac, endpoint)] = roomId;
         }
       }
       // Phòng đang chọn trên Dashboard đã bị xóa ở máy khác -> quay về "Tất cả"
@@ -283,11 +370,19 @@ class RoomGroupProvider extends ChangeNotifier {
         .map((e) => Room.fromJson(Map<String, dynamic>.from(e)))
         .toList();
     _deviceRoom.clear();
+    _endpointRoom.clear();
     for (final e in roomsJson) {
       if (e is! Map) continue;
       final roomId = (e['id'] ?? '').toString();
       for (final mac in (e['device_macs'] as List? ?? const [])) {
         _deviceRoom[mac.toString().toUpperCase()] = roomId;
+      }
+      for (final ep in (e['endpoints'] as List? ?? const [])) {
+        if (ep is! Map) continue;
+        final mac = (ep['mac'] ?? '').toString().toUpperCase();
+        final endpoint = (ep['endpoint'] ?? '').toString();
+        if (mac.isEmpty || endpoint.isEmpty) continue;
+        _endpointRoom[_epKey(mac, endpoint)] = roomId;
       }
     }
     if (_selectedRoomId != null && !_rooms.any((r) => r.id == _selectedRoomId)) {
@@ -397,6 +492,7 @@ class RoomGroupProvider extends ChangeNotifier {
     if (removedIndex == -1) return null;
     _rooms.removeAt(removedIndex);
     _deviceRoom.removeWhere((mac, rid) => rid == roomId);
+    _endpointRoom.removeWhere((key, rid) => rid == roomId);
     _roomOn.remove(roomId);
     if (_selectedRoomId == roomId) _selectedRoomId = null;
     notifyListeners();

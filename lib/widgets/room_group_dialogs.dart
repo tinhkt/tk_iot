@@ -1,6 +1,7 @@
 import 'dart:ui'; // BackdropFilter / ImageFilter.blur cho hiệu ứng kính mờ
 import 'package:flutter/material.dart';
 import '../providers/room_group_provider.dart';
+import '../localization/app_translations.dart';
 import 'glass_popup.dart';
 
 const Color _tkGreen = Color(0xFF00A651);
@@ -102,6 +103,9 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
       final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
       final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
       final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+      // Builder chạy TRONG pha build thật của route dialog -> AppTranslations.of(ctx) an toàn.
+      // Dùng `tr` (không phải `t`) để tránh đụng biến vòng lặp `t` của groupTypes.map bên dưới.
+      final tr = AppTranslations.of(ctx);
       // [KÍNH MỜ] Dialog trong suốt + BackdropFilter làm mờ nền + Container bán trong suốt bo góc 24
       return StatefulBuilder(
         builder: (ctx, setDialog) => Dialog(
@@ -127,20 +131,20 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                     Row(children: [
                       const Icon(Icons.category, color: _tkGreen),
                       const SizedBox(width: 10),
-                      Text('Tạo nhóm công tắc', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text(tr.text('create_group_title'), style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
                     ]),
                     const SizedBox(height: 16),
                     TextField(
                       controller: nameCtrl,
                       style: TextStyle(color: textMain),
                       decoration: InputDecoration(
-                        labelText: 'Tên nhóm (vd: Đèn toàn nhà)',
+                        labelText: tr.text('group_name_hint'),
                         labelStyle: TextStyle(color: textSub),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    Text('Chọn biểu tượng:', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
+                    Text(tr.text('choose_icon_label'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 8),
                     Wrap(
                       spacing: 10, runSpacing: 10,
@@ -163,15 +167,23 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                     ),
                     // ---- [LOẠI NHÓM] Thường / Cầu thang / Quạt ----
                     const SizedBox(height: 12),
-                    Text('Loại nhóm:', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
+                    Text(tr.text('group_type_label'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 6),
                     Wrap(
                       spacing: 8,
+                      // [GIỮ NGUYÊN] groupTypes.$1 (mã 'normal'/'staircase'/'fan') vẫn là NGUỒN
+                      // SỰ THẬT so sánh/lưu — chỉ NHÃN hiển thị ($2) được thay bằng bản dịch qua
+                      // mã, KHÔNG dùng thẳng t.$2 (tiếng Việt cứng) nữa.
                       children: groupTypes.map((t) {
                         final bool sel = groupType == t.$1;
+                        final String label = switch (t.$1) {
+                          'staircase' => tr.text('type_stair'),
+                          'fan' => tr.text('type_fan'),
+                          _ => tr.text('type_normal'),
+                        };
                         return ChoiceChip(
                           avatar: Icon(t.$3, size: 16, color: sel ? Colors.white : _tkGreen),
-                          label: Text(t.$2),
+                          label: Text(label),
                           labelStyle: TextStyle(color: sel ? Colors.white : textMain, fontWeight: FontWeight.w600, fontSize: 13),
                           selectedColor: _tkGreen,
                           selected: sel,
@@ -225,7 +237,7 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+                        TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr.text('cancel'))),
                         const SizedBox(width: 8),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: _tkGreen, foregroundColor: Colors.white),
@@ -238,7 +250,7 @@ Future<CreateGroupResult?> showCreateGroupDialog(BuildContext context,
                               floors: groupType == 'staircase' ? Map<String, String>.from(floors) : const {},
                             ));
                           },
-                          child: const Text('Tạo nhóm'),
+                          child: Text(tr.text('btn_create_group')),
                         ),
                       ],
                     ),

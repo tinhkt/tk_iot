@@ -40,6 +40,9 @@ import 'devices/device_timer_screen.dart';
 import 'devices/device_history_screen.dart';
 import '../widgets/share_device_dialog.dart';
 import 'dart:async';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:lottie/lottie.dart';
 
 class SpinningWidget extends StatefulWidget {
   final Widget child; final bool isSpinning; final int speedLevel;
@@ -81,7 +84,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0, _cameraViewMode = 1; 
   bool _isLoadingDevices = true; 
   bool _isPushEnabled = true;
-  Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...'};
+  Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...', 'main': ''};
+  // [ĐỊA DANH GPS] Tên khu vực hiện tại, dịch ngược từ tọa độ GPS (geocoding) — hiển thị thay
+  // cho nút làm mới vị trí thủ công ở đợt trước. Giữ nguyên placeholder tiếng Việt cứng khi
+  // khởi tạo (giống quy ước _weatherData ở trên) — giá trị này bị ghi đè gần như ngay lập tức
+  // bởi _fetchWeather() gọi từ initState(), không đáng dịch phần khởi tạo thoáng qua.
+  String _locationName = 'Đang định vị...';
   Timer? _debounceSync;
 
   /// [SINGLE-FLIGHT UI] Lượt _initializeHome ĐANG chạy (nếu có). Mutex ở tầng service chỉ
@@ -584,11 +592,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  /// [GPS THỜI TIẾT] Xin vị trí hiện tại qua Geolocator — xử lý TRỌN VẸN luồng chuẩn: dịch vụ
+  /// định vị tắt -> quyền chưa hỏi/bị từ chối -> quyền bị từ chối vĩnh viễn -> lấy tọa độ. Bọc
+  /// try-catch NGOÀI CÙNG: bất kỳ lỗi nào (máy không có GPS, plugin lỗi, timeout phần cứng...)
+  /// đều rơi về null an toàn — _fetchWeather() hiểu null là "dùng thành phố mặc định phía
+  /// Server" (hành vi y hệt trước khi có tính năng này), KHÔNG làm app crash hay treo màn hình.
+  Future<Position?> _determinePosition() async {
+    try {
+      final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (kDebugMode) print('📍 Dịch vụ định vị (GPS) đang tắt trên máy — dùng thời tiết theo thành phố mặc định');
+        return null;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (kDebugMode) print('📍 Người dùng từ chối quyền vị trí');
+          return null;
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        // Bị từ chối vĩnh viễn (đặc biệt trên iOS) — không thể tự xin lại, phải vào Cài đặt hệ
+        // thống thủ công. Không ném lỗi, chỉ rơi về null.
+        if (kDebugMode) print('📍 Quyền vị trí bị từ chối vĩnh viễn — cần bật tay trong Cài đặt hệ thống');
+        return null;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 8)),
+      );
+
+      // [ĐỊA DANH GPS — DỊCH NGƯỢC TỌA ĐỘ] TÁCH RIÊNG try-catch: lỗi ở bước này (không mạng,
+      // dịch vụ geocoding hệ điều hành lỗi/chưa cài đặt gói ngôn ngữ...) KHÔNG được làm mất
+      // luôn tọa độ GPS đã lấy được — position vẫn trả về bình thường cho weather API dùng,
+      // _locationName chỉ đơn giản không đổi (giữ 'Đang định vị...' hoặc tên cũ), nơi gọi
+      // (_fetchWeather) tự rơi về tên thành phố Backend trả — không hề crash hay treo màn hình.
+      try {
+        final placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
+        if (placemarks.isNotEmpty) {
+          final Placemark place = placemarks.first;
+          // Ưu tiên Quận/Huyện (subAdministrativeArea); rỗng thì rơi về Phường/Xã (locality).
+          final String district = (place.subAdministrativeArea?.trim().isNotEmpty ?? false)
+              ? place.subAdministrativeArea!.trim()
+              : (place.locality?.trim() ?? '');
+          final String province = place.administrativeArea?.trim() ?? '';
+          // Dọn dẹp: bỏ phần rỗng thay vì để lại ", " thừa khi 1 trong 2 trường null/rỗng.
+          final String combined = [district, province].where((s) => s.isNotEmpty).join(', ');
+          if (mounted && combined.isNotEmpty) {
+            setState(() => _locationName = combined);
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) print('📍 Lỗi dịch ngược tọa độ (geocoding): $e');
+        // Không setState lỗi ở đây — _fetchWeather() tự fallback theo tên thành phố API Thời
+        // tiết trả về nếu geocoding thất bại hoàn toàn.
+      }
+
+      return position;
+    } catch (e) {
+      if (kDebugMode) print('📍 Lỗi lấy vị trí GPS: $e');
+      return null;
+    }
+  }
+
   Future<void> _fetchWeather() async {
+    final position = await _determinePosition();
+
     try {
       final token = await AuthService().getToken();
+      // Có tọa độ GPS thật -> gắn vào query, Backend gọi OpenWeatherMap ĐÚNG vị trí này (xem
+      // WeatherHandler ở weather.go); không có (tắt GPS/từ chối quyền/lỗi) -> Backend tự rơi
+      // về thành phố mặc định như trước khi có tính năng này (WEATHER_CITY, không hề gãy luồng).
+      final uri = position != null
+          ? Uri.parse('$baseUrl/weather/current?lat=${position.latitude}&lon=${position.longitude}')
+          : Uri.parse('$baseUrl/weather/current');
       final response = await http.get(
-        Uri.parse('$baseUrl/weather/current'),
+        uri,
         headers: {'Authorization': 'Bearer $token'},
       ).timeout(const Duration(seconds: 10)); // tránh treo "Đang tải..." vô hạn nếu mạng kẹt (vd. IPv6 lỗi)
 
@@ -604,25 +685,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
               'temp': weatherInfo['temp']?.toString() ?? '--',
               'condition': weatherInfo['description']?.toString() ?? 'Đang tải...',
               'humidity': weatherInfo['humidity']?.toString() ?? '66', // Lấy luôn độ ẩm
+              // [GPS THỜI TIẾT] Nhóm chuẩn hóa (Clear/Clouds/Rain...) từ Backend — dùng để chọn
+              // icon Lottie động qua getWeatherIcon(), KHÔNG dùng 'condition' (câu tiếng Việt tự do).
+              'main': weatherInfo['main']?.toString() ?? '',
             };
+            // [ĐỊA DANH GPS — FALLBACK] _locationName vẫn còn placeholder nghĩa là geocoding
+            // thất bại/không có GPS — dùng tên thành phố Backend trả (WEATHER_CITY hoặc theo
+            // tọa độ, xem WeatherData.City ở weather.go) thay vì để mãi "Đang định vị...".
+            if (_locationName == 'Đang định vị...' || _locationName.trim().isEmpty) {
+              final String city = (weatherInfo['city'] ?? '').toString().trim();
+              if (city.isNotEmpty) _locationName = city;
+            }
           });
         }
       } else {
         // 401 (token hết hạn), 404, 5xx... trước đây bị nuốt lặng lẽ → UI kẹt "Đang tải..."
         if (kDebugMode) print("☁️ API thời tiết trả về ${response.statusCode}: ${response.body}");
         if (mounted) {
-          setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
+          setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--', 'main': ''});
         }
       }
     } on TimeoutException {
       if (kDebugMode) print("☁️ API thời tiết timeout sau 10s (kiểm tra mạng/IPv6)");
       if (mounted) {
-        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
+        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--', 'main': ''});
       }
     } catch (e) {
       if (kDebugMode) print("☁️ Lỗi API thời tiết: $e");
       if (mounted) {
-        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--'});
+        setState(() => _weatherData = {'temp': '--', 'condition': 'Không có dữ liệu', 'humidity': '--', 'main': ''});
       }
     }
   }
@@ -771,8 +862,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final t = AppTranslations.of(context);
-    final Color menuTextMain = isGlass ? Colors.white : textMain;
-    final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    // [ĐỢT 9 — FIX TƯƠNG PHẢN] Trước đây BẬT Glass là ép chữ trắng vô điều kiện — trên nền
+    // Sáng Kính (frost gần như trong suốt, tint trắng) chữ trắng gần như vô hình. Quy tắc mới:
+    // TỐI khi hệ thống đang Sáng (dù Kính hay Thường), TRẮNG chỉ khi hệ thống đang Tối.
+    final Color menuTextMain = isDark ? Colors.white : Colors.black87;
+    // Bóng chữ kGlassTextShadow vốn thiết kế cho chữ TRẮNG nổi trên nền Aurora nhiều màu — chỉ
+    // còn ý nghĩa ở Tối Kính; Sáng Kính dùng chữ tối trên nền đã phủ tint trắng đục, không cần.
+    final List<Shadow>? sh = (isGlass && isDark) ? kGlassTextShadow : null;
 
     Widget menuRow(int value, IconData icon, String label, {Color? color, bool bold = false}) {
       final Color c = color ?? menuTextMain;
@@ -807,6 +903,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: AppContainer(
             width: 240,
             color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            // [ĐỢT 9 — FIX TƯƠNG PHẢN] Sáng Kính: phủ tint trắng đục hơn (0.5) lên mặt kính —
+            // frost mặc định (5% trắng) quá trong suốt, khiến chữ tối mới đổi ở trên không đủ
+            // tương phản với nền Aurora nhiều màu phía sau.
+            glassTint: (isGlass && !isDark) ? Colors.white.withValues(alpha: 0.5) : null,
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1574,7 +1674,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Đã chọn ${_selectedDevices.length}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF00A651))),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] _selectedDevices.length — số đếm thật, chỉ nhãn dịch.
+            Text('${t.text('selected_count')}${_selectedDevices.length}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF00A651))),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -2193,39 +2294,121 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// [ICON THỜI TIẾT ĐỘNG] [condition] = nhóm CHUẨN HÓA OpenWeatherMap (weather[0].main —
+  /// "Clear"/"Clouds"/"Rain"/"Drizzle"/"Thunderstorm"/"Snow"/"Mist"/"Fog"/"Haze"), KHÔNG PHẢI
+  /// câu mô tả tiếng Việt tự do. File .json THẬT chưa có sẵn trong assets/weather/ (xem README
+  /// trong thư mục đó) — errorBuilder rơi về Icon tĩnh an toàn, không crash khi thiếu file.
+  Widget _getWeatherIcon(String condition, {double size = 40}) {
+    final String asset = switch (condition) {
+      'Clear' => 'assets/weather/clear.json',
+      'Clouds' => 'assets/weather/clouds.json',
+      'Rain' || 'Drizzle' => 'assets/weather/rain.json',
+      'Thunderstorm' => 'assets/weather/storm.json',
+      'Snow' => 'assets/weather/snow.json',
+      'Mist' || 'Fog' || 'Haze' => 'assets/weather/mist.json',
+      _ => 'assets/weather/clouds.json',
+    };
+    final IconData fallbackIcon = switch (condition) {
+      'Clear' => Icons.wb_sunny_rounded,
+      'Rain' || 'Drizzle' => Icons.water_drop_rounded,
+      'Thunderstorm' => Icons.thunderstorm_rounded,
+      'Snow' => Icons.ac_unit_rounded,
+      'Mist' || 'Fog' || 'Haze' => Icons.foggy,
+      _ => Icons.cloud_queue_rounded,
+    };
+    return Lottie.asset(
+      asset,
+      width: size,
+      height: size,
+      fit: BoxFit.contain,
+      errorBuilder: (context, error, stackTrace) => Icon(fallbackIcon, color: tkGreen, size: size),
+    );
+  }
+
+  /// Ánh xạ nhóm chuẩn hóa -> nhãn dịch được. null = nhóm lạ/rỗng (Backend chưa trả dữ liệu,
+  /// hoặc phiên bản OpenWeatherMap thêm nhóm mới chưa map) -> nơi gọi tự rơi về [condition] gốc.
+  String? _weatherConditionLabel(AppTranslations t, String main) {
+    switch (main) {
+      case 'Clear':
+        return t.text('weather_clear');
+      case 'Clouds':
+        return t.text('weather_clouds');
+      case 'Rain':
+      case 'Drizzle':
+        return t.text('weather_rain');
+      case 'Thunderstorm':
+        return t.text('weather_thunderstorm');
+      case 'Snow':
+        return t.text('weather_snow');
+      case 'Mist':
+      case 'Fog':
+      case 'Haze':
+        return t.text('weather_mist');
+      default:
+        return null;
+    }
+  }
+
   Widget _buildWeatherBento(bool isDark, Color txtMain, Color txtSub) {
-  // Lấy dữ liệu từ Map, nếu chưa có thì hiển thị giá trị mặc định
-  // [GIỮ NGUYÊN BIẾN ĐỘNG] condition ('mây cụm', 'nắng'...) đọc thẳng từ API thời tiết — chỉ
-  // câu fallback "Đang cập nhật..." (khi API CHƯA có dữ liệu) là copy UI của ta, được dịch.
-  final String temp = _weatherData['temp']?.toString() ?? '--';
-  final String condition = _weatherData['condition']?.toString() ?? AppTranslations.of(context).text('updating');
+    final t = AppTranslations.of(context);
+    // Lấy dữ liệu từ Map, nếu chưa có thì hiển thị giá trị mặc định.
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] temp đọc thẳng từ API. 'condition' (câu mô tả tiếng Việt tự do từ
+    // Backend) CHỈ còn dùng làm fallback cuối khi 'main' (nhóm chuẩn hóa) rỗng/lạ chưa map được
+    // — bình thường nhãn hiển thị đi qua _weatherConditionLabel (dịch được cả 2 ngôn ngữ).
+    final String temp = _weatherData['temp']?.toString() ?? '--';
+    final String main = _weatherData['main']?.toString() ?? '';
+    final String condition = _weatherConditionLabel(t, main) ?? (_weatherData['condition']?.toString() ?? t.text('updating'));
 
     return AppContainer(
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 70, 
-            height: 70, 
-            decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), shape: BoxShape.circle), 
-            child: Icon(Icons.cloud_queue_rounded, color: tkGreen, size: 36)
+          // [ĐỊA DANH GPS] Thay cho nút làm mới vị trí thủ công đợt trước — hiển thị thẳng tên
+          // khu vực hiện tại (dịch ngược từ tọa độ GPS, xem _determinePosition). Style tinh tế:
+          // nhỏ + mờ hơn hẳn nhiệt độ chính, không tranh giành sự chú ý. BẮT BUỘC Expanded +
+          // ellipsis vì đang nằm trong Row — tên dài (vd "Thành phố Hồ Chí Minh") không vỡ layout.
+          Row(
+            children: [
+              Icon(Icons.location_on_rounded, size: 12, color: txtSub.withValues(alpha: 0.7)),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  _locationName, // [GIỮ NGUYÊN BIẾN ĐỘNG] tên khu vực thật từ GPS/API — không dịch
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: txtSub.withValues(alpha: 0.7), fontSize: 12, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 20),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, 
-              mainAxisAlignment: MainAxisAlignment.center, 
-              children: [
-                Text(
-                  condition, // Hiển thị mây đen, nắng, mưa... từ API
-                  style: TextStyle(color: txtSub, fontSize: 13, fontWeight: FontWeight.w600)
-                ), 
-                Text(
-                  '$temp°C', // Hiển thị nhiệt độ từ API
-                  style: TextStyle(color: txtMain, fontSize: 28, fontWeight: FontWeight.w900)
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Container(
+                width: 70,
+                height: 70,
+                decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.15), shape: BoxShape.circle),
+                child: _getWeatherIcon(main, size: 36),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      condition,
+                      style: TextStyle(color: txtSub, fontSize: 13, fontWeight: FontWeight.w600)
+                    ),
+                    Text(
+                      '$temp°C', // Hiển thị nhiệt độ từ API
+                      style: TextStyle(color: txtMain, fontSize: 28, fontWeight: FontWeight.w900)
+                    )
+                  ]
                 )
-              ]
-            )
-          )
+              )
+            ],
+          ),
         ],
       ),
     );
@@ -2342,25 +2525,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final Color chipBg = isDark ? const Color(0xFF1E293B) : Colors.white;
         final sel = roomProv.selectedRoomId;
         final t = AppTranslations.of(context);
+        // [ĐỢT 16 — TRẢ LẠI KÍNH 3D] Đợt 15 đổi sang AppCard khiến Glass Theme BẬT vô tình bị
+        // "kính hóa" luôn thẻ phòng (trước đó vốn LUÔN phẳng bất kể theme) — không đúng ý định.
+        // Tự tay rẽ nhánh: Kính 3D (Sáng/Tối) = Y HỆT bản gốc (Material phẳng, không viền/
+        // bóng); CHỈ Thường (Sáng/Tối) mới có viền+bóng nổi khối (giữ nguyên hiệu quả Đợt 15).
+        final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
 
         Widget chip({required String label, IconData? icon, required bool active, required VoidCallback onTap}) {
+          final Color bg = active ? tkGreen : chipBg;
+          final Widget content = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              if (icon != null) ...[Icon(icon, size: 16, color: active ? Colors.white : textSub), const SizedBox(width: 6)],
+              Text(label, style: TextStyle(color: active ? Colors.white : textSub, fontWeight: FontWeight.w700, fontSize: 13)),
+            ]),
+          );
           return Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: Material(
-              color: active ? tkGreen : chipBg,
-              borderRadius: BorderRadius.circular(20),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: onTap,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (icon != null) ...[Icon(icon, size: 16, color: active ? Colors.white : textSub), const SizedBox(width: 6)],
-                    Text(label, style: TextStyle(color: active ? Colors.white : textSub, fontWeight: FontWeight.w700, fontSize: 13)),
-                  ]),
-                ),
-              ),
-            ),
+            child: isGlass
+                ? Material(
+                    color: bg,
+                    borderRadius: BorderRadius.circular(20),
+                    child: InkWell(borderRadius: BorderRadius.circular(20), onTap: onTap, child: content),
+                  )
+                : Container(
+                    clipBehavior: Clip.antiAlias,
+                    decoration: BoxDecoration(
+                      color: bg,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.2), width: 1),
+                      boxShadow: [
+                        isDark
+                            ? BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 4))
+                            : BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2)),
+                      ],
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(borderRadius: BorderRadius.circular(20), onTap: onTap, child: content),
+                    ),
+                  ),
           );
         }
 
@@ -2374,15 +2578,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
               chip(label: t.text('all'), icon: Icons.widgets_rounded, active: sel == null, onTap: () => roomProv.selectRoom(null)),
               ...roomProv.rooms.map((r) => chip(label: r.name, icon: Icons.meeting_room, active: sel == r.id, onTap: () => roomProv.selectRoom(r.id))),
               // Nút Quản lý phòng
-              Material(
-                color: chipBg,
-                borderRadius: BorderRadius.circular(20),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(20),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoomManagementScreen())),
-                  child: Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9), child: Icon(Icons.settings, size: 18, color: textSub)),
-                ),
-              ),
+              isGlass
+                  ? Material(
+                      color: chipBg,
+                      borderRadius: BorderRadius.circular(20),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoomManagementScreen())),
+                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9), child: Icon(Icons.settings, size: 18, color: textSub)),
+                      ),
+                    )
+                  : Container(
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        color: chipBg,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.2), width: 1),
+                        boxShadow: [
+                          isDark
+                              ? BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 4))
+                              : BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2)),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoomManagementScreen())),
+                          child: Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9), child: Icon(Icons.settings, size: 18, color: textSub)),
+                        ),
+                      ),
+                    ),
             ],
           ),
         );
@@ -2447,6 +2673,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final String? selRoom = roomProv.selectedRoomId;
 
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
+    // [ĐỢT 21] Thẻ Nhà nằm trong ClipRRect+BackdropFilter riêng (như SmartSwitchCard) nên border/
+    // shadow mới PHẢI ở một Container bọc NGOÀI ClipRRect — đặt trực tiếp vào AnimatedContainer sẽ
+    // bị chính ClipRRect của nó cắt mất, xem bài học "Shadow phải nằm ngoài ClipRRect".
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
       if (_allHomesForSuperUser.isEmpty) return _buildEmptyState(isDark, textSub, "Không tìm thấy ngôi nhà nào trên hệ thống.");
       return LayoutBuilder(
@@ -2464,23 +2694,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
               final Color bgColor = isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white.withValues(alpha: 0.6));
               final Color textColor = isAnyOn ? Colors.white : (isDark ? Colors.white : Colors.black87);
               
-              return ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300), decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5)),
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () { setState(() => _selectedHomeForSuperUser = home); _initializeHome(); },
-                        child: Stack(
-                          children: [
-                            Positioned(top: 10, left: 10, child: Icon(Icons.maps_home_work_outlined, color: isAnyOn ? Colors.white : tkGreen, size: 18)),
-                            Positioned(top: 2, right: 2, child: IconButton(icon: Icon(Icons.power_settings_new_rounded, color: isAnyOn ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400), size: 24), onPressed: () => _bulkToggleHome(home, !isAnyOn))),
-                            Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Text('$onCount / $devCount', style: TextStyle(color: textColor.withValues(alpha: 0.8), fontSize: 18, fontWeight: FontWeight.bold)))),
-                            Positioned(bottom: 8, left: 6, right: 6, child: Text(home['home_name'] ?? 'Home', textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), maxLines: 2, overflow: TextOverflow.ellipsis)),
-                          ],
+              // [ĐỢT 21] Viền+bóng đổ CHỈ áp cho Thẻ Nhà CHƯA bật thiết bị nào (chưa "xanh lá") ở
+              // Sáng Thường (!isDark && !isGlass) — không đụng thẻ đang isAnyOn (xanh lá) hay Kính.
+              final BoxDecoration outerHomeCardDecoration = (!isAnyOn && !isDark && !isGlass)
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.withValues(alpha: 0.2), width: 1),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+                    )
+                  : BoxDecoration(borderRadius: BorderRadius.circular(16));
+
+              return Container(
+                decoration: outerHomeCardDecoration,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300), decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: isAnyOn ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white), width: 1.5)),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () { setState(() => _selectedHomeForSuperUser = home); _initializeHome(); },
+                          child: Stack(
+                            children: [
+                              Positioned(top: 10, left: 10, child: Icon(Icons.maps_home_work_outlined, color: isAnyOn ? Colors.white : tkGreen, size: 18)),
+                              Positioned(top: 2, right: 2, child: IconButton(icon: Icon(Icons.power_settings_new_rounded, color: isAnyOn ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400), size: 24), onPressed: () => _bulkToggleHome(home, !isAnyOn))),
+                              Align(alignment: Alignment.center, child: Padding(padding: const EdgeInsets.only(bottom: 14.0, top: 10.0), child: Text('$onCount / $devCount', style: TextStyle(color: textColor.withValues(alpha: 0.8), fontSize: 18, fontWeight: FontWeight.bold)))),
+                              Positioned(bottom: 8, left: 6, right: 6, child: Text(home['home_name'] ?? 'Home', textAlign: TextAlign.center, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2), maxLines: 2, overflow: TextOverflow.ellipsis)),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -3515,6 +3758,8 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
   // [REFACTOR] Menu ngữ cảnh nay DÙNG CHUNG qua DeviceMenuHelper — không còn code lặp cục bộ.
   // Các mục đặc thù công tắc (Chọn nhiều, Xem thiết bị ẩn) truyền qua extraItems.
   void _showDeviceOptions(BuildContext context, bool isDark) {
+    // Gọi từ onLongPress (tap handler) -> listen: false, tránh "liệt nút".
+    final t = AppTranslations.of(context, listen: false);
     DeviceMenuHelper.showGenericDeviceMenu(
       context: context,
       mac: widget.mac,
@@ -3528,19 +3773,19 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
       onDeviceShare: widget.onDeviceShare,
       onRename: widget.onRename,
       isHidden: widget.isHidden,
-      hideLabel: widget.isHidden ? 'Hiển thị lại công tắc này' : 'Ẩn khỏi Bảng điều khiển',
-      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+      hideLabel: widget.isHidden ? t.text('show_device_again') : t.text('hide_from_dashboard'),
+      hideSubtitle: t.text('hide_from_dashboard_desc'),
       onToggleHide: (v) => widget.onToggleHide(v),
       onAssignRoom: widget.onAssignRoom,   // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
       onEditGroup: widget.onEditGroup,     // [NHÓM] chỉ hiện nếu là Công tắc ảo
       onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
       onDelete: widget.onDelete,
       extraItems: [
-        DeviceMenuItem(icon: Icons.checklist_rtl_rounded, title: 'Chọn nhiều thiết bị', onTap: widget.onEnterSelectionMode),
+        DeviceMenuItem(icon: Icons.checklist_rtl_rounded, title: t.text('select_multiple_devices'), onTap: widget.onEnterSelectionMode),
         if (widget.hasHiddenDevices)
           DeviceMenuItem(
             icon: widget.isShowingHidden ? Icons.filter_alt_off_rounded : Icons.filter_alt_rounded,
-            title: widget.isShowingHidden ? 'Đóng chế độ xem thiết bị ẩn' : 'Hiển thị các thiết bị đã ẩn',
+            title: widget.isShowingHidden ? t.text('close_hidden_view') : t.text('show_hidden_devices'),
             color: Colors.orange,
             onTap: () { if (widget.onToggleShowHidden != null) widget.onToggleShowHidden!(); },
           ),
@@ -3553,6 +3798,10 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final bool offline = widget.isOffline;
     final t = AppTranslations.of(context);
+    // [ĐỢT 18 — ĐÁNH NỔI KHỐI] Widget này KHÔNG đi qua AppContainer (tự dựng ClipRRect+
+    // BackdropFilter+AnimatedContainer riêng, luôn có blur nhẹ bất kể Glass Theme bật/tắt) nên
+    // không tự thừa hưởng border/shadow chuẩn Sáng Thường — phải tự kiểm tra isGlass ở đây.
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     // Ngoại tuyến: ép toàn thẻ về tông xám mờ (Greyscale), bỏ qua màu bật/tắt
     final Color bgColor = offline
         ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200)
@@ -3560,7 +3809,22 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
     final Color textColor = offline ? Colors.grey : (isOnline ? Colors.white : (isDark ? Colors.white : Colors.black87));
     final Color powerIconColor = offline ? Colors.grey.withValues(alpha: 0.4) : (isOnline ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400));
 
-    return ClipRRect(
+    // [ĐỢT 18] Viền + đổ bóng "nổi khối" CHỈ áp cho Sáng Thường (không Kính) — đặt ở Container
+    // NGOÀI CÙNG (trước ClipRRect/BackdropFilter) vì boxShadow tràn ra ngoài rìa hộp, đặt bên
+    // trong ClipRRect sẽ bị cắt mất (cùng bài học đã sửa cho _GlassSurface/AppContainer/
+    // SmartFanCard). Border MÀU TRẠNG THÁI (selected/online/offline) bên trong AnimatedContainer
+    // giữ NGUYÊN không đổi — đây là lớp viền THỨ HAI, riêng biệt, chỉ để tách khối khỏi nền.
+    final BoxDecoration outerDecoration = (!isDark && !isGlass)
+        ? BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.2), width: 1),
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+          )
+        : BoxDecoration(borderRadius: BorderRadius.circular(16));
+
+    return Container(
+      decoration: outerDecoration,
+      child: ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
@@ -3591,6 +3855,7 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -3641,6 +3906,8 @@ class _SmartFanCardState extends State<SmartFanCard> {
 
   // [REFACTOR] Menu quạt nay DÙNG CHUNG DeviceMenuHelper — hết code lặp _showDeviceOptions/_confirmDeleteFan.
   void _showDeviceOptions(BuildContext context, bool isDark) {
+    // Gọi từ IconButton.onPressed (tap handler) -> listen: false, tránh "liệt nút".
+    final t = AppTranslations.of(context, listen: false);
     DeviceMenuHelper.showGenericDeviceMenu(
       context: context,
       mac: widget.mac,
@@ -3663,8 +3930,8 @@ class _SmartFanCardState extends State<SmartFanCard> {
       onDeviceShare: widget.onDeviceShare,
       onRename: widget.onRename,
       isHidden: widget.isHidden,
-      hideLabel: widget.isHidden ? 'Hiển thị lại thẻ quạt này' : 'Ẩn khỏi Bảng điều khiển',
-      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+      hideLabel: widget.isHidden ? t.text('show_device_again') : t.text('hide_from_dashboard'),
+      hideSubtitle: t.text('hide_from_dashboard_desc'),
       onToggleHide: widget.onToggleHide,
       onAssignRoom: widget.onAssignRoom, // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
       onAssignHome: widget.onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
@@ -3679,18 +3946,18 @@ class _SmartFanCardState extends State<SmartFanCard> {
     bool isOnline = speed > 0 && !offline, isSwingActive = swing && isOnline;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A), textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
     final t = AppTranslations.of(context);
+    // [ĐỢT 13 — FIX TÀNG HÌNH] Dùng cho nút "Xoay" bên dưới — cùng lý do _buildBtn.
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
 
     return Container(
       width: double.infinity, constraints: const BoxConstraints(maxWidth: 450),
-      // [FIX BO GÓC] AppContainer (chế độ KHÔNG kính) chỉ vẽ BoxDecoration.borderRadius —
-      // KHÔNG tự clip nội dung con, nên nút "Xoay"/dải nút tốc độ bên trong (Material/InkWell
-      // riêng, có ripple splash) có thể tràn nét vuông ra ngoài góc bo của thẻ. Bọc thêm
-      // ClipRRect cùng bán kính với AppContainer bên dưới để ép MỌI nội dung con cắt đúng
-      // theo góc bo — khớp chuẩn 16px đã dùng ở SmartSwitchCard (ClipRRect + circular(16)).
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        clipBehavior: Clip.antiAlias,
-        child: AppContainer(
+      // [ĐỢT 18 — FIX SHADOW BỊ CẮT] AppContainer từ Đợt 9 đã TỰ có clipBehavior: Clip.antiAlias
+      // + border/shadow vẽ đúng NGOÀI phần tự clip của chính nó — ClipRRect bọc ngoài trước đây
+      // (comment "FIX BO GÓC" cũ) nay THỪA và có HẠI: nó cắt mất luôn boxShadow của AppContainer
+      // (shadow vẽ tràn ra ngoài rìa hộp, ClipRRect bọc ngoài xén sạch) — đúng nguyên nhân khiến
+      // thẻ Quạt trông phẳng ở Sáng Thường dù AppContainer đã có sẵn border/shadow. Bỏ hẳn lớp
+      // ClipRRect thừa này — AppContainer tự lo việc bo góc/clip nội dung con y hệt trước đó.
+      child: AppContainer(
         padding: const EdgeInsets.all(20),
         borderRadius: BorderRadius.circular(16),
         // Ngoại tuyến: toàn thẻ mờ xám (Greyscale); đang ẩn (xem qua bộ lọc thiết bị ẩn):
@@ -3727,21 +3994,26 @@ class _SmartFanCardState extends State<SmartFanCard> {
                   children: [
                     _buildBtn(0, 'OFF', speed == 0 && !offline, isDark), const SizedBox(width: 8), _buildBtn(1, '1', speed == 1 && !offline, isDark), const SizedBox(width: 8), _buildBtn(2, '2', speed == 2 && !offline, isDark), const SizedBox(width: 8), _buildBtn(3, '3', speed == 3 && !offline, isDark), const SizedBox(width: 12),
                     Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300), const SizedBox(width: 12),
-                    Material(color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : Colors.white.withValues(alpha: 0.6)), borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))))
+                    Material(color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : (isGlass ? Colors.white.withValues(alpha: 0.6) : Colors.grey.shade200)), borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))))
                   ],
                 ),
               )
             ],
           ),
         ),
-        ),
       ),
     );
   }
 
   Widget _buildBtn(int btnSpeed, String label, bool isActive, bool isDark) {
+    // [ĐỢT 13 — FIX TÀNG HÌNH] Gọi đồng bộ TỪ build() (không phải tap handler) -> context.watch()
+    // an toàn ở đây. Sáng Thường: nút chưa chọn trước đây trắng@0.6 trên nền thẻ trắng gần như
+    // vô hình — đổi hẳn sang xám nhạt để tách khối rõ; Kính (Sáng/Tối) và Tối Thường giữ nguyên.
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     bool isOffBtn = btnSpeed == 0;
-    Color bgColor = isActive ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85)) : (isDark ? Colors.white10 : Colors.white.withValues(alpha: 0.6));
+    Color bgColor = isActive
+        ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85))
+        : (isDark ? Colors.white10 : (isGlass ? Colors.white.withValues(alpha: 0.6) : Colors.grey.shade200));
     Color textColor = isActive ? Colors.white : (isDark ? Colors.white : Colors.black87);
     return Expanded(child: Material(color: bgColor, borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: () => _changeSpeed(btnSpeed), child: Container(height: 40, alignment: Alignment.center, child: Text(label, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w900))))));
   }
@@ -3851,8 +4123,8 @@ class SmartSensorCard extends StatelessWidget {
                       onDeviceShare: onDeviceShare,
                       onRename: onRename,
                       isHidden: isHidden,
-                      hideLabel: isHidden ? 'Hiển thị lại thẻ này' : 'Ẩn khỏi Bảng điều khiển',
-                      hideSubtitle: 'Vẫn hiển thị trong danh sách thiết bị',
+                      hideLabel: isHidden ? t.text('show_device_again') : t.text('hide_from_dashboard'),
+                      hideSubtitle: t.text('hide_from_dashboard_desc'),
                       onToggleHide: onToggleHide,
                       onAssignRoom: onAssignRoom, // [PHÒNG] tự render "Chuyển/Thêm vào phòng"
                       onAssignHome: onAssignHome, // tự render "Chuyển nhà" nếu != null (SUPER_USER)
@@ -3948,6 +4220,9 @@ class DeviceSettingsPopup extends StatelessWidget {
     // của AppTranslations.of() hợp lệ; các closure bên dưới (kể cả trong ListenableBuilder)
     // dùng lại biến `t` này qua closure capture, không cần gọi lại .of(context) lần nữa.
     final t = AppTranslations.of(context);
+    // [ĐỢT 13 — FIX TÀNG HÌNH] Dùng lại cho speedBtn bên dưới — cùng lý do _buildBtn của
+    // SmartFanCard: nút tốc độ chưa chọn ở Sáng Thường cần nền xám để tách khối rõ.
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
 
     // ---- BÓC GÓI SYSTEM THẬT TỪ REST (device_system:{mac} do firmware tự khai) ----
     final sysWrap = _asMap(rawDeviceData['system_data']);
@@ -4036,7 +4311,9 @@ class DeviceSettingsPopup extends StatelessWidget {
                             final bool isOffBtn = s == 0;
                             return Expanded(
                               child: Material(
-                                color: active ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85)) : (isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05)),
+                                color: active
+                                    ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85))
+                                    : (isDark ? Colors.white10 : (isGlass ? Colors.black.withValues(alpha: 0.05) : Colors.grey.shade200)),
                                 borderRadius: BorderRadius.circular(10),
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(10),
@@ -4055,7 +4332,9 @@ class DeviceSettingsPopup extends StatelessWidget {
                               speedBtn(2, '2'), const SizedBox(width: 8),
                               speedBtn(3, '3'), const SizedBox(width: 12),
                               Material(
-                                color: swingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05)),
+                                color: swingActive
+                                    ? tkGreen.withValues(alpha: 0.85)
+                                    : (isDark ? Colors.white10 : (isGlass ? Colors.black.withValues(alpha: 0.05) : Colors.grey.shade200)),
                                 borderRadius: BorderRadius.circular(10),
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(10),
@@ -4377,7 +4656,8 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
           trailing = TextButton(
             onPressed: _startUpdate,
             style: TextButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-            child: Text('Cập nhật ngay (v$_newVersion)', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
+            // [GIỮ NGUYÊN BIẾN ĐỘNG] v$_newVersion — số phiên bản thật từ server, chỉ nhãn dịch.
+            child: Text('${t.text('update_now')} (v$_newVersion)', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold, fontSize: 13)),
           );
         } else {
           trailing = TextButton(

@@ -148,6 +148,10 @@ class _GlassSurface extends StatelessWidget {
   final double? width, height;
   final bool inverted; // true = "chìm" (form nhập liệu), false = "nổi" (thẻ)
   final Color? tint; // overlay màu thêm lên lớp frost (vd trạng thái lỗi/thành công)
+  // [ĐỢT 9] Ghi đè TOÀN BỘ màu frost, KHÔNG qua công thức blend nhẹ (12%) của [tint] — dùng
+  // khi cần độ đục cao hơn hẳn mức mặc định để đảm bảo tương phản chữ (vd Popup Avatar trên
+  // nền Sáng Kính, xem _buildUserAvatarMenu trong dashboard_screen.dart).
+  final Color? frostOverride;
 
   const _GlassSurface({
     required this.child,
@@ -157,54 +161,89 @@ class _GlassSurface extends StatelessWidget {
     this.height,
     this.inverted = false,
     this.tint,
+    this.frostOverride,
   });
 
   @override
   Widget build(BuildContext context) {
     final resolvedRadius = borderRadius.resolve(Directionality.of(context));
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // [ĐỢT 9 — ĐÁNH NỔI KHỐI] Viền + đổ bóng "nổi" CHỈ áp cho mặt kính NỔI (thẻ/dialog/sheet,
+    // inverted=false) — mặt kính CHÌM (form nhập liệu, inverted=true) giữ nguyên nhìn "khoét
+    // vào" như thiết kế gốc, không hợp với hiệu ứng nổi khối này.
+    final BoxDecoration outerDecoration = inverted
+        ? BoxDecoration(borderRadius: borderRadius)
+        : BoxDecoration(
+            borderRadius: borderRadius,
+            border: Border.all(
+              color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white.withValues(alpha: 0.5),
+              width: 1,
+            ),
+            boxShadow: [
+              if (!isDark) BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 15),
+            ],
+          );
+
     // [PHẦN 4 — HIỆU NĂNG] RepaintBoundary CÔ LẬP vùng kính: nội dung bên trong (nhiệt độ,
     // % quạt...) đổi liên tục sẽ chỉ vẽ lại ĐÚNG khung hình chữ nhật này, không ép cả cây
     // widget cha (Dashboard/List) vẽ lại theo — đây là chốt chặn overdraw bắt buộc.
+    //
+    // [ĐỢT 9 — SHADOW PHẢI Ở NGOÀI CLIP] outerDecoration (viền + đổ bóng) BẮT BUỘC nằm ở
+    // Container NGOÀI CÙNG, TRƯỚC ClipRRect — boxShadow tràn ra ngoài biên bo góc, nếu đặt
+    // trong Container bị ClipRRect/BackdropFilter cắt (như Container frost bên dưới) thì
+    // bóng đổ sẽ bị cắt mất hoàn toàn, không hiện ra được.
     return RepaintBoundary(
-      child: ClipRRect(
-        borderRadius: borderRadius,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: kGlassBlurSigma, sigmaY: kGlassBlurSigma),
-          child: Container(
-            width: width,
-            height: height,
-            // [FIX — Viền kính lệch vào trong] `padding` KHÔNG đặt ở đây nữa — Container.padding
-            // sẽ kéo TOÀN BỘ child (kể cả Positioned.fill border bên dưới) vào trong, khiến viền
-            // hắt sáng vẽ ngay sát mép chữ/icon thay vì tại rìa ngoài thật của thẻ (nơi nền frost/
-            // decoration dưới đây vẫn phủ tới). `padding` giờ chỉ áp cho riêng nội dung `child`
-            // qua Padding tường minh trong Stack, TÁCH RIÊNG khỏi border.
-            decoration: BoxDecoration(
-              color: tint != null ? Color.alphaBlend(tint!.withValues(alpha: 0.12), kGlassFrostFill) : kGlassFrostFill,
-              borderRadius: borderRadius,
-            ),
-            // [FIX — No Material widget found] showDialog/showModalBottomSheet đẩy nội dung
-            // vào Overlay của Navigator, KHÔNG phải hậu duệ của Scaffold/Material màn hình bên
-            // dưới (khác Dialog() gốc vốn tự bọc Material). ListTile/InkResponse/InkWell bên
-            // trong bất kỳ widget kính nào (card/dialog/dropdown...) sẽ crash đỏ nếu thiếu tổ
-            // tiên Material. Vá TẠI ĐÂY (nơi DUY NHẤT dựng lớp kính) để mọi widget dùng
-            // _GlassSurface đều được bọc — type: transparency để không vẽ đè lên hiệu ứng kính.
-            child: Material(
-              type: MaterialType.transparency,
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(painter: _GlassBorderPainter(borderRadius: resolvedRadius, inverted: inverted)),
-                    ),
-                  ),
-                  if (padding != null)
-                    Padding(
-                      padding: padding!,
-                      child: DefaultTextStyle.merge(style: const TextStyle(shadows: kGlassTextShadow), child: child),
-                    )
-                  else
-                    DefaultTextStyle.merge(style: const TextStyle(shadows: kGlassTextShadow), child: child),
-                ],
+      child: Container(
+        width: width,
+        height: height,
+        decoration: outerDecoration,
+        child: ClipRRect(
+          borderRadius: borderRadius,
+          clipBehavior: Clip.antiAlias,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: kGlassBlurSigma, sigmaY: kGlassBlurSigma),
+            child: Container(
+              // [FIX — Viền kính lệch vào trong] `padding` KHÔNG đặt ở đây nữa — Container.padding
+              // sẽ kéo TOÀN BỘ child (kể cả Positioned.fill border bên dưới) vào trong, khiến viền
+              // hắt sáng vẽ ngay sát mép chữ/icon thay vì tại rìa ngoài thật của thẻ (nơi nền frost/
+              // decoration dưới đây vẫn phủ tới). `padding` giờ chỉ áp cho riêng nội dung `child`
+              // qua Padding tường minh trong Stack, TÁCH RIÊNG khỏi border.
+              decoration: BoxDecoration(
+                color: frostOverride ?? (tint != null ? Color.alphaBlend(tint!.withValues(alpha: 0.12), kGlassFrostFill) : kGlassFrostFill),
+                borderRadius: borderRadius,
+              ),
+              // [FIX — No Material widget found] showDialog/showModalBottomSheet đẩy nội dung
+              // vào Overlay của Navigator, KHÔNG phải hậu duệ của Scaffold/Material màn hình bên
+              // dưới (khác Dialog() gốc vốn tự bọc Material). ListTile/InkResponse/InkWell bên
+              // trong bất kỳ widget kính nào (card/dialog/dropdown...) sẽ crash đỏ nếu thiếu tổ
+              // tiên Material. Vá TẠI ĐÂY (nơi DUY NHẤT dựng lớp kính) để mọi widget dùng
+              // _GlassSurface đều được bọc — type: transparency để không vẽ đè lên hiệu ứng kính.
+              child: Material(
+                type: MaterialType.transparency,
+                child: Stack(
+                  children: [
+                    // [ĐỢT 13 — FIX VIỀN NHÂN ĐÔI] CustomPaint viền gradient hắt sáng này vẽ
+                    // GẦN NHƯ TRÙNG biên với outerDecoration.border ở Container ngoài cùng phía
+                    // trên (cùng bo góc, cùng rìa ngoài) — với mặt kính NỔI (inverted=false,
+                    // card/dialog/sheet) outerDecoration ĐÃ có viền riêng rồi nên CustomPaint ở
+                    // đây bị THỪA, tạo hiệu ứng 2 đường viền lồng nhau. CHỈ còn vẽ cho mặt kính
+                    // CHÌM (inverted=true, form nhập liệu) — nơi outerDecoration KHÔNG có viền
+                    // (xem outerDecoration ở trên) nên đây là viền DUY NHẤT của nó.
+                    if (inverted)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: CustomPaint(painter: _GlassBorderPainter(borderRadius: resolvedRadius, inverted: inverted)),
+                        ),
+                      ),
+                    if (padding != null)
+                      Padding(
+                        padding: padding!,
+                        child: DefaultTextStyle.merge(style: const TextStyle(shadows: kGlassTextShadow), child: child),
+                      )
+                    else
+                      DefaultTextStyle.merge(style: const TextStyle(shadows: kGlassTextShadow), child: child),
+                  ],
+                ),
               ),
             ),
           ),
@@ -311,8 +350,13 @@ class AppContainer extends StatelessWidget {
   final double? width, height;
   final BorderRadius? borderRadius;
   final Color? color; // màu nền khi TẮT Glass (mặc định: surface theo sáng/tối hiện có)
+  // [ĐỢT 9] Màu phủ TRỰC TIẾP lên mặt kính khi Glass BẬT (khác [color] — CHỈ áp dụng khi Glass
+  // TẮT). Dùng cho các popup cần độ đục cao hơn mức frost mặc định để đảm bảo tương phản chữ
+  // (vd menu Avatar trên nền Sáng Kính) — không đổi hành vi bất kỳ call site nào khác vì mặc
+  // định null.
+  final Color? glassTint;
 
-  const AppContainer({super.key, required this.child, this.padding, this.margin, this.width, this.height, this.borderRadius, this.color});
+  const AppContainer({super.key, required this.child, this.padding, this.margin, this.width, this.height, this.borderRadius, this.color, this.glassTint});
 
   @override
   Widget build(BuildContext context) {
@@ -324,7 +368,21 @@ class AppContainer extends StatelessWidget {
         width: width,
         height: height,
         padding: padding ?? const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: color ?? (isDark ? const Color(0xFF1E293B) : Colors.white), borderRadius: radius),
+        // [ĐỢT 9/12 — ĐÁNH NỔI KHỐI] Container.clipBehavior chỉ clip CHILD theo hình decoration,
+        // KHÔNG cắt boxShadow (decoration được DecoratedBox vẽ ở ngoài phần clip) — an toàn
+        // thêm cả 2 cùng lúc. Đây LÀ nơi thẻ Nhà/Thống kê/Phòng (Bento) trên dashboard_screen.dart
+        // đang dùng chung (AppContainer) — sửa giá trị TẠI ĐÂY áp dụng cho mọi thẻ đó cùng lúc.
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: color ?? (isDark ? const Color(0xFF1E293B) : Colors.white),
+          borderRadius: radius,
+          border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.2), width: 1),
+          boxShadow: [
+            isDark
+                ? BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 4))
+                : BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2)),
+          ],
+        ),
         child: child,
       );
     } else {
@@ -333,6 +391,7 @@ class AppContainer extends StatelessWidget {
         padding: padding ?? const EdgeInsets.all(16),
         width: width,
         height: height,
+        frostOverride: glassTint,
         child: child,
       );
     }
@@ -373,14 +432,29 @@ class _AppCardState extends State<AppCard> {
 
     if (!glass) {
       final bool isDark = Theme.of(context).brightness == Brightness.dark;
-      result = Material(
-        color: widget.color ?? (isDark ? const Color(0xFF1E293B) : Colors.white),
-        borderRadius: radius,
-        child: InkWell(
+      // [ĐỢT 9 — ĐÁNH NỔI KHỐI] Material không có tham số boxShadow/border kiểu BoxDecoration
+      // — bọc thêm 1 Container NGOÀI chỉ lo viền + đổ bóng (không màu nền), Material bên
+      // trong vẫn giữ nguyên màu nền + InkWell ripple như cũ, đúng bán kính bo góc.
+      result = Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
           borderRadius: radius,
-          onTap: widget.onTap,
-          onLongPress: widget.onLongPress,
-          child: Padding(padding: widget.padding ?? const EdgeInsets.all(16), child: widget.child),
+          border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.2), width: 1),
+          boxShadow: [
+            isDark
+                ? BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 4))
+                : BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2)),
+          ],
+        ),
+        child: Material(
+          color: widget.color ?? (isDark ? const Color(0xFF1E293B) : Colors.white),
+          borderRadius: radius,
+          child: InkWell(
+            borderRadius: radius,
+            onTap: widget.onTap,
+            onLongPress: widget.onLongPress,
+            child: Padding(padding: widget.padding ?? const EdgeInsets.all(16), child: widget.child),
+          ),
         ),
       );
     } else {

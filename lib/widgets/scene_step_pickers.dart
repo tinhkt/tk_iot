@@ -213,16 +213,19 @@ Widget _optionTile(BuildContext ctx, {required IconData icon, required String ti
 
 /// Trả về SceneStep hoàn chỉnh (label tự sinh + params chuẩn Fan-out), null nếu thoát.
 Future<SceneStep?> showActionPicker(BuildContext context) async {
+  // Gọi từ chuỗi tap-handler (_pickAction onTap) -> listen: false, tránh "liệt nút".
+  // Dùng lại `t` này cả trong body: (ctx) bên dưới — chỉ là 1 giá trị thuần, không cần lấy lại.
+  final t = AppTranslations.of(context, listen: false);
   final Object? choice = await _showGlassPicker<Object>(
     context,
-    title: 'Chọn hành động (THÌ...)',
+    title: t.text('choose_action_title'),
     body: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
-      _optionTile(ctx, icon: Icons.settings_remote, title: 'Điều khiển thiết bị',
-          subtitle: 'Bật/Tắt một thiết bị thật trong nhà', onTap: () => Navigator.pop(ctx, 'device')),
-      _optionTile(ctx, icon: Icons.notifications_active_outlined, title: 'Gửi thông báo',
-          onTap: () => Navigator.pop(ctx, const SceneStep(Icons.notifications_active_outlined, 'Gửi thông báo'))),
-      _optionTile(ctx, icon: Icons.timelapse, title: 'Chờ (Delay)',
-          onTap: () => Navigator.pop(ctx, const SceneStep(Icons.timelapse, 'Chờ (Delay)'))),
+      _optionTile(ctx, icon: Icons.settings_remote, title: t.text('action_control_device'),
+          subtitle: t.text('action_control_device_desc'), onTap: () => Navigator.pop(ctx, 'device')),
+      _optionTile(ctx, icon: Icons.notifications_active_outlined, title: t.text('action_send_noti'),
+          onTap: () => Navigator.pop(ctx, SceneStep(Icons.notifications_active_outlined, t.text('action_send_noti')))),
+      _optionTile(ctx, icon: Icons.timelapse, title: t.text('action_delay'),
+          onTap: () => Navigator.pop(ctx, SceneStep(Icons.timelapse, t.text('action_delay')))),
     ]),
   );
   if (choice is SceneStep) return choice;
@@ -321,17 +324,20 @@ Future<SceneStep?> _pickFanOscillationAction(BuildContext context, _EndpointOpti
 
 /// Trả về SceneStep điều kiện với params có "type" phân loại, null nếu thoát.
 Future<SceneStep?> showConditionPicker(BuildContext context) async {
+  // Gọi từ chuỗi tap-handler (_pickCondition onTap) -> listen: false, tránh "liệt nút".
+  // Dùng lại `t` này cả trong body: (ctx) bên dưới — chỉ là 1 giá trị thuần, không cần lấy lại.
+  final t = AppTranslations.of(context, listen: false);
   final String? kind = await _showGlassPicker<String>(
     context,
-    title: 'Chọn điều kiện (NẾU...)',
+    title: t.text('choose_condition_title'),
     body: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
-      _optionTile(ctx, icon: Icons.access_time, title: 'Theo thời gian',
-          subtitle: 'Chạy vào một giờ cố định trong ngày', onTap: () => Navigator.pop(ctx, 'time')),
-      _optionTile(ctx, icon: Icons.toggle_on, title: 'Thiết bị thay đổi trạng thái',
-          subtitle: 'Công tắc BẬT/TẮT, hoặc cảm biến vượt ngưỡng nhiệt độ/độ ẩm',
+      _optionTile(ctx, icon: Icons.access_time, title: t.text('cond_time'),
+          subtitle: t.text('cond_time_desc'), onTap: () => Navigator.pop(ctx, 'time')),
+      _optionTile(ctx, icon: Icons.toggle_on, title: t.text('cond_device'),
+          subtitle: t.text('cond_device_desc'),
           onTap: () => Navigator.pop(ctx, 'device_state')),
-      _optionTile(ctx, icon: Icons.cloud, title: 'Thời tiết thay đổi',
-          subtitle: 'Nhiệt độ vượt ngưỡng hoặc trời mưa', onTap: () => Navigator.pop(ctx, 'weather')),
+      _optionTile(ctx, icon: Icons.cloud, title: t.text('cond_weather'),
+          subtitle: t.text('cond_weather_desc'), onTap: () => Navigator.pop(ctx, 'weather')),
     ]),
   );
   if (kind == null || !context.mounted) return null;

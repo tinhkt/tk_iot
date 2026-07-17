@@ -10,6 +10,8 @@
 	<string>Micro chỉ dùng nếu bạn quay video khi chọn ảnh/video từ máy; tính năng quét mã QR không ghi âm.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Ứng dụng cần quyền truy cập mạng nội bộ để tìm kiếm và kết nối với các thiết bị nhà thông minh của bạn</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Ứng dụng cần vị trí hiện tại của bạn để hiển thị đúng thông tin thời tiết trên Dashboard. Vị trí chỉ dùng khi bạn đang mở ứng dụng, không theo dõi nền.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
