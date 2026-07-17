@@ -1,5 +1,5 @@
-import 'dart:ui'; // BackdropFilter / ImageFilter.blur (kính mờ)
 import 'package:flutter/material.dart';
+import 'app_ui_wrappers.dart';
 
 const Color _tkGreen = Color(0xFF00A651);
 
@@ -7,30 +7,18 @@ const Color _tkGreen = Color(0xFF00A651);
 Future<void> showShareDeviceDialog(BuildContext context, {required String mac, required String deviceName}) {
   final TextEditingController inviteCtrl = TextEditingController();
 
-  return showDialog(
+  // [GLASS THEME] Dialog/ClipRRect/BackdropFilter/Container thủ công cũ (tự dựng kính mờ
+  // sigma 12) ĐÃ THAY bằng showAppDialog().
+  return showAppDialog(
     context: context,
-    barrierColor: Colors.black.withValues(alpha: 0.3),
-    builder: (ctx) {
+    child: Builder(
+      builder: (ctx) {
       final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
       final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
       final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
-      return Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        insetPadding: const EdgeInsets.all(24),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: Container(
+      return SizedBox(
               width: 360,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: Theme.of(ctx).scaffoldBackgroundColor.withValues(alpha: 0.85),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08)),
-              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -88,10 +76,8 @@ Future<void> showShareDeviceDialog(BuildContext context, {required String mac, r
                   ),
                 ],
               ),
-            ),
-          ),
-        ),
       );
-    },
+      },
+    ),
   );
 }

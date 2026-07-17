@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/auth_service.dart';
-import '../../widgets/glass_container.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../dashboard_screen.dart';
 import 'register_screen.dart';
 
@@ -77,11 +77,15 @@ class _LoginScreenState extends State<LoginScreen> {
     final newPassCtrl = TextEditingController();
     bool isDialogLoading = false;
 
-    showDialog(
+    // [GLASS THEME] Dialog/ConstrainedBox/GlassContainer thủ công cũ ĐÃ THAY bằng
+    // showAppDialog() — showAppDialog tự cấp khung Dialog/kính, bỏ GlassContainer lồng
+    // trong đây (tránh 2 lớp BackdropFilter chồng nhau); giữ nguyên StatefulBuilder (state
+    // cục bộ isDialogLoading/step) + ConstrainedBox maxWidth 400.
+    showAppDialog(
       context: context,
-      barrierDismissible: false, 
-      barrierColor: Colors.black.withValues(alpha: 0.6), 
-      builder: (context) {
+      barrierDismissible: false,
+      child: Builder(
+        builder: (context) {
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
         final Color textSub = isDark ? Colors.white70 : Colors.black54;
@@ -89,13 +93,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return Dialog(
-              backgroundColor: Colors.transparent, 
-              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-              child: ConstrainedBox(
+            return ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 400),
-                child: GlassContainer(
-                  child: Column(
+                child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(step == 'email' ? Icons.mark_email_read_outlined : Icons.lock_reset, size: 48, color: tkGreen),
@@ -113,18 +113,10 @@ class _LoginScreenState extends State<LoginScreen> {
                           textAlign: TextAlign.center
                         ),
                         const SizedBox(height: 20),
-                        TextField(
+                        // [FORM SWEEP] TextField -> AppTextField.
+                        AppTextField(
                           controller: emailCtrl,
-                          style: TextStyle(color: textMain),
-                          decoration: InputDecoration(
-                            // Đã sửa thành hintText và thêm contentPadding
-                            hintText: 'Nhập email đã đăng ký', 
-                            hintStyle: TextStyle(color: textSub),
-                            filled: true,
-                            fillColor: inputBg,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
-                          ),
+                          hintText: 'Nhập email đã đăng ký',
                         ),
                       ] else ...[
                         Text(
@@ -133,6 +125,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           textAlign: TextAlign.center
                         ),
                         const SizedBox(height: 20),
+                        // [FORM SWEEP — GIỮ NGUYÊN TextField] AppTextField chưa hỗ trợ textAlign/
+                        // style tùy biến (fontSize/letterSpacing riêng)/counterText — cần cả 3 để
+                        // giữ đúng UX ô nhập OTP căn giữa, giãn chữ, ẩn bộ đếm ký tự. Ép chuyển sẽ
+                        // làm MẤT các đặc điểm này (vi phạm "không rớt một ký tự nào của logic
+                        // cũ") — để nguyên, chờ mở rộng AppTextField ở lượt sau nếu cần.
                         TextField(
                           controller: otpCtrl,
                           keyboardType: TextInputType.number,
@@ -140,7 +137,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(color: textMain, fontSize: 18, letterSpacing: 4.0),
                           decoration: InputDecoration(
-                            hintText: 'Mã OTP (6 số)', 
+                            hintText: 'Mã OTP (6 số)',
                             hintStyle: TextStyle(color: textSub, letterSpacing: 0),
                             counterText: "",
                             filled: true,
@@ -150,18 +147,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        TextField(
+                        // [FORM SWEEP] TextField -> AppTextField.
+                        AppTextField(
                           controller: newPassCtrl,
                           obscureText: true,
-                          style: TextStyle(color: textMain),
-                          decoration: InputDecoration(
-                            hintText: 'Mật khẩu mới (Tối thiểu 6 ký tự)', 
-                            hintStyle: TextStyle(color: textSub),
-                            filled: true,
-                            fillColor: inputBg,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
-                          ),
+                          hintText: 'Mật khẩu mới (Tối thiểu 6 ký tự)',
                         ),
                       ],
                       const SizedBox(height: 24),
@@ -232,12 +222,11 @@ class _LoginScreenState extends State<LoginScreen> {
                       )
                     ],
                   ),
-                ),
-              ),
             );
           },
         );
-      }
+        },
+      ),
     );
   }
 
@@ -250,8 +239,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
 
-    return Scaffold(
-      backgroundColor: bgColor, 
+    return AppScaffold(
+      backgroundColor: bgColor,
       body: Center(
         child: SingleChildScrollView( 
           child: SizedBox(

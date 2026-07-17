@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'glass_container.dart';
+import 'app_ui_wrappers.dart';
 
 /// Một mục menu tùy biến (card-specific) truyền thêm vào [DeviceMenuHelper] — ví dụ
 /// "Chọn nhiều thiết bị", "Xem thiết bị ẩn"... để không phá vỡ tính dùng chung.
@@ -70,20 +70,19 @@ class DeviceMenuHelper {
       );
     }
 
-    showDialog(
+    // [GLASS THEME] Dialog/ConstrainedBox/GlassContainer thủ công cũ ĐÃ THAY bằng
+    // showAppDialog() — bỏ GlassContainer lồng trong đây (showAppDialog tự cấp khung kính),
+    // giữ Builder để `ctx` bên trong VẪN LÀ context riêng của dialog (mọi Navigator.pop(ctx)
+    // rải rác khắp các mục menu cần đúng context này). Giữ Material(transparent) vì ListTile
+    // (dùng trong row()) cần 1 Material ancestor để vẽ ripple — _GlassSurface không tự cấp.
+    showAppDialog(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        insetPadding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
+      child: Builder(
+        builder: (ctx) => ConstrainedBox(
           // [FIX OVERFLOW] Giới hạn chiều cao 85% màn hình -> danh sách chức năng dài sẽ CUỘN
           // (SingleChildScrollView bên dưới) thay vì tràn "Bottom overflowed by X pixels".
           constraints: BoxConstraints(maxWidth: 400, maxHeight: MediaQuery.of(context).size.height * 0.85),
-          child: GlassContainer(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            child: Material(
+          child: Material(
               color: Colors.transparent,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -168,7 +167,6 @@ class DeviceMenuHelper {
             ),
           ),
         ),
-      ),
     );
   }
 
@@ -177,16 +175,31 @@ class DeviceMenuHelper {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
-    showDialog(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    showAppDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        title: Text('Xóa $name?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
-        content: Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
-        ],
+      child: Builder(
+        builder: (ctx) => ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Xóa $name?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Text('Bạn có chắc chắn muốn gỡ thiết bị này khỏi hệ thống không?', style: TextStyle(color: textSub)),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                  const SizedBox(width: 8),
+                  ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), onPressed: () { Navigator.pop(ctx); onDelete(); }, child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

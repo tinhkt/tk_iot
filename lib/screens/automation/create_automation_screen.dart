@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/automation_provider.dart';
 import '../../services/constraint_engine.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 import '../../widgets/scene_step_pickers.dart';
 
@@ -149,7 +150,7 @@ class _CreateAutomationScreenState extends State<CreateAutomationScreen> {
     // trả thẳng form, KHÔNG lồng thêm Scaffold thứ 2 (2 AppBar chồng nhau).
     if (widget.embedded) return SafeArea(child: form);
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
       appBar: AppBar(
         title: Text(_isEditing ? 'Sửa ngữ cảnh' : 'Tạo ngữ cảnh'),

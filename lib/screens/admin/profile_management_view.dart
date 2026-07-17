@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
+import '../../providers/theme_provider.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 class ProfileManagementView extends StatefulWidget {
   final String currentRole;
@@ -151,8 +154,13 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
   Widget build(BuildContext context) {
     final bool isMobile = MediaQuery.of(context).size.width < 900;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX — Low Contrast trên nền Kính] textMain/textSub trước đây chỉ theo isDark hệ thống,
+    // không biết view này đang nằm trong popup Cài đặt kính (showAppDialog) hay không — đồng bộ
+    // quy ước glass-aware của AppTextField/AppDropdown: BẬT kính -> luôn trắng/trắng70.
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final Color textMain = isGlass ? Colors.white : (isDark ? Colors.white : const Color(0xFF0F172A));
+    final Color textSub = isGlass ? Colors.white70 : (isDark ? Colors.white54 : const Color(0xFF64748B));
+    final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     final bool isSuperUser = widget.currentRole == 'SUPER_USER';
 
     if (_isLoading) return Center(child: CircularProgressIndicator(color: tkGreen));
@@ -170,9 +178,9 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
               children: [
                 Text(
                   _editingEmail == widget.currentEmail ? 'Hồ sơ của tôi' : 'Chỉnh sửa tài khoản hệ thống',
-                  style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: textMain, fontSize: 26, fontWeight: FontWeight.bold, shadows: sh),
                 ),
-                Text('Cập nhật đầy đủ thông tin hành chính và phương thức liên hệ.', style: TextStyle(color: textSub, fontSize: 13)),
+                Text('Cập nhật đầy đủ thông tin hành chính và phương thức liên hệ.', style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)),
                 const SizedBox(height: 32),
                 
                 // KHU VỰC THAY ĐỔI AVATAR
@@ -208,13 +216,13 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                 const SizedBox(height: 32),
 
                 // CÁC TRƯỜNG NHẬP LIỆU CHI TIẾT
-                _buildField('Tài khoản Email (Cố định)', TextEditingController(text: _editingEmail), Icons.email_outlined, enabled: false, isDark: isDark, textMain: textMain, textSub: textSub),
+                _buildField('Tài khoản Email (Cố định)', TextEditingController(text: _editingEmail), Icons.email_outlined, enabled: false, isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Họ tên / Tên Công ty', _nameCtrl, Icons.business_rounded, hint: 'Nhập tên thực thể vận hành', isDark: isDark, textMain: textMain, textSub: textSub),
+                _buildField('Họ tên / Tên Công ty', _nameCtrl, Icons.business_rounded, hint: 'Nhập tên thực thể vận hành', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Số điện thoại liên hệ', _phoneCtrl, Icons.phone_android_rounded, hint: 'Số hotline hoặc sđt cá nhân', isDark: isDark, textMain: textMain, textSub: textSub),
+                _buildField('Số điện thoại liên hệ', _phoneCtrl, Icons.phone_android_rounded, hint: 'Số hotline hoặc sđt cá nhân', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 const SizedBox(height: 16),
-                _buildField('Địa chỉ văn phòng / Nhà ở', _addressCtrl, Icons.location_on_outlined, hint: 'Nhập địa chỉ chi tiết', isDark: isDark, textMain: textMain, textSub: textSub),
+                _buildField('Địa chỉ văn phòng / Nhà ở', _addressCtrl, Icons.location_on_outlined, hint: 'Nhập địa chỉ chi tiết', isGlass: isGlass, textMain: textMain, textSub: textSub, sh: sh),
                 
                 const SizedBox(height: 32),
                 SizedBox(
@@ -255,8 +263,8 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Hồ sơ toàn hệ thống', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
-                  Text('Bấm vào một tài khoản để sửa đổi thông tin của họ.', style: TextStyle(color: textSub, fontSize: 12)),
+                  Text('Hồ sơ toàn hệ thống', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold, shadows: sh)),
+                  Text('Bấm vào một tài khoản để sửa đổi thông tin của họ.', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
                   const SizedBox(height: 20),
                   Expanded(
                     child: ListView.separated(
@@ -274,8 +282,8 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                             backgroundColor: isTarget ? tkGreen : Colors.blue.withValues(alpha: 0.1),
                             child: Icon(Icons.person, color: isTarget ? Colors.white : Colors.blue, size: 18),
                           ),
-                          title: Text(u['email'], style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('Quyền: ${u['role'] ?? 'USER'}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                          title: Text(u['email'], style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold, shadows: sh), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('Quyền: ${u['role'] ?? 'USER'}', style: TextStyle(fontSize: 11, color: textSub, fontWeight: FontWeight.w500, shadows: sh)),
                           trailing: const Icon(Icons.edit_note_rounded, size: 18),
                           onTap: () => _selectUserToEdit(u),
                         );
@@ -291,24 +299,22 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
     );
   }
 
-  Widget _buildField(String label, TextEditingController ctrl, IconData icon, {String? hint, bool enabled = true, required bool isDark, required Color textMain, required Color textSub}) {
+  Widget _buildField(String label, TextEditingController ctrl, IconData icon, {String? hint, bool enabled = true, required bool isGlass, required Color textMain, required Color textSub, required List<Shadow>? sh}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold)),
+        Text(label, style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.bold, shadows: sh)),
         const SizedBox(height: 8),
-        TextField(
+        // [FIX — Input mờ trên nền kính] TextField trần tự chế fillColor/border (từng dùng
+        // fillColor alpha 0.02 ở chế độ tối — gần như trong suốt, chìm hẳn vào lớp kính phía
+        // sau) ĐÃ THAY bằng AppTextField — khối kính "chìm" trung tâm của cả hệ thống.
+        // prefixIcon truyền màu textSub tường minh (đồng bộ admin_system_screen.dart) — Icon()
+        // không tự kế thừa DefaultTextStyle/hintColor như Text.
+        AppTextField(
           controller: ctrl,
           enabled: enabled,
-          style: TextStyle(color: enabled ? textMain : textSub, fontSize: 14),
-          decoration: InputDecoration(
-            hintText: hint,
-            prefixIcon: Icon(icon, color: textSub, size: 18),
-            filled: true,
-            fillColor: enabled ? (isDark ? Colors.white.withValues(alpha: 0.02) : Colors.white) : (isDark ? Colors.black26 : Colors.grey.shade100),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade300)),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade300)),
-          ),
+          hintText: hint,
+          prefixIcon: Icon(icon, color: textSub, size: 18),
         ),
       ],
     );

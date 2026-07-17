@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/device_provider.dart';
 import '../../providers/room_group_provider.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 
 /// RoomDetailScreen — Chi tiết MỘT phòng: danh sách thiết bị đang thuộc phòng
@@ -40,7 +41,7 @@ class RoomDetailScreen extends StatelessWidget {
         final macs = roomProvider.devicesInRoom(roomId);
         final String roomName = roomProvider.roomName(roomId);
 
-        return Scaffold(
+        return AppScaffold(
           backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
           appBar: AppBar(
             title: Text(roomName, maxLines: 1, overflow: TextOverflow.ellipsis),

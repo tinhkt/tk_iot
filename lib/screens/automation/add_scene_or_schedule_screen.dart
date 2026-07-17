@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../providers/device_provider.dart';
 import '../../services/schedule_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import 'create_automation_screen.dart';
 
 /// AddSceneOrScheduleScreen — Popup "Thêm mới" GỘP 2 loại: Ngữ cảnh (Scene) và Lịch trình
@@ -28,7 +29,7 @@ class AddSceneOrScheduleScreen extends StatelessWidget {
     return DefaultTabController(
       length: 2,
       initialIndex: editingSchedule != null ? 1 : 0,
-      child: Scaffold(
+      child: AppScaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
           title: const Text('Thêm mới'),
@@ -280,18 +281,13 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
               _sectionCard(cardColor, [
                 Text('Thiết bị & kênh', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
                 const SizedBox(height: 10),
-                // Dropdown 1: Thiết bị
-                DropdownButtonFormField<String>(
-                  initialValue: macList.contains(_selectedMac) ? _selectedMac : null,
-                  isExpanded: true,
-                  style: TextStyle(color: textMain, fontSize: 14),
-                  dropdownColor: isDark ? const Color(0xFF2A2D31) : Colors.white,
-                  decoration: InputDecoration(
-                    labelText: 'Chọn thiết bị',
-                    labelStyle: TextStyle(color: textSub),
-                    prefixIcon: Icon(Icons.devices_other_rounded, color: textSub, size: 20),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                // [FORM SWEEP] DropdownButtonFormField -> AppDropdown. Dropdown 1: Thiết bị
+                // (KHÔNG cascading — danh sách macList không phụ thuộc lựa chọn nào khác nên
+                // không cần key: ValueKey).
+                AppDropdown<String>(
+                  value: macList.contains(_selectedMac) ? _selectedMac : null,
+                  labelText: 'Chọn thiết bị',
+                  prefixIcon: Icon(Icons.devices_other_rounded, color: textSub, size: 20),
                   items: [
                     for (final mac in macList)
                       DropdownMenuItem(value: mac, child: Text(deviceProvider.displayNameOf(mac), overflow: TextOverflow.ellipsis)),
@@ -305,24 +301,18 @@ class _ScheduleFormTabState extends State<_ScheduleFormTab> {
                 const SizedBox(height: 12),
                 // Dropdown 2: Nút/Endpoint — CHỈ hiện khi thật sự có NHIỀU HƠN 1 kênh để chọn.
                 if (showEndpointPicker)
-                  DropdownButtonFormField<String>(
-                    // [FIX HỘP TRẮNG RỖNG] key đổi theo thiết bị -> ép Flutter HỦY + TẠO LẠI
-                    // toàn bộ FormFieldState khi đổi thiết bị. initialValue chỉ được đọc ĐÚNG 1
-                    // LẦN lúc State khởi tạo (khác hẳn `value:` đời cũ phản ứng lại mỗi lần
-                    // build) — không đổi key thì State cũ (đang nhớ kênh của thiết bị TRƯỚC)
-                    // bị giữ lại nguyên vẹn, không khớp với items của thiết bị MỚI -> Dropdown
-                    // không tìm thấy mục nào để hiển thị -> render thành hộp trắng, bấm vô hiệu.
+                  // [FORM SWEEP] DropdownButtonFormField -> AppDropdown. Dropdown 2 (Kênh) LÀ
+                  // cascading (danh sách endpoints phụ thuộc _selectedMac) — GIỮ NGUYÊN
+                  // key: ValueKey('ep-$_selectedMac') y hệt bản gốc, đúng cảnh báo trong
+                  // docstring AppDropdown: thiếu key này sẽ tái diễn lỗi "hộp trắng rỗng" vì
+                  // initialValue chỉ đọc 1 lần lúc FormFieldState khởi tạo — key đổi theo thiết
+                  // bị ép Flutter hủy + tạo lại toàn bộ subtree (kể cả DropdownButtonFormField
+                  // nằm bên trong AppDropdown) mỗi khi đổi thiết bị.
+                  AppDropdown<String>(
                     key: ValueKey('ep-$_selectedMac'),
-                    initialValue: endpoints.contains(_selectedEndpoint) ? _selectedEndpoint : null,
-                    isExpanded: true,
-                    style: TextStyle(color: textMain, fontSize: 14),
-                    dropdownColor: isDark ? const Color(0xFF2A2D31) : Colors.white,
-                    decoration: InputDecoration(
-                      labelText: 'Chọn nút / kênh',
-                      labelStyle: TextStyle(color: textSub),
-                      prefixIcon: Icon(Icons.toggle_on_outlined, color: textSub, size: 20),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
+                    value: endpoints.contains(_selectedEndpoint) ? _selectedEndpoint : null,
+                    labelText: 'Chọn nút / kênh',
+                    prefixIcon: Icon(Icons.toggle_on_outlined, color: textSub, size: 20),
                     items: [
                       for (final ep in endpoints)
                         DropdownMenuItem(

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/secure_storage_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../dashboard_screen.dart';
 import 'login_screen.dart';
 
@@ -47,7 +48,7 @@ class _SplashScreenState extends State<SplashScreen> {
 
     // MINIMALIST: chỉ icon launcher + vòng xoay. Nền LẤY THEO scaffoldBackgroundColor
     // của theme -> tự đồng bộ Sáng/Tối.
-    return Scaffold(
+    return AppScaffold(
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

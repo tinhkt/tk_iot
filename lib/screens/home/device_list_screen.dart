@@ -8,6 +8,7 @@ import '../../providers/device_provider.dart';
 import '../../providers/room_group_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/device_menu_helper.dart';
 import '../../widgets/room_group_dialogs.dart';
 import '../dashboard_screen.dart' show showDeviceSettingsPopup;
@@ -194,28 +195,45 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   /// mọi thao tác khác (Dashboard mới có UI chọn đúng từng kênh).
   void _showRenameDialog(String mac, String currentName) {
     final controller = TextEditingController(text: currentName);
-    showDialog(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog() — gộp
+    // title+content+actions vào 1 Column, logic lưu tên/callback giữ nguyên 100%.
+    showAppDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Đổi tên thiết bị', style: TextStyle(fontWeight: FontWeight.bold)),
-        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nhập tên mới (để trống = tên tự động)...')),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _tkGreen),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              final ok = await ApiService().renameDeviceEndpoint(mac, '', controller.text.trim());
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(ok ? 'Đã lưu tên mới: ${controller.text.trim().isEmpty ? "(tên tự động)" : controller.text.trim()}' : 'Không thể lưu tên — kiểm tra kết nối!'),
-                backgroundColor: ok ? _tkGreen : Colors.redAccent,
-              ));
-              if (ok) _fetchDevices();
-            },
-            child: const Text('Lưu thay đổi', style: TextStyle(color: Colors.white)),
+      child: Builder(
+        builder: (ctx) => ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Đổi tên thiết bị', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nhập tên mới (để trống = tên tự động)...')),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: _tkGreen),
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      final ok = await ApiService().renameDeviceEndpoint(mac, '', controller.text.trim());
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(ok ? 'Đã lưu tên mới: ${controller.text.trim().isEmpty ? "(tên tự động)" : controller.text.trim()}' : 'Không thể lưu tên — kiểm tra kết nối!'),
+                        backgroundColor: ok ? _tkGreen : Colors.redAccent,
+                      ));
+                      if (ok) _fetchDevices();
+                    },
+                    child: const Text('Lưu thay đổi', style: TextStyle(color: Colors.white)),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -246,7 +264,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
     final devices = _filteredDevices;
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
         child: Padding(
@@ -281,11 +299,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          final result = await showDialog(
-            context: context,
-            barrierColor: Colors.black.withValues(alpha: 0.6),
-            builder: (context) => AddDeviceDialog(),
-          );
+          final result = await showAppDialog(context: context, child: AddDeviceDialog());
           if (result != null) {
             if (result == true) {
               _fetchDevices();

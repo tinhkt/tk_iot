@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'glass_container.dart';
+import 'app_ui_wrappers.dart';
 
 /// Dialog "Thêm thành viên" — thu thập email + vai trò rồi giao lại cho [onSubmit].
 ///
@@ -57,12 +57,12 @@ class _AddMemberDialogState extends State<AddMemberDialog> {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: ConstrainedBox(
+    // [GLASS THEME] Dialog/ConstrainedBox/GlassCard thủ công cũ ĐÃ BỎ khỏi build() của
+    // chính class này — caller (member_list_screen.dart) nay đưa thẳng AddMemberDialog vào
+    // showAppDialog(child: ...), showAppDialog tự cấp khung Dialog/kính bên ngoài.
+    return ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
-        child: GlassCard(
-          child: Form(
+        child: Form(
             key: _formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -72,19 +72,16 @@ class _AddMemberDialogState extends State<AddMemberDialog> {
                 const SizedBox(height: 4),
                 Text('Tài khoản phải đã đăng ký trên hệ thống', style: TextStyle(color: textSub, fontSize: 12)),
                 const SizedBox(height: 24),
-                TextFormField(
+                // [FORM SWEEP] TextFormField/DropdownButtonFormField ĐÃ THAY bằng
+                // AppTextField/AppDropdown — validator/controller/onChanged nối nguyên vẹn.
+                AppTextField(
                   controller: _emailCtrl,
                   enabled: !_submitting,
                   autofocus: true,
                   keyboardType: TextInputType.emailAddress,
-                  style: TextStyle(color: textMain),
-                  decoration: InputDecoration(
-                    labelText: 'Email thành viên',
-                    hintText: 'vd: nguoithan@gmail.com',
-                    labelStyle: TextStyle(color: textSub),
-                    prefixIcon: Icon(Icons.email_outlined, color: textSub, size: 20),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                  labelText: 'Email thành viên',
+                  hintText: 'vd: nguoithan@gmail.com',
+                  prefixIcon: Icon(Icons.email_outlined, color: textSub, size: 20),
                   validator: (v) {
                     final value = (v ?? '').trim();
                     if (value.isEmpty) return 'Vui lòng nhập email';
@@ -93,17 +90,10 @@ class _AddMemberDialogState extends State<AddMemberDialog> {
                   },
                 ),
                 const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: _role,
-                  isExpanded: true,
-                  style: TextStyle(color: textMain, fontSize: 14),
-                  dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-                  decoration: InputDecoration(
-                    labelText: 'Vai trò trong nhà',
-                    labelStyle: TextStyle(color: textSub),
-                    prefixIcon: Icon(Icons.badge_outlined, color: textSub, size: 20),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                AppDropdown<String>(
+                  value: _role,
+                  labelText: 'Vai trò trong nhà',
+                  prefixIcon: Icon(Icons.badge_outlined, color: textSub, size: 20),
                   items: const [
                     DropdownMenuItem(value: 'USER', child: Text('Thành viên (USER) — chỉ điều khiển thiết bị')),
                     DropdownMenuItem(value: 'ADMIN', child: Text('Quản trị (ADMIN) — được thêm/gỡ thiết bị')),
@@ -131,8 +121,6 @@ class _AddMemberDialogState extends State<AddMemberDialog> {
               ],
             ),
           ),
-        ),
-      ),
     );
   }
 }

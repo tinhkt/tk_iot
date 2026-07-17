@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 import '../../providers/home_provider.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/add_member_dialog.dart';
-import '../../widgets/glass_container.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 /// Màn hình chi tiết sổ thành viên của một nhà — dữ liệu THẬT từ
 /// GET /api/homes/{id}/members qua [HomeProvider]. Thêm/gỡ thành viên đều đi qua
@@ -69,10 +69,11 @@ class _MemberListScreenState extends State<MemberListScreen> {
 
   void _showAddMemberDialog() async {
     final provider = context.read<HomeProvider>();
-    final result = await showDialog<bool>(
+    // [GLASS THEME] AddMemberDialog tự trả về nội dung thô (không còn tự bọc Dialog/
+    // GlassCard trong build() của nó) nên đưa thẳng vào child: của showAppDialog.
+    final result = await showAppDialog<bool>(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (_) => AddMemberDialog(
+      child: AddMemberDialog(
         onSubmit: (email, role) => provider.addMember(_homeId, email, role),
       ),
     );
@@ -84,19 +85,33 @@ class _MemberListScreenState extends State<MemberListScreen> {
   }
 
   Future<void> _confirmAndRemove(HomeMember member) async {
-    final confirm = await showDialog<bool>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    final confirm = await showAppDialog<bool>(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Xác nhận xóa'),
-            content: Text('Bạn có chắc chắn muốn xóa thành viên "${member.email}" khỏi nhà này?'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Xóa', style: TextStyle(color: Colors.white)),
-              ),
-            ],
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Text('Bạn có chắc chắn muốn xóa thành viên "${member.email}" khỏi nhà này?'),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Xóa', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ) ??
         false;
@@ -131,7 +146,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
     final admins = members.where((m) => m.role == 'ADMIN').toList();
     final users = members.where((m) => m.role != 'OWNER' && m.role != 'ADMIN').toList();
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
         child: Padding(
@@ -332,7 +347,7 @@ class _MemberListScreenState extends State<MemberListScreen> {
             child: Center(child: Text(emptyText, style: TextStyle(color: textSub, fontSize: 13))),
           )
         else
-          GlassContainer(
+          AppContainer(
             padding: EdgeInsets.zero,
             borderRadius: BorderRadius.circular(18),
             child: Column(

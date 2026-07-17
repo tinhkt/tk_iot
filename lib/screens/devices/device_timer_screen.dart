@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/constraint_engine.dart';
 import '../../services/schedule_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 
 /// DeviceTimerScreen — Hẹn giờ & Lịch trình cho MỘT thiết bị (hoặc ĐÚNG MỘT kênh của thiết
@@ -129,7 +130,7 @@ class _DeviceTimerScreenState extends State<DeviceTimerScreen> {
 
     return DefaultTabController(
       length: 2,
-      child: Scaffold(
+      child: AppScaffold(
         backgroundColor: Colors.transparent, // vỏ kính bên ngoài lo phần nền
         appBar: AppBar(
           title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

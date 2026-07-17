@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../services/permission_manager.dart';
 import '../../services/auth_service.dart';
 import '../../providers/home_provider.dart';
-import '../../widgets/glass_container.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import 'device_list_screen.dart';
 import 'member_list_screen.dart';
 
@@ -85,8 +85,8 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: Colors.transparent, 
+    return AppScaffold(
+      backgroundColor: Colors.transparent,
       body: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
@@ -187,7 +187,7 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
     String displayRole = myRole == 'OWNER' ? 'Chủ nhà' : (myRole == 'ADMIN' ? 'Quản trị' : 'Thành viên');
     if (isSuperAdminGlobal) displayRole = 'Super Admin';
 
-    return GlassCard(
+    return AppContainer(
       padding: const EdgeInsets.all(14),
       child: isPending
         ? _buildPendingOverlay(home, index, textMain, textSub, isDark)
@@ -350,19 +350,33 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   /// GIỜ gọi API xóa cả nhà. Backend (RemoveMemberHandler) đã cho phép self-leave bất kể
   /// role (chỉ chặn nếu target là owner_email — owner phải transfer-ownership trước).
   Future<void> _confirmLeaveHome(Map<String, dynamic> home) async {
-    final bool confirm = await showDialog<bool>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    final bool confirm = await showAppDialog<bool>(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Rời khỏi nhà'),
-            content: const Text('Bạn có chắc chắn muốn rời khỏi ngôi nhà này? Bạn sẽ mất toàn quyền truy cập và điều khiển.'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Rời khỏi nhà', style: TextStyle(color: Colors.white)),
-              ),
-            ],
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Rời khỏi nhà', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                const Text('Bạn có chắc chắn muốn rời khỏi ngôi nhà này? Bạn sẽ mất toàn quyền truy cập và điều khiển.'),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Rời khỏi nhà', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ) ??
         false;
@@ -399,44 +413,39 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
     final String ownerEmail = (home['owner_email'] ?? '').toString();
     final String displayName = ownerEmail.contains('@') ? ownerEmail.split('@')[0] : ownerEmail;
 
-    showDialog(
+    // [GLASS THEME] Dialog/ConstrainedBox/GlassCard thủ công cũ ĐÃ THAY bằng showAppDialog().
+    showAppDialog(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (context) => Dialog(
-        backgroundColor: Colors.transparent,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: GlassCard(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    CircleAvatar(radius: 22, backgroundColor: Colors.orange.withValues(alpha: 0.2), child: const Icon(Icons.security_rounded, color: Colors.orange)),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Text('Thông tin Chủ nhà', style: TextStyle(color: textMain, fontSize: 17, fontWeight: FontWeight.bold)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _ownerInfoRow('Tên hiển thị (suy ra từ email)', displayName, textMain, textSub),
-                const SizedBox(height: 12),
-                _ownerInfoRow('Email đầy đủ', ownerEmail, textMain, textSub),
-                const SizedBox(height: 12),
-                _ownerInfoRow('Vai trò', 'Chủ nhà', textMain, textSub),
-                const SizedBox(height: 20),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Đóng'),
-                  ),
+                CircleAvatar(radius: 22, backgroundColor: Colors.orange.withValues(alpha: 0.2), child: const Icon(Icons.security_rounded, color: Colors.orange)),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text('Thông tin Chủ nhà', style: TextStyle(color: textMain, fontSize: 17, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
-          ),
+            const SizedBox(height: 20),
+            _ownerInfoRow('Tên hiển thị (suy ra từ email)', displayName, textMain, textSub),
+            const SizedBox(height: 12),
+            _ownerInfoRow('Email đầy đủ', ownerEmail, textMain, textSub),
+            const SizedBox(height: 12),
+            _ownerInfoRow('Vai trò', 'Chủ nhà', textMain, textSub),
+            const SizedBox(height: 20),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Đóng'),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -517,16 +526,17 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
     final addressCtrl = TextEditingController(text: homeToEdit?['address'] ?? '');
     final isEdit = homeToEdit != null;
 
-    showDialog(
+    // [GLASS THEME] Dialog/ConstrainedBox/GlassCard thủ công cũ ĐÃ THAY bằng showAppDialog() —
+    // giữ Builder để context bên trong VẪN LÀ context riêng của dialog (quan trọng: có
+    // await API rồi kiểm context.mounted để biết dialog đã tự đóng chưa — dùng context của
+    // màn hình gọi thay vì context dialog sẽ đổi hẳn ý nghĩa của guard này).
+    showAppDialog(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.5),
-      builder: (context) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          child: ConstrainedBox(
+      child: Builder(
+        builder: (context) {
+          return ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 450),
-            child: GlassCard(
-              child: SingleChildScrollView(
+            child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -581,11 +591,10 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
                     )
                   ],
                 ),
-              ),
             ),
-          ),
-        );
-      }
+          );
+        },
+      ),
     );
   }
 
@@ -593,20 +602,34 @@ class _HomeManagementScreenState extends State<HomeManagementScreen> {
   // 3. GỌI API XÓA NHÀ
   // =======================================================================
   void _deleteHome(String homeId, String homeName) async {
-    bool confirm = await showDialog(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    bool confirm = await showAppDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Xác nhận xóa'),
-        content: Text('Bạn có chắc chắn muốn xóa hệ thống "$homeName"? Hành động này không thể hoàn tác.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true), 
-            child: const Text('Xóa', style: TextStyle(color: Colors.white))
-          ),
-        ],
-      )
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Bạn có chắc chắn muốn xóa hệ thống "$homeName"? Hành động này không thể hoàn tác.'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Xóa', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     ) ?? false;
 
     if (!confirm || !mounted) return;

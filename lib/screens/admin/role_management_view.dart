@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
-import '../../widgets/glass_container.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 // ============================================================================
 // GIAO DIỆN CHÍNH: QUẢN LÝ PHÂN QUYỀN TRONG VẬN HÀNH THỰC TẾ
@@ -94,22 +94,22 @@ class _RoleManagementViewState extends State<RoleManagementView> {
 
     bool isUpdating = false;
 
-    showDialog(
+    // [GLASS THEME] Dialog/Container thủ công cũ ĐÃ THAY bằng showAppDialog() — bỏ khung
+    // Dialog/padding trùng lặp (showAppDialog tự cấp), giữ nguyên StatefulBuilder (state cục
+    // bộ isUpdating/selectedRole) + width cố định 420.
+    showAppDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) {
+      child: Builder(
+        builder: (context) {
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
         final Color textSub = isDark ? Colors.white70 : Colors.black54;
 
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return Dialog(
-              backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Container(
+            return SizedBox(
                 width: 420,
-                padding: const EdgeInsets.all(24),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -189,32 +189,44 @@ class _RoleManagementViewState extends State<RoleManagementView> {
                     )
                   ],
                 ),
-              ),
             );
           }
         );
-      }
+        },
+      ),
     );
   }
 
   // --- HÀM THU HỒI TRUY CẬP (XÓA 1 HOẶC NHIỀU) ---
   void _confirmDeleteBatch(List<String> emails) async {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    bool confirm = await showDialog(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog() — gộp
+    // title+content+actions vào 1 Column, logic xóa hàng loạt giữ nguyên 100%.
+    bool confirm = await showAppDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Thu hồi quyền truy cập', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-        content: Text('Bạn có chắc chắn muốn loại bỏ ${emails.length} tài khoản được chọn khỏi hệ thống ngôi nhà này?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Xóa truy cập', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Thu hồi quyền truy cập', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Bạn có chắc chắn muốn loại bỏ ${emails.length} tài khoản được chọn khỏi hệ thống ngôi nhà này?'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Xóa truy cập', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ) ?? false;
 
@@ -296,9 +308,9 @@ class _RoleManagementViewState extends State<RoleManagementView> {
               const SizedBox(height: 20),
 
               // --- THÀNH PHẦN 2: THANH TÌM KIẾM VÀ LỌC DỮ LIỆU TẬP TRUNG ---
-              GlassCard(
+              AppContainer(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: isMobile 
+                child: isMobile
                 // TRÊN MOBILE: Xếp dọc từ trên xuống dưới
                 ? Column(
                     children: [

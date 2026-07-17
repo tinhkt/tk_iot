@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/device_provider.dart';
 import '../../providers/room_group_provider.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 
 /// EditGroupScreen — Chỉnh sửa Nhóm công tắc ảo: xem thành viên (xóa khỏi nhóm) + Thêm thiết bị.
@@ -54,7 +55,7 @@ class EditGroupScreen extends StatelessWidget {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       appBar: AppBar(
         title: const Text('Chỉnh sửa nhóm'),

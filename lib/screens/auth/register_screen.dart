@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -102,8 +103,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
 
-    return Scaffold(
-      backgroundColor: bgColor, 
+    return AppScaffold(
+      backgroundColor: bgColor,
       body: Center(
         child: SingleChildScrollView( 
           child: SizedBox(
@@ -135,53 +136,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 
                 // --- FORM NHẬP THÔNG TIN ---
                 if (!_isOTPSent) ...[
-                  TextField(
+                  // [FORM SWEEP] 3× TextField -> AppTextField (không validator/textAlign đặc
+                  // biệt nên chuyển an toàn 100%).
+                  AppTextField(
                     controller: _emailController,
-                    style: TextStyle(color: textMain),
-                    decoration: InputDecoration(
-                      // Chuyển sang hintText và thêm contentPadding
-                      hintText: 'Nhập email', 
-                      hintStyle: TextStyle(color: textSub),
-                      filled: true, 
-                      fillColor: surfaceColor, 
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
-                    ),
+                    hintText: 'Nhập email',
                   ),
                   const SizedBox(height: 16),
-                  
-                  TextField(
+
+                  AppTextField(
                     controller: _passwordController,
                     obscureText: true,
-                    style: TextStyle(color: textMain),
-                    decoration: InputDecoration(
-                      hintText: 'Mật khẩu (tối thiểu 6 ký tự)', 
-                      hintStyle: TextStyle(color: textSub),
-                      filled: true, 
-                      fillColor: surfaceColor, 
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
-                    ),
+                    hintText: 'Mật khẩu (tối thiểu 6 ký tự)',
                   ),
                   const SizedBox(height: 16),
-                  
-                  TextField(
+
+                  AppTextField(
                     controller: _confirmPasswordController,
                     obscureText: true,
-                    style: TextStyle(color: textMain),
-                    decoration: InputDecoration(
-                      hintText: 'Xác nhận lại mật khẩu', 
-                      hintStyle: TextStyle(color: textSub),
-                      filled: true, 
-                      fillColor: surfaceColor, 
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)
-                    ),
+                    hintText: 'Xác nhận lại mật khẩu',
                   ),
                 ],
 
                 // --- FORM NHẬP OTP (CHỈ HIỆN KHI ĐÃ GỬI EMAIL) ---
                 if (_isOTPSent) ...[
+                  // [FORM SWEEP — GIỮ NGUYÊN TextField] Cần textAlign/style tùy biến/
+                  // counterText mà AppTextField chưa hỗ trợ — ép chuyển sẽ mất UX ô OTP căn
+                  // giữa/giãn chữ/ẩn bộ đếm, để nguyên (cùng lý do login_screen.dart).
                   TextField(
                     controller: _otpController,
                     keyboardType: TextInputType.number,

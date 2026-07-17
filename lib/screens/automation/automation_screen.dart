@@ -4,6 +4,7 @@ import '../../providers/automation_provider.dart';
 import '../../providers/device_provider.dart';
 import '../../services/schedule_service.dart';
 import '../../widgets/adaptive_navigation.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import 'add_scene_or_schedule_screen.dart';
 import 'create_automation_screen.dart';
 
@@ -54,7 +55,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
 
     return DefaultTabController(
       length: 3,
-      child: Scaffold(
+      child: AppScaffold(
         backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
         appBar: widget.embedded
             ? null
@@ -168,20 +169,33 @@ class _ScheduleAggregateListState extends State<_ScheduleAggregateList> {
   /// [YÊU CẦU 4 — NHẤN GIỮ ĐỂ XÓA] Xác nhận rồi DELETE + gỡ khỏi danh sách tại chỗ (không
   /// cần fetch lại cả danh sách — 1 dòng vừa bị xóa ta đã biết chắc chắn).
   Future<void> _confirmDelete(ScheduleItem s, String friendlyName) async {
-    final bool? ok = await showDialog<bool>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    final bool? ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Xóa lịch trình'),
-        content: Text('Bạn có chắc chắn muốn xóa lịch trình "$friendlyName — ${s.time}"?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Đồng ý xóa'),
-          ),
-        ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Xóa lịch trình', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Bạn có chắc chắn muốn xóa lịch trình "$friendlyName — ${s.time}"?'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                const SizedBox(width: 8),
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Đồng ý xóa'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -277,20 +291,33 @@ class _SceneList extends StatelessWidget {
   /// Provider xóa OPTIMISTIC: gỡ khỏi UI ngay khi bấm Đồng ý (notifyListeners ->
   /// Consumer vẽ lại tức thì); API lỗi thì tự gắn lại đúng vị trí cũ + SnackBar đỏ.
   Future<void> _confirmDeleteScene(BuildContext context, AutomationProvider provider, SceneItem s) async {
-    final bool? ok = await showDialog<bool>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    final bool? ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Xóa ngữ cảnh'),
-        content: Text('Bạn có chắc chắn muốn xóa ngữ cảnh "${s.name}"?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Đồng ý xóa'),
-          ),
-        ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Xóa ngữ cảnh', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Bạn có chắc chắn muốn xóa ngữ cảnh "${s.name}"?'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                const SizedBox(width: 8),
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Đồng ý xóa'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
     if (ok != true || !context.mounted) return;

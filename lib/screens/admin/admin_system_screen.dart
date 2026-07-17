@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:file_picker/file_picker.dart';
 import '../../services/admin_service.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 /// AdminSystemScreen — Bảng điều khiển Quản trị Hệ thống (chỉ SUPER_USER).
 /// Tab 1: Cấp phép thiết bị (Whitelist) + công tắc Chế độ nghiêm ngặt.
@@ -82,7 +83,7 @@ class AdminSystemScreen extends StatelessWidget {
     if (embedded) return content;
 
     // Đứng riêng (Mobile push): Scaffold + AppBar Back + SafeArea đầy đủ
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       appBar: AppBar(
         title: const Text('Quản trị Hệ thống'),
@@ -262,6 +263,9 @@ class _WhitelistTabState extends State<_WhitelistTab> {
                 Text('Thêm thiết bị được cấp phép',
                     style: TextStyle(color: textMain, fontWeight: FontWeight.bold, fontSize: 15)),
                 const SizedBox(height: 12),
+                // [FORM SWEEP — GIỮ NGUYÊN TextField] Cần textCapitalization.characters (tự
+                // viết HOA khi gõ MAC) — AppTextField chưa hỗ trợ tham số này, ép chuyển sẽ
+                // mất tính năng tự-viết-hoa. Để nguyên.
                 TextField(
                   controller: _snCtrl,
                   style: TextStyle(color: textMain),
@@ -463,19 +467,32 @@ class _FirmwareTabState extends State<_FirmwareTab> {
   }
 
   Future<void> _confirmDelete(Map<String, dynamic> fw) async {
-    final confirm = await showDialog<bool>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
+    final confirm = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Xác nhận xóa'),
-        content: Text(
-            'Bạn có chắc chắn xóa file này khỏi server không?\n\n${fw['device_type']} v${fw['version']}\n${fw['file_name'] ?? ''}'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Xóa', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-          ),
-        ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Xác nhận xóa', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Bạn có chắc chắn xóa file này khỏi server không?\n\n${fw['device_type']} v${fw['version']}\n${fw['file_name'] ?? ''}'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Hủy')),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Xóa', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
     if (confirm != true) return;
@@ -512,21 +529,24 @@ class _FirmwareTabState extends State<_FirmwareTab> {
     }
 
     if (!mounted) return;
-    await showDialog<void>(
+    // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog() — giữ
+    // Builder để context bên trong VẪN LÀ context riêng của dialog (có await Clipboard rồi
+    // kiểm ctx.mounted để biết dialog đã tự đóng chưa).
+    await showAppDialog<void>(
       context: context,
-      builder: (ctx) {
-        final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
-        final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
-        final Color textSub = isDark ? Colors.white70 : Colors.black54;
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Public Key ký OTA (P-256)'),
-          content: SizedBox(
-            width: 480,
+      child: Builder(
+        builder: (ctx) {
+          final bool isDark = Theme.of(ctx).brightness == Brightness.dark;
+          final Color textMain = isDark ? Colors.white : const Color(0xFF0B1120);
+          final Color textSub = isDark ? Colors.white70 : Colors.black54;
+          return ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                const Text('Public Key ký OTA (P-256)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                const SizedBox(height: 16),
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
@@ -553,25 +573,30 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
+                    const SizedBox(width: 8),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copy vào Clipboard'),
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: hexKey));
+                        if (!ctx.mounted) return;
+                        Navigator.pop(ctx);
+                        _snack('Đã copy Public Key vào Clipboard');
+                      },
+                    ),
+                  ],
+                ),
               ],
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: tkGreen, foregroundColor: Colors.white),
-              icon: const Icon(Icons.copy_rounded, size: 18),
-              label: const Text('Copy vào Clipboard'),
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: hexKey));
-                if (!ctx.mounted) return;
-                Navigator.pop(ctx);
-                _snack('Đã copy Public Key vào Clipboard');
-              },
-            ),
-          ],
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -639,27 +664,17 @@ class _FirmwareTabState extends State<_FirmwareTab> {
                   },
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                // [FORM SWEEP] 2× TextField -> AppTextField.
+                AppTextField(
                   controller: _versionCtrl,
-                  style: TextStyle(color: textMain),
-                  decoration: InputDecoration(
-                    labelText: 'Phiên bản (vd: 1.0.2)',
-                    labelStyle: TextStyle(color: textSub),
-                    prefixIcon: Icon(Icons.tag, color: textSub),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                  labelText: 'Phiên bản (vd: 1.0.2)',
+                  prefixIcon: Icon(Icons.tag, color: textSub),
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppTextField(
                   controller: _changelogCtrl,
-                  style: TextStyle(color: textMain),
                   maxLines: 3,
-                  decoration: InputDecoration(
-                    labelText: 'Changelog (nội dung thay đổi)',
-                    labelStyle: TextStyle(color: textSub),
-                    alignLabelWithHint: true,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                  labelText: 'Changelog (nội dung thay đổi)',
                 ),
                 const SizedBox(height: 12),
                 // Nút chọn file

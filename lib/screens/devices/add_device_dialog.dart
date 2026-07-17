@@ -6,7 +6,6 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
 import 'package:permission_handler/permission_handler.dart'; // Xin quyền Camera trước khi quét QR
-import '../../widgets/glass_container.dart';
 import '../../services/lan_discovery_service.dart'; // Quét thiết bị LAN qua UDP Broadcast
 
 // ============================================================================
@@ -252,104 +251,135 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           Text('Chọn một phương thức cấu hình thuận tiện nhất để liên kết thiết bị thông minh vào hệ thống.', style: TextStyle(color: textSub, fontSize: 13, height: 1.4)),
           const SizedBox(height: 20),
 
+          // [CHỐNG LỒNG KÍNH] 4 mục menu dưới đây PHẲNG VĨNH VIỄN (Material+InkWell, không
+          // BackdropFilter riêng) — cả khối build() ở trên đã là 1 lớp kính (showAppDialog),
+          // KHÔNG được đổi sang AppCard (sẽ lồng 2 lớp BackdropFilter, xem comment build()).
           // 1. Quét QR
-          GlassCard(
-            padding: const EdgeInsets.all(12),
-            onTap: () async {
-              // [FIX CRASH iOS] Xin quyền Camera xong xuôi rồi MỚI mở luồng stream;
-              // bị từ chối thì đứng lại ở menu kèm hướng dẫn, không đâm đầu vào camera
-              final bool granted = await _ensureCameraPermission();
-              if (!granted || !mounted) return;
-              setState(() => _currentView = 1);
-              _cameraController.start();
-            },
-            child: Row(
-              children: [
-                Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.qr_code_scanner_rounded, color: tkGreen, size: 24)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Quét mã QR Code', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                      Text('Tự động nhận diện nhanh qua camera', style: TextStyle(color: textSub, fontSize: 11)),
-                    ],
-                  ),
+          Material(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () async {
+                // [FIX CRASH iOS] Xin quyền Camera xong xuôi rồi MỚI mở luồng stream;
+                // bị từ chối thì đứng lại ở menu kèm hướng dẫn, không đâm đầu vào camera
+                final bool granted = await _ensureCameraPermission();
+                if (!granted || !mounted) return;
+                setState(() => _currentView = 1);
+                _cameraController.start();
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.qr_code_scanner_rounded, color: tkGreen, size: 24)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Quét mã QR Code', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text('Tự động nhận diện nhanh qua camera', style: TextStyle(color: textSub, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
+                  ],
                 ),
-                Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 10),
 
-          // 2. Chế độ Wi-Fi AP Tự động 
-          GlassCard(
-            padding: const EdgeInsets.all(12),
-            onTap: () {
-              setState(() => _currentView = 3);
-              _startAPDetection(); // Gọi hàm quét ngầm và phát radar
-            },
-            child: Row(
-              children: [
-                Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.wifi_tethering_rounded, color: Colors.orange, size: 24)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Kết nối Wi-Fi (AP Mode tự động)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                      Text('Bắt mạng của thiết bị để cấu hình tự động', style: TextStyle(color: textSub, fontSize: 11)),
-                    ],
-                  ),
+          // 2. Chế độ Wi-Fi AP Tự động
+          Material(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () {
+                setState(() => _currentView = 3);
+                _startAPDetection(); // Gọi hàm quét ngầm và phát radar
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.wifi_tethering_rounded, color: Colors.orange, size: 24)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Kết nối Wi-Fi (AP Mode tự động)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text('Bắt mạng của thiết bị để cấu hình tự động', style: TextStyle(color: textSub, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
+                  ],
                 ),
-                Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 10),
 
           // 3. Nhập tay
-          GlassCard(
-            padding: const EdgeInsets.all(12),
-            onTap: () => setState(() => _currentView = 2),
-            child: Row(
-              children: [
-                Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.keyboard_alt_outlined, color: Colors.blue, size: 24)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Nhập thủ công (SN/MAC)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                      Text('Điền thông tin sê-ri mã phía sau vỏ máy', style: TextStyle(color: textSub, fontSize: 11)),
-                    ],
-                  ),
+          Material(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () => setState(() => _currentView = 2),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.keyboard_alt_outlined, color: Colors.blue, size: 24)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Nhập thủ công (SN/MAC)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text('Điền thông tin sê-ri mã phía sau vỏ máy', style: TextStyle(color: textSub, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
+                  ],
                 ),
-                Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 10),
 
           // 4. Quét mạng LAN (UDP Broadcast tự động tìm thiết bị cùng WiFi)
-          GlassCard(
-            padding: const EdgeInsets.all(12),
-            onTap: _startLanScan,
-            child: Row(
-              children: [
-                Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.purple.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.wifi_find_rounded, color: Colors.purple, size: 24)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Quét mạng LAN (Tự động tìm kiếm)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
-                      Text('Dò mọi thiết bị đang cùng mạng WiFi với bạn', style: TextStyle(color: textSub, fontSize: 11)),
-                    ],
-                  ),
+          Material(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: _startLanScan,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.purple.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.wifi_find_rounded, color: Colors.purple, size: 24)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Quét mạng LAN (Tự động tìm kiếm)', style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold)),
+                          Text('Dò mọi thiết bị đang cùng mạng WiFi với bạn', style: TextStyle(color: textSub, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
+                  ],
                 ),
-                Icon(Icons.chevron_right_rounded, color: textSub, size: 20),
-              ],
+              ),
             ),
           ),
         ],
@@ -413,8 +443,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                   // [CHUẨN HÓA MAC] Đưa MAC quét được về cùng dạng "sổ hộ khẩu": HOA + bỏ ":"
                   final String scannedMac = d.mac.toUpperCase().replaceAll(':', '');
                   final bool isAlreadyAdded = widget.ownedMacs.contains(scannedMac);
-                  return GlassCard(
+                  // [CHỐNG LỒNG KÍNH] Phẳng vĩnh viễn — cùng lý do 4 mục menu ở trên
+                  // (_buildSelectionMenu), thẻ này nằm trong nội dung ĐÃ được showAppDialog
+                  // bọc kính ở lớp ngoài cùng rồi.
+                  return Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(color: isDark ? const Color(0xFF1E293B) : Colors.white, borderRadius: BorderRadius.circular(16)),
                     child: Row(
                       children: [
                         Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: tkGreen.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)), child: Icon(Icons.developer_board_rounded, color: tkGreen, size: 20)),
@@ -521,6 +555,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
         children: [
           _buildHeader('Nhập thủ công mã MAC', textMain, textSub),
           const SizedBox(height: 20),
+          // [FORM SWEEP — GIỮ NGUYÊN TextField] Cần textCapitalization.characters +
+          // style/letterSpacing tùy biến mà AppTextField chưa hỗ trợ (cùng lý do SN/MAC
+          // field trong admin_system_screen.dart) — để nguyên tránh mất UX viết hoa MAC.
           TextField(
             controller: _macController,
             style: TextStyle(color: textMain, fontSize: 16, letterSpacing: 1.5, fontWeight: FontWeight.bold),
@@ -653,14 +690,19 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white70 : Colors.black54;
 
-    return Dialog(
-      backgroundColor: Colors.transparent, 
-      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24), 
-      child: ConstrainedBox(
+    // [GLASS THEME — BOSS FIGHT] Dialog/ConstrainedBox/GlassCard thủ công cũ ĐÃ BỎ khỏi
+    // build() của chính class này — caller (dashboard_screen.dart ×2, device_list_screen.dart)
+    // nay đưa thẳng AddDeviceDialog vào showAppDialog(child: ...), showAppDialog tự cấp khung
+    // Dialog/kính bên ngoài. Giữ ConstrainedBox để khóa đúng maxWidth 400 như cũ.
+    //
+    // [CHỐNG LỒNG KÍNH] Vì showAppDialog ĐÃ là 1 lớp kính bao trọn toàn bộ nội dung dưới đây
+    // (cả 5 view: menu, quét LAN, camera, nhập tay, AP mode), 6 GlassCard cũ NẰM BÊN TRONG
+    // các hàm _build*View KHÔNG được đổi sang AppCard — làm vậy sẽ tạo lớp BackdropFilter
+    // THỨ HAI lồng ngay trong lớp kính ngoài cùng, đúng thứ bị cấm tuyệt đối. Đã đổi 6 chỗ đó
+    // sang Material+InkWell PHẲNG VĨNH VIỄN (không blur riêng) — xem từng hàm _build*View.
+    return ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 400),
-        child: GlassCard(
-          padding: EdgeInsets.zero, 
-          child: AnimatedSize(
+        child: AnimatedSize(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeInOut,
             child: AnimatedSwitcher(
@@ -675,9 +717,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                               ? _buildAPModeView(isDark, textMain, textSub) // View 3: AP Mode
                               : _buildLanScanView(isDark, textMain, textSub), // View 4: Quét LAN
             ),
-          ),
         ),
-      ),
     );
   }
 }

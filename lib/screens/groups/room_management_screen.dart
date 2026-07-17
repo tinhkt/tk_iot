@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/room_group_provider.dart';
 import '../../widgets/adaptive_navigation.dart';
+import '../../widgets/app_ui_wrappers.dart';
 import '../../widgets/glass_popup.dart';
 import 'room_detail_screen.dart';
 
@@ -22,7 +23,7 @@ class RoomManagementScreen extends StatelessWidget {
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
     final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       // Nhúng (tab body) -> KHÔNG AppBar; đứng riêng (push) -> AppBar + Back
       appBar: embedded

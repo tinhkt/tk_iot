@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/app_ui_wrappers.dart';
 
 /// DeviceHistoryScreen — Lịch sử hoạt động của MỘT thiết bị (mock timeline tĩnh).
 class DeviceHistoryScreen extends StatelessWidget {
@@ -25,7 +26,7 @@ class DeviceHistoryScreen extends StatelessWidget {
     final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
     final Color lineColor = isDark ? Colors.white12 : Colors.black12;
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2),
       appBar: AppBar(
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
