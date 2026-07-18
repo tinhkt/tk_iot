@@ -463,6 +463,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) { if (kDebugMode) print("Lỗi fetch thiết bị: $e"); }
   }
 
+  // [ĐỢT 25 — DIRECT MAC BINDING] Nhà đích để truyền vào AddDeviceDialog.homeId — CÙNG công
+  // thức "Nhà đích" mà _linkScannedDevice bên dưới đã dùng cho luồng QR/Nhập tay/Quét LAN,
+  // tách thành getter riêng để AddDeviceDialog (luồng AP Mode) dùng được TRƯỚC khi user chọn
+  // xong MAC (dialog cần homeId ngay lúc khởi tạo, không đợi tới lúc trả kết quả).
+  String get _provisioningTargetHomeId => (userRole == 'SUPER_USER' && _selectedHomeForSuperUser != null)
+      ? _selectedHomeForSuperUser!['home_id'].toString()
+      : currentHomeId;
+
   // ==========================================================================
   // ➕ LIÊN KẾT THIẾT BỊ VỪA QUÉT/NHẬP VÀO NHÀ (POST /api/homes/:id/devices)
   // ==========================================================================
@@ -479,9 +487,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final String mac = dialogResult.trim().toUpperCase();
 
     // Nhà đích: user thường = nhà trong token; SUPER_USER = nhà đang mở trên màn hình
-    final String homeId = (userRole == 'SUPER_USER' && _selectedHomeForSuperUser != null)
-        ? _selectedHomeForSuperUser!['home_id'].toString()
-        : currentHomeId;
+    final String homeId = _provisioningTargetHomeId;
     if (homeId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Chưa xác định được ngôi nhà — hãy mở một nhà cụ thể rồi thêm thiết bị.'),
@@ -1766,7 +1772,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onPressed: () async {
                     // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                     // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                    final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs));
+                    final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
                     await _linkScannedDevice(result);
                     _handleRefresh();
                   },
@@ -2148,7 +2154,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               onPressed: () async {
                                 // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                                 // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                                final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs));
+                                final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
                                 await _linkScannedDevice(result);
                                 _handleRefresh();
                               },

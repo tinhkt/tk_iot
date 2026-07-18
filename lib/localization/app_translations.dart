@@ -542,6 +542,8 @@ class AppTranslations {
       'wifi_ssid_hint': 'Tên WiFi (SSID)',
       'wifi_password_hint': 'Mật khẩu WiFi',
       'wifi_install_btn': 'CÀI ĐẶT',
+      // [ĐỢT 26] Checkbox tùy chọn lưu mật khẩu WiFi cục bộ (add_device_dialog.dart)
+      'save_wifi_checkbox': 'Lưu mạng WiFi này cho các lần cài đặt sau',
       'wifi_ssid_required': 'Vui lòng chọn hoặc nhập tên WiFi',
       'wifi_installing_status': 'Đang gửi thông tin tới thiết bị...',
       'wifi_installing_waiting_lan': 'Thành công! Thiết bị đang khởi động lại và kết nối vào mạng nhà bạn...',
@@ -562,6 +564,16 @@ class AppTranslations {
       'off': 'Tắt',
       'travel_time_label': 'Thời gian hành trình',
       'travel_time_desc': 'Số giây cửa cuốn đi hết từ 0% đến 100% — dùng để Slider % kéo đúng vị trí',
+
+      // --- Đợt 25: Direct MAC Binding — đăng ký trực tiếp bằng MAC (add_device_dialog.dart) ---
+      'device_register_header': 'Đăng ký thiết bị',
+      'device_registering_status': 'Đang đăng ký thiết bị lên hệ thống...',
+      'device_registering_attempt_prefix': 'Đang thử lại — lần ',
+      'device_owned_by_other_error': 'Thiết bị này đã được liên kết với một tài khoản khác. Vui lòng yêu cầu chủ sở hữu cũ xóa thiết bị, hoặc thực hiện Hard Reset thiết bị để tiếp tục.',
+      'device_register_forbidden_error': 'Bạn không có quyền thêm thiết bị vào ngôi nhà này.',
+      'device_register_timeout_error': 'Thiết bị chưa kịp kết nối vào hệ thống sau nhiều lần thử. Kiểm tra lại mật khẩu WiFi nhà rồi thử lại.',
+      'device_register_network_error': 'Không thể kết nối máy chủ — kiểm tra mạng 4G/WiFi của điện thoại rồi thử lại.',
+      'device_register_generic_error': 'Không thể đăng ký thiết bị — vui lòng thử lại.',
     },
     'en': {
       // --- Round 1: Appearance ---
@@ -1043,6 +1055,8 @@ class AppTranslations {
       'wifi_ssid_hint': 'WiFi name (SSID)',
       'wifi_password_hint': 'WiFi password',
       'wifi_install_btn': 'INSTALL',
+      // [Round 26] Optional checkbox to save WiFi password locally (add_device_dialog.dart)
+      'save_wifi_checkbox': 'Save this Wi-Fi network for future setups',
       'wifi_ssid_required': 'Please choose or enter a WiFi name',
       'wifi_installing_status': 'Sending WiFi info to the device...',
       'wifi_installing_waiting_lan': 'Success! The device is restarting and joining your home network...',
@@ -1063,6 +1077,16 @@ class AppTranslations {
       'off': 'Off',
       'travel_time_label': 'Travel Time',
       'travel_time_desc': 'Seconds for the door to travel from 0% to 100% — used so the % Slider matches the real position',
+
+      // --- Round 25: Direct MAC Binding — register straight by MAC (add_device_dialog.dart) ---
+      'device_register_header': 'Registering Device',
+      'device_registering_status': 'Registering device to the system...',
+      'device_registering_attempt_prefix': 'Retrying — attempt ',
+      'device_owned_by_other_error': 'This device is already linked to another account. Please ask the previous owner to remove it, or perform a Hard Reset on the device to continue.',
+      'device_register_forbidden_error': 'You do not have permission to add a device to this home.',
+      'device_register_timeout_error': 'The device did not connect to the system after several attempts. Check the home WiFi password and try again.',
+      'device_register_network_error': 'Could not reach the server — check your phone\'s mobile data/WiFi and try again.',
+      'device_register_generic_error': 'Could not register the device — please try again.',
     },
   };
 }

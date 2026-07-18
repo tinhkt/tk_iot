@@ -4,9 +4,66 @@ import 'package:http/http.dart' as http;
 import '../models/device_state.dart';
 import 'secure_storage_service.dart';
 
+/// [DIRECT MAC BINDING] Kết quả gõ kiểu của ApiService.addDevice — phân biệt RÕ RÀNG 4 tình
+/// huống mà LinkDeviceToHomeHandler (Backend Go) có thể trả về, để UI phản hồi đúng từng loại
+/// thay vì gộp chung "lỗi" mù mờ:
+///   success        : 200 — đã gán vào nhà thành công
+///   notOnlineYet   : 404 — thiết bị CHƯA kịp phát MQTT về Broker (vừa đổi WiFi, có thể còn
+///                    đang associate/DHCP) — TẠM THỜI, đáng để thử lại sau vài giây
+///   ownershipConflict: 409 — MAC đã thuộc về MỘT nhà/tài khoản KHÁC — VĨNH VIỄN, không thử lại
+///   forbidden      : 403 — user hiện tại không có quyền thêm thiết bị vào nhà đích
+///   otherError     : lỗi HTTP khác từ Backend
+///   networkError   : không tới được Backend (mất mạng, timeout...)
+enum AddDeviceStatus { success, notOnlineYet, ownershipConflict, forbidden, otherError, networkError }
+
+class AddDeviceResult {
+  final AddDeviceStatus status;
+  final String? message; // câu chữ THẬT server trả về (giữ nguyên để hiện cho user)
+  const AddDeviceResult(this.status, [this.message]);
+}
+
 class ApiService {
   // Trỏ chính xác vào IP Box Armbian của bạn
   static const String baseUrl = 'https://api.iot-smart.vn/api';
+
+  // --- [DIRECT MAC BINDING] ĐĂNG KÝ THIẾT BỊ THẲNG BẰNG MAC (thay luồng Quét LAN cũ) ---
+  /// POST /api/homes/{homeId}/devices {"mac_address": mac} — Backend (LinkDeviceToHomeHandler)
+  /// tự kiểm: MAC hợp lệ, user sở hữu nhà đích, thiết bị đã "lên tiếng" MQTT (handshake
+  /// liveness), và MAC chưa thuộc nhà/tài khoản khác (chống cướp thiết bị). Gọi lại nhiều lần
+  /// với CÙNG homeId là AN TOÀN (idempotent) — Backend chỉ chặn khi chủ sở hữu THỰC SỰ khác.
+  Future<AddDeviceResult> addDevice(String homeId, String mac) async {
+    try {
+      final token = await SecureStorageService.getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode({'mac_address': mac}),
+      );
+
+      String? serverMsg;
+      try {
+        final body = json.decode(response.body);
+        if (body is Map) serverMsg = (body['error'] ?? body['message'])?.toString();
+      } catch (_) {}
+
+      switch (response.statusCode) {
+        case 200:
+          return AddDeviceResult(AddDeviceStatus.success, serverMsg);
+        case 404:
+          return AddDeviceResult(AddDeviceStatus.notOnlineYet, serverMsg);
+        case 409:
+          return AddDeviceResult(AddDeviceStatus.ownershipConflict, serverMsg);
+        case 403:
+          return AddDeviceResult(AddDeviceStatus.forbidden, serverMsg);
+        default:
+          if (kDebugMode) print('⚠️ addDevice($mac) -> HTTP ${response.statusCode}: ${response.body}');
+          return AddDeviceResult(AddDeviceStatus.otherError, serverMsg);
+      }
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi addDevice($mac): $e');
+      return const AddDeviceResult(AddDeviceStatus.networkError);
+    }
+  }
 
   // --- HÀM LẤY TRẠNG THÁI THIẾT BỊ (ĐÃ ĐƯỢC LỒNG GHÉP AUTH) ---
   Future<DeviceState?> getDeviceState(String mac) async {

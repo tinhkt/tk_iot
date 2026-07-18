@@ -299,7 +299,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog());
+          final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(homeId: _homeId));
           if (result != null) {
             if (result == true) {
               _fetchDevices();
