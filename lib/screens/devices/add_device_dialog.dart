@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:io' show Platform, Process;
+import 'dart:io' show Platform, Process, SocketException, InternetAddress;
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -66,6 +66,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   bool _isInstallingWifi = false;
   // null = đang cài/chưa thử; 'fail' = thiết bị từ chối kết nối; 'timeout' = không phản hồi
   String? _wifiInstallError;
+  // [ĐỢT 29 — SMART RETRY] Lần thử hiện tại (1-3) — hiện cho user thấy tiến trình thay vì
+  // spinner im lặng suốt ~15s.
+  int _wifiInstallAttempt = 1;
 
   // --- Trạng thái cho luồng QUÉT MẠNG LAN (dùng LanDiscoveryService) — vẫn dùng cho mục menu
   // "Quét mạng LAN" độc lập (View 4); KHÔNG còn tự động nhảy tới đây sau khi cấu hình AP Mode.
@@ -85,7 +88,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   String? _registerFailMessage;
   int _registerAttempts = 0;
   Timer? _registerRetryTimer;
-  static const int _maxRegisterAttempts = 8; // ~ (5s chờ ban đầu) + 7×2s retry ≈ 19s tổng
+  static const int _maxRegisterAttempts = 8; // ~ (chờ Internet tối đa 10s) + 7×2s retry ≈ 24s tổng
+  // [ĐỢT 29] true = đang chờ điện thoại có Internet thật (chưa gọi Cloud), khác với
+  // _isRegisteringDevice (đang gọi ApiService.addDevice thật) — 2 trạng thái hiển thị khác nhau.
+  bool _isWaitingForInternet = false;
 
   @override
   void initState() {
@@ -227,6 +233,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       _currentView = 6;
       _isInstallingWifi = true;
       _wifiInstallError = null;
+      _wifiInstallAttempt = 1;
     });
 
     // [ĐỢT 24 + 26] Lưu ngay khi user bấm Xác nhận — không chờ biết cài đặt có thành công hay
@@ -239,38 +246,64 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       await _forgetWifiCredential(ssid);
     }
 
-    try {
-      // [VÁ LỖI THẬT TỪ HIỆN TRƯỜNG — QUAY VỀ FORM-URLENCODED] Bản POST+JSON body đã gây lỗi
-      // thật trên phần cứng: thiết bị nhận sai/rỗng dữ liệu -> WiFi.begin("","") thất bại ->
-      // kẹt lại AP Mode. Quay hẳn về application/x-www-form-urlencoded: TUYỆT ĐỐI không
-      // jsonEncode/header JSON — truyền thẳng Map<String,String> làm body, gói http tự set
-      // đúng Content-Type + tự mã hoá, khớp CHÍNH XÁC cách ESP8266WebServer::arg() (và
-      // httpd_query_key_value() bên Hub V38) giải mã native — cùng cơ chế route /wifisave nội
-      // bộ của WiFiManager đã dùng ổn định nhiều năm.
-      final res = await http
-          .post(
-            Uri.parse('http://192.168.4.1/api/setup_connect'),
-            body: {'ssid': ssid, 'pass': pass},
-          )
-          // Timeout dài — firmware nay phản hồi gần như ngay lập tức (không còn chờ xác nhận
-          // kết nối trước khi trả lời), giữ mốc này chỉ để phòng mạng LAN cục bộ chập chờn.
-          .timeout(const Duration(seconds: 25));
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
+    // [ĐỢT 29 — SMART RETRY] Bản Anti-Hang trước (timeout 3s, coi MỌI lỗi mạng là thành công
+    // ngầm định NGAY LẦN ĐẦU) bị "tác dụng ngược" trên hiện trường: OS cần một khoảng thời gian
+    // để ổn định kết nối AP vừa bắt được, TimeoutException/SocketException hoàn toàn có thể nổ
+    // ra NGAY LẬP TỨC (gói tin chưa kịp rời máy) — không phải bằng chứng ESP đã nhận lệnh. Nay
+    // THỬ LẠI THẬT (tối đa 3 lần, timeout 5s/lần, nghỉ 1s giữa các lần) trước khi kết luận —
+    // chỉ khi CẢ 3 LẦN đều thất bại vì lỗi mạng mới coi là "khả năng cao ESP đã nhận lệnh và
+    // đang tắt AP", KHÔNG còn kết luận vội ở lần thử đầu tiên.
+    const int maxAttempts = 3;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       if (!mounted) return;
-      if (data['status'] == 'ok') {
-        // [ĐỢT 25 — DIRECT MAC BINDING] Trước đây ở đây chờ 6s rồi TỰ NHẢY sang màn Quét mạng
-        // LAN (UDP Broadcast) để "mò" lại thiết bị — rườm rà, dễ tịt ngòi nếu Router chặn
-        // Broadcast, và còn bắt user tự bấm "Thêm ngay" thêm một bước nữa. Đã có MAC thật từ
-        // /api/check_ip (View 3, lưu trong _provisioningMac) nên đăng ký THẲNG lên Backend
-        // bằng chính MAC đó — không cần quét gì thêm.
-        setState(() { _isInstallingWifi = false; _currentView = 7; });
-        _registerDeviceDirect();
-      } else {
-        setState(() { _isInstallingWifi = false; _wifiInstallError = 'fail'; });
+      setState(() => _wifiInstallAttempt = attempt);
+      try {
+        // TUYỆT ĐỐI không dùng jsonEncode/header JSON — truyền thẳng Map<String,String> làm
+        // body, gói http tự set application/x-www-form-urlencoded + tự mã hoá, khớp CHÍNH XÁC
+        // cách ESP8266WebServer::arg() (và httpd_query_key_value() bên Hub V38) giải mã native.
+        final res = await http
+            .post(
+              Uri.parse('http://192.168.4.1/api/setup_connect'),
+              body: {'ssid': ssid, 'pass': pass},
+            )
+            .timeout(const Duration(seconds: 5));
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        if (!mounted) return;
+        if (data['status'] == 'ok') {
+          _proceedToDeviceRegistration();
+        } else {
+          setState(() { _isInstallingWifi = false; _wifiInstallError = 'fail'; });
+        }
+        return; // có phản hồi HTTP thật (dù ok hay fail) -> dừng hẳn, không thử lại nữa
+      } on TimeoutException {
+        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
+        // [XÁC ĐỊNH SẬP MẠNG THẬT] Đã thử đủ 3 lần trong ~15s mà lần nào cũng timeout — lúc
+        // này mới đủ căn cứ kết luận ESP đã nhận lệnh và đang bận ghi Flash/khởi động lại.
+        if (mounted) _proceedToDeviceRegistration();
+        return;
+      } on SocketException {
+        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
+        if (mounted) _proceedToDeviceRegistration();
+        return;
+      } on http.ClientException {
+        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
+        if (mounted) _proceedToDeviceRegistration();
+        return;
+      } catch (e) {
+        // Lỗi KHÁC hẳn (vd JSON phản hồi dị dạng thật sự) — đây mới là lỗi thật, không thử lại.
+        if (mounted) setState(() { _isInstallingWifi = false; _wifiInstallError = 'timeout'; });
+        return;
       }
-    } catch (e) {
-      if (mounted) setState(() { _isInstallingWifi = false; _wifiInstallError = 'timeout'; });
     }
+  }
+
+  // [ĐỢT 25 — DIRECT MAC BINDING] Trước đây ở đây chờ 6s rồi TỰ NHẢY sang màn Quét mạng LAN
+  // (UDP Broadcast) để "mò" lại thiết bị — rườm rà, dễ tịt ngòi nếu Router chặn Broadcast, và
+  // còn bắt user tự bấm "Thêm ngay" thêm một bước nữa. Đã có MAC thật từ /api/check_ip (View 3,
+  // lưu trong _provisioningMac) nên đăng ký THẲNG lên Backend bằng chính MAC đó.
+  void _proceedToDeviceRegistration() {
+    setState(() { _isInstallingWifi = false; _currentView = 7; });
+    _registerDeviceDirect();
   }
 
   // ==========================================================================
@@ -304,12 +337,41 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       return;
     }
 
-    // Chờ 5s cho lần thử ĐẦU TIÊN — đúng thời gian điện thoại cần để rời AP thiết bị + tự
-    // động kết nối lại 4G/WiFi nhà (bắt buộc, vì Backend chỉ trả lời được qua Internet thật,
-    // không còn qua 192.168.4.1 nữa) trước khi gọi Backend lần đầu.
-    await Future.delayed(const Duration(seconds: 5));
+    // [ĐỢT 29 — INTERNET LIVENESS CHECK] Trước đây chờ CỐ ĐỊNH 5s rồi gọi thẳng lên Cloud —
+    // nếu điện thoại chưa kịp rời mạng 192.168.4.x của thiết bị (OS đôi khi mất hơn 5s để tự
+    // chuyển lại 4G/WiFi nhà), request chắc chắn thất bại với "Không thể kết nối máy chủ" dù
+    // chưa hề chạm tới Backend thật. Nay CHỦ ĐỘNG chờ tới khi CÓ Internet thật (tối đa 10s,
+    // poll mỗi 1s) rồi mới bắt đầu gọi — nhanh hơn trong trường hợp tốt, bền hơn trong trường
+    // hợp xấu, thay vì đoán mò một con số cố định.
+    setState(() => _isWaitingForInternet = true);
+    await _waitForInternet();
     if (!mounted) return;
+    setState(() => _isWaitingForInternet = false);
     await _attemptRegister(homeId, mac);
+  }
+
+  // Chờ tối đa 10s cho điện thoại có Internet thật (đã nhả AP thiết bị) — không chặn App vô
+  // thời hạn nếu vì lý do gì đó Internet không bao giờ hồi phục (vẫn tiếp tục sang bước đăng ký
+  // dù hết giờ, ApiService.addDevice() tự có timeout/retry riêng của tầng gọi Cloud).
+  Future<void> _waitForInternet() async {
+    const int maxWaitMs = 10000;
+    final sw = Stopwatch()..start();
+    while (sw.elapsedMilliseconds < maxWaitMs) {
+      if (!mounted) return;
+      if (await _hasInternet()) return;
+      await Future.delayed(const Duration(seconds: 1));
+    }
+  }
+
+  // DNS lookup nhẹ nhất có thể — không tải dữ liệu, chỉ cần phân giải được tên miền Backend là
+  // đủ bằng chứng điện thoại đã có đường ra Internet thật (không còn kẹt trong LAN cục bộ ESP).
+  Future<bool> _hasInternet() async {
+    try {
+      final result = await InternetAddress.lookup('api.iot-smart.vn').timeout(const Duration(seconds: 2));
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _attemptRegister(String homeId, String mac) async {
@@ -1211,6 +1273,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             style: TextStyle(color: success ? tkGreen : (_isInstallingWifi ? textMain : Colors.redAccent), fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
             textAlign: TextAlign.center,
           ),
+          // [ĐỢT 29 — SMART RETRY] Hiện số lần đang thử — tránh spinner câm suốt ~15s khiến
+          // user tưởng App treo trong lúc thực ra đang tự thử lại theo đúng thiết kế.
+          if (_isInstallingWifi && _wifiInstallAttempt > 1) ...[
+            const SizedBox(height: 6),
+            Text('${t.text('device_registering_attempt_prefix')}$_wifiInstallAttempt/3', style: TextStyle(color: textSub, fontSize: 11)),
+          ],
           if (!_isInstallingWifi && !success) ...[
             const SizedBox(height: 24),
             SizedBox(
@@ -1247,7 +1315,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   Widget _buildDeviceRegisteringView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
-    final bool failed = !_isRegisteringDevice && _registerFailStatus != null;
+    // [ĐỢT 29] "Đang xử lý" gộp cả 2 pha: chờ Internet hồi phục (_isWaitingForInternet) VÀ
+    // đang gọi Cloud thật (_isRegisteringDevice) — 2 pha nối tiếp nhau, chỉ khác câu chữ hiển thị.
+    final bool inProgress = _isWaitingForInternet || _isRegisteringDevice;
+    final bool failed = !inProgress && _registerFailStatus != null;
     // Xung đột sở hữu/Không đủ quyền là lỗi VĨNH VIỄN — không có ý nghĩa để "Thử lại" (MAC vẫn
     // sẽ thuộc người khác), chỉ còn đường Hủy. Các lỗi còn lại (mạng, timeout...) mới đáng thử lại.
     final bool permanentError = _registerFailStatus == AddDeviceStatus.ownershipConflict || _registerFailStatus == AddDeviceStatus.forbidden;
@@ -1262,7 +1333,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           SizedBox(
             height: 90,
             child: Center(
-              child: _isRegisteringDevice
+              child: inProgress
                   ? const CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)
                   : Icon(
                       failed ? (permanentError ? Icons.block_rounded : Icons.error_rounded) : Icons.check_circle_rounded,
@@ -1273,7 +1344,11 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           ),
           const SizedBox(height: 20),
           Text(
-            _isRegisteringDevice ? t.text('device_registering_status') : (failed ? _registerErrorText(t) : ''),
+            // [ĐỢT 29] Chờ Internet và đang gọi Cloud là 2 câu chữ RIÊNG — user cần biết App
+            // đang ở pha nào, tránh tưởng App treo trong lúc thực ra đang chủ động chờ mạng.
+            _isWaitingForInternet
+                ? t.text('device_waiting_internet_status')
+                : (_isRegisteringDevice ? t.text('device_registering_status') : (failed ? _registerErrorText(t) : '')),
             style: TextStyle(color: failed ? (permanentError ? Colors.orange.shade800 : Colors.redAccent) : textMain, fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
             textAlign: TextAlign.center,
           ),

@@ -568,6 +568,8 @@ class AppTranslations {
       // --- Đợt 25: Direct MAC Binding — đăng ký trực tiếp bằng MAC (add_device_dialog.dart) ---
       'device_register_header': 'Đăng ký thiết bị',
       'device_registering_status': 'Đang đăng ký thiết bị lên hệ thống...',
+      // [ĐỢT 29] Internet Liveness Check — pha chờ RIÊNG trước khi gọi Cloud
+      'device_waiting_internet_status': 'Đang đợi điện thoại kết nối lại mạng Internet...',
       'device_registering_attempt_prefix': 'Đang thử lại — lần ',
       'device_owned_by_other_error': 'Thiết bị này đã được liên kết với một tài khoản khác. Vui lòng yêu cầu chủ sở hữu cũ xóa thiết bị, hoặc thực hiện Hard Reset thiết bị để tiếp tục.',
       'device_register_forbidden_error': 'Bạn không có quyền thêm thiết bị vào ngôi nhà này.',
@@ -1081,6 +1083,8 @@ class AppTranslations {
       // --- Round 25: Direct MAC Binding — register straight by MAC (add_device_dialog.dart) ---
       'device_register_header': 'Registering Device',
       'device_registering_status': 'Registering device to the system...',
+      // [Round 29] Internet Liveness Check — separate waiting phase before hitting the Cloud
+      'device_waiting_internet_status': 'Waiting for your phone to reconnect to the Internet...',
       'device_registering_attempt_prefix': 'Retrying — attempt ',
       'device_owned_by_other_error': 'This device is already linked to another account. Please ask the previous owner to remove it, or perform a Hard Reset on the device to continue.',
       'device_register_forbidden_error': 'You do not have permission to add a device to this home.',
