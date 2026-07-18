@@ -38,7 +38,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   final Color tkGreen = const Color(0xFF00A651);
 
   // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động, 4: Quét mạng LAN (menu độc lập),
-  // 5: Nhập WiFi nhà (App-driven provisioning), 6: Đang cài đặt WiFi,
+  // 5: Nhập WiFi nhà (App-driven provisioning — [ĐỢT 31] cũng là nơi hiện spinner lúc đang gửi,
+  // xem _isSending; KHÔNG còn View 6 riêng cho việc này nữa),
   // 7: [ĐỢT 25] Đăng ký trực tiếp bằng MAC (Direct MAC Binding — thay auto-jump sang View 4)
   int _currentView = 0;
   bool _isProcessing = false;
@@ -63,8 +64,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   List<Map<String, dynamic>> _wifiScanResults = [];
   bool _isScanningWifi = false;
   Timer? _wifiScanPollTimer;
-  // [ĐỢT 30] Lần thử hiện tại (1-5) — hiện cho user thấy tiến trình thay vì spinner im lặng.
-  int _wifiInstallAttempt = 1;
+  // [ĐỢT 31 — GATEKEEPER] Không còn chuyển sang View riêng khi gửi WiFi nữa — spinner hiện
+  // NGAY TRÊN View 5 (form nhập WiFi), user không bao giờ rời màn hình này cho tới khi có kết
+  // quả THẬT (200 OK -> View 7, hoặc hết 3 lần thử -> SnackBar, vẫn đứng nguyên tại đây).
+  bool _isSending = false;
 
   // --- Trạng thái cho luồng QUÉT MẠNG LAN (dùng LanDiscoveryService) — vẫn dùng cho mục menu
   // "Quét mạng LAN" độc lập (View 4); KHÔNG còn tự động nhảy tới đây sau khi cấu hình AP Mode.
@@ -225,65 +228,47 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     }
 
     _wifiScanPollTimer?.cancel();
-    setState(() {
-      _currentView = 6;
-      _wifiInstallAttempt = 1;
-    });
 
-    // [ĐỢT 24 + 26] Lưu ngay khi user bấm Xác nhận — không chờ biết cài đặt có thành công hay
-    // không (đúng như user đã chủ ý gõ để dùng cho thiết bị này). CHỈ lưu khi Checkbox
-    // "_saveWifi" đang bật; nếu user chủ ý tắt, xóa hẳn bản ghi cũ của đúng SSID này (nếu có)
-    // để đảm bảo riêng tư tuyệt đối — không để mật khẩu cũ "sống sót" ngoài ý muốn.
-    if (_saveWifi) {
-      await _saveWifiCredential(ssid, pass);
-    } else {
-      await _forgetWifiCredential(ssid);
-    }
+    // [ĐỢT 31 — GATEKEEPER] KHÔNG chuyển _currentView nữa — spinner bật ngay trên View 5 (form
+    // nhập WiFi hiện tại) qua _isSending. User chỉ rời màn này khi có 200 OK THẬT (sang View 7)
+    // hoặc bấm thử lại thủ công — không còn "nhảy cóc" sang bất kỳ view nào khác giữa chừng.
+    bool isSuccess = false;
+    setState(() { _isSending = true; });
 
-    // [ĐỢT 30 — KHÔNG CÒN COI EXCEPTION LÀ THÀNH CÔNG] Bản Smart Retry trước (Đợt 29) vẫn còn
-    // nhánh "hết số lần thử vẫn coi là thành công" — đúng là ít nhảy cóc hơn bản Đợt 28 nhưng
-    // BẢN CHẤT vẫn suy đoán. Từ Giai đoạn 31, firmware đã trả 200 OK THẬT SỰ TRƯỚC KHI tắt AP
-    // 1.5 giây (xem processPendingWifiSetup() trong C++) — nghĩa là nếu App đủ kiên nhẫn thử
-    // lại, CHẮC CHẮN sẽ nhận được phản hồi 200 thật trong cửa sổ 1.5s đó. Vì vậy KHÔNG CÒN LÝ
-    // DO nào để suy đoán qua Exception nữa — chỉ HTTP 200 thật mới được coi là thành công.
-    bool success = false;
-    const int maxAttempts = 5;
-    for (int i = 0; i < maxAttempts; i++) {
-      if (!mounted) return;
-      setState(() => _wifiInstallAttempt = i + 1);
+    for (int i = 0; i < 3; i++) { // Thử tối đa 3 lần
       try {
         // TUYỆT ĐỐI không dùng jsonEncode/header JSON — truyền thẳng Map<String,String> làm
         // body, gói http tự set application/x-www-form-urlencoded + tự mã hoá, khớp CHÍNH XÁC
         // cách ESP8266WebServer::arg() (và httpd_query_key_value() bên Hub V38) giải mã native.
-        final res = await http
-            .post(
-              Uri.parse('http://192.168.4.1/api/setup_connect'),
-              body: {'ssid': ssid, 'pass': pass},
-            )
-            .timeout(const Duration(seconds: 5));
+        final response = await http.post(
+          Uri.parse('http://192.168.4.1/api/setup_connect'),
+          body: {'ssid': ssid, 'pass': pass},
+        ).timeout(const Duration(seconds: 4)); // Đợi mỗi lần 4 giây
 
-        if (res.statusCode == 200) {
-          success = true;
-          break;
+        if (response.statusCode == 200) {
+          isSuccess = true;
+          break; // ĐÃ NHẬN 200 OK TỪ ESP -> THOÁT LẶP
         }
-        // Có phản hồi THẬT nhưng khác 200 (vd 400 "Missing SSID") — vẫn thử lại cho đủ 5 lần
-        // thay vì bỏ cuộc ngay, phòng trường hợp gói tin lần trước bị lỗi cục bộ nhất thời.
-        if (i < maxAttempts - 1) await Future.delayed(const Duration(seconds: 1));
       } catch (e) {
-        // [KHÔNG CÒN "COI LÀ THÀNH CÔNG"] Socket/Timeout/ClientException đều chỉ là lý do để
-        // THỬ LẠI — không còn nhánh nào tự ý kết luận thành công từ một Exception nữa.
-        if (i < maxAttempts - 1) await Future.delayed(const Duration(seconds: 1));
+        await Future.delayed(const Duration(seconds: 1)); // Lỗi thì chờ 1s rồi thử lại
       }
     }
 
     if (!mounted) return;
-    if (success) {
+    setState(() { _isSending = false; });
+
+    if (isSuccess) {
+      // CHỈ KHI CHẮC CHẮN 100% ESP NHẬN LỆNH MỚI ĐI TIẾP — lưu mật khẩu SAU khi đã xác nhận
+      // thành công thật, không lưu "chạy trước" như các đợt cũ.
+      if (_saveWifi) {
+        await _saveWifiCredential(ssid, pass);
+      } else {
+        await _forgetWifiCredential(ssid);
+      }
+      if (!mounted) return;
       _proceedToDeviceRegistration();
     } else {
-      // [TUYỆT ĐỐI KHÔNG CHUYỂN VIEW SANG ĐĂNG KÝ] Hết 5 lần vẫn không có phản hồi 200 thật —
-      // quay lại màn hình Cài đặt WiFi (View 5, còn nguyên SSID/mật khẩu đã gõ) để user tự
-      // kiểm tra lại kết nối WiFi nội bộ rồi thử lại, thay vì âm thầm đoán mò tiếp.
-      setState(() => _currentView = 5);
+      // THẤT BẠI: Giữ nguyên View 5, báo lỗi nhẹ nhàng, tuyệt đối không nhảy View.
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(AppTranslations.of(context, listen: false).text('wifi_send_failed_error')),
         backgroundColor: Colors.redAccent,
@@ -331,41 +316,28 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       return;
     }
 
-    // [ĐỢT 29 — INTERNET LIVENESS CHECK] Trước đây chờ CỐ ĐỊNH 5s rồi gọi thẳng lên Cloud —
-    // nếu điện thoại chưa kịp rời mạng 192.168.4.x của thiết bị (OS đôi khi mất hơn 5s để tự
-    // chuyển lại 4G/WiFi nhà), request chắc chắn thất bại với "Không thể kết nối máy chủ" dù
-    // chưa hề chạm tới Backend thật. Nay CHỦ ĐỘNG chờ tới khi CÓ Internet thật (tối đa 10s,
-    // poll mỗi 1s) rồi mới bắt đầu gọi — nhanh hơn trong trường hợp tốt, bền hơn trong trường
-    // hợp xấu, thay vì đoán mò một con số cố định.
+    // [ĐỢT 31 — CỬA ẢI INTERNET] Lỗi "Không kết nối máy chủ" trước đây xảy ra vì App gọi
+    // ApiService().addDevice() lúc điện thoại CHƯA KỊP nhả AP của ESP (vẫn đang kẹt trong mạng
+    // cục bộ 192.168.4.x, không có đường ra Internet thật). BẮT BUỘC chờ có Internet thật
+    // (poll mỗi 2 giây, tối đa 15 giây) TRƯỚC KHI chạm tới ApiService — CHỈ khi có mạng thực sự
+    // mới gọi API.
     setState(() => _isWaitingForInternet = true);
-    await _waitForInternet();
+    final internetWaitStopwatch = Stopwatch()..start();
+    while (internetWaitStopwatch.elapsedMilliseconds < 15000) {
+      bool hasInternet = false;
+      try {
+        final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 2));
+        hasInternet = result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+      } catch (_) {
+        hasInternet = false;
+      }
+      if (hasInternet) break;
+      if (!mounted) return;
+      await Future.delayed(const Duration(seconds: 2));
+    }
     if (!mounted) return;
     setState(() => _isWaitingForInternet = false);
     await _attemptRegister(homeId, mac);
-  }
-
-  // Chờ tối đa 10s cho điện thoại có Internet thật (đã nhả AP thiết bị) — không chặn App vô
-  // thời hạn nếu vì lý do gì đó Internet không bao giờ hồi phục (vẫn tiếp tục sang bước đăng ký
-  // dù hết giờ, ApiService.addDevice() tự có timeout/retry riêng của tầng gọi Cloud).
-  Future<void> _waitForInternet() async {
-    const int maxWaitMs = 10000;
-    final sw = Stopwatch()..start();
-    while (sw.elapsedMilliseconds < maxWaitMs) {
-      if (!mounted) return;
-      if (await _hasInternet()) return;
-      await Future.delayed(const Duration(seconds: 1));
-    }
-  }
-
-  // DNS lookup nhẹ nhất có thể — không tải dữ liệu, chỉ cần phân giải được tên miền Backend là
-  // đủ bằng chứng điện thoại đã có đường ra Internet thật (không còn kẹt trong LAN cục bộ ESP).
-  Future<bool> _hasInternet() async {
-    try {
-      final result = await InternetAddress.lookup('api.iot-smart.vn').timeout(const Duration(seconds: 2));
-      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
-    } catch (_) {
-      return false;
-    }
   }
 
   Future<void> _attemptRegister(String homeId, String mac) async {
@@ -1221,13 +1193,18 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             ),
           ),
           const SizedBox(height: 8),
+          // [ĐỢT 31 — GATEKEEPER] Spinner hiện NGAY TRÊN nút này (thay vì rời sang View riêng)
+          // trong lúc _submitWifiCredentials đang thử gửi — nút tự khóa (onPressed: null) để
+          // user không bấm chồng lệnh trong lúc vòng lặp 3 lần thử đang chạy.
           SizedBox(
             width: double.infinity,
             height: 46,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-              onPressed: _submitWifiCredentials,
-              child: Text(t.text('wifi_install_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              onPressed: _isSending ? null : _submitWifiCredentials,
+              child: _isSending
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : Text(t.text('wifi_install_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ),
         ],
@@ -1235,40 +1212,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     );
   }
 
-  // --- VIEW 6: [ĐỢT 22] ĐANG CÀI ĐẶT WIFI — gọi /api/setup_connect + chờ thiết bị khởi động lại ---
-  // [ĐỢT 30] View này giờ CHỈ còn hiển thị pha "đang thử gửi" (spinner + số lần thử) — thất bại
-  // sau 5 lần không còn dừng lại ở đây để hiện icon lỗi/nút Thử lại nữa (xem _submitWifiCredentials):
-  // quay thẳng về View 5 kèm SnackBar, và thành công thì chuyển thẳng sang View 7 trong CÙNG một
-  // setState() nên trạng thái "đã xong" của view này trên thực tế không bao giờ được vẽ ra một
-  // khung hình riêng — bỏ hẳn field _isInstallingWifi (không còn ai đọc) lẫn UI thành công/lỗi cũ.
-  Widget _buildWifiInstallingView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildHeader(t.text('wifi_setup_header'), textMain, textSub),
-          const SizedBox(height: 32),
-          const SizedBox(
-            height: 100,
-            child: Center(child: CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            t.text('wifi_installing_status'),
-            style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
-            textAlign: TextAlign.center,
-          ),
-          // Hiện số lần đang thử — tránh spinner câm suốt tối đa ~30s (5×5s+4×1s) khiến user
-          // tưởng App treo trong lúc thực ra đang tự thử lại theo đúng thiết kế.
-          if (_wifiInstallAttempt > 1) ...[
-            const SizedBox(height: 6),
-            Text('${t.text('device_registering_attempt_prefix')}$_wifiInstallAttempt/5', style: TextStyle(color: textSub, fontSize: 11)),
-          ],
-        ],
-      ),
-    );
-  }
+  // [ĐỢT 31] View 6 (màn "Đang cài đặt WiFi" riêng) đã XÓA HẲN — luồng gửi WiFi không còn rời
+  // View 5 nữa (xem _submitWifiCredentials/_isSending), nên view trung gian này không còn ai
+  // gọi tới, giữ lại chỉ là dead code.
 
   // --- VIEW 7: [ĐỢT 25] ĐĂNG KÝ TRỰC TIẾP BẰNG MAC (Direct MAC Binding) ---
   String _registerErrorText(AppTranslations t) {
@@ -1394,10 +1340,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                               : _currentView == 4
                                   ? _buildLanScanView(isDark, textMain, textSub, t) // View 4: Quét LAN
                                   : _currentView == 5
-                                      ? _buildWifiCredentialView(isDark, textMain, textSub, t) // View 5: Nhập WiFi nhà
-                                      : _currentView == 6
-                                          ? _buildWifiInstallingView(isDark, textMain, textSub, t) // View 6: Đang cài đặt WiFi
-                                          : _buildDeviceRegisteringView(isDark, textMain, textSub, t), // View 7: Đăng ký trực tiếp MAC
+                                      ? _buildWifiCredentialView(isDark, textMain, textSub, t) // View 5: Nhập WiFi nhà (kể cả lúc đang gửi, xem _isSending)
+                                      : _buildDeviceRegisteringView(isDark, textMain, textSub, t), // View 7: Đăng ký trực tiếp MAC (View 6 đã xóa — không còn dùng)
             ),
         ),
     );
