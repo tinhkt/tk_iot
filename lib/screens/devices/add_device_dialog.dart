@@ -51,9 +51,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   // --- [ĐỢT 22] Trạng thái cho luồng CÀI ĐẶT WIFI App-driven (thay thế captive portal HTML) ---
   // Luồng: phát hiện đã nối vào AP thiết bị (isConnectedToHub, ở trên) -> quét WiFi xung quanh
   // qua chính thiết bị (GET /api/scan + poll /api/scan_res) -> user chọn/gõ SSID+mật khẩu ngay
-  // trong App -> gọi POST /api/setup_connect (JSON body, [ĐỢT 26]) -> thiết bị tự lưu + khởi
-  // động lại vào mạng nhà -> App đăng ký TRỰC TIẾP bằng MAC đã biết ([ĐỢT 25], View 7) — KHÔNG
-  // còn quét mạng LAN ở bước này nữa.
+  // trong App -> gọi POST /api/setup_connect (form-urlencoded, [ĐỢT 27] — KHÔNG phải JSON) ->
+  // thiết bị tự lưu + khởi động lại vào mạng nhà -> App đăng ký TRỰC TIẾP bằng MAC đã biết
+  // ([ĐỢT 25], View 7) — KHÔNG còn quét mạng LAN ở bước này nữa.
   final TextEditingController _wifiSsidController = TextEditingController();
   final TextEditingController _wifiPassController = TextEditingController();
   bool _obscureWifiPass = true;
@@ -240,20 +240,20 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     }
 
     try {
-      // [VÁ LỖI "MẤT TÍCH" SAU PROVISIONING] Trước đây gửi ssid/pass qua query string (GET) —
-      // Uri.replace(queryParameters:) của Dart mã hoá reserved-char (+, &, %, #...) theo RFC3986
-      // nghiêm ngặt, trong khi ESP8266WebServer::arg()/Hub V38 getQueryParam() url-decode theo
-      // quy ước riêng có thể LỆCH ở vài ký tự đặc biệt -> mật khẩu WiFi lưu SAI vào Flash ->
-      // thiết bị "biến mất" khỏi mạng sau khi khởi động lại. Đổi hẳn sang POST + JSON body:
-      // JSON string value không cần bất kỳ lớp url-decode nào ở phía firmware, loại bỏ tận gốc
-      // rủi ro lệch mã hoá — khớp đúng route POST mới ở cả 7 firmware.
+      // [VÁ LỖI THẬT TỪ HIỆN TRƯỜNG — QUAY VỀ FORM-URLENCODED] Bản POST+JSON body đã gây lỗi
+      // thật trên phần cứng: thiết bị nhận sai/rỗng dữ liệu -> WiFi.begin("","") thất bại ->
+      // kẹt lại AP Mode. Quay hẳn về application/x-www-form-urlencoded: TUYỆT ĐỐI không
+      // jsonEncode/header JSON — truyền thẳng Map<String,String> làm body, gói http tự set
+      // đúng Content-Type + tự mã hoá, khớp CHÍNH XÁC cách ESP8266WebServer::arg() (và
+      // httpd_query_key_value() bên Hub V38) giải mã native — cùng cơ chế route /wifisave nội
+      // bộ của WiFiManager đã dùng ổn định nhiều năm.
       final res = await http
           .post(
             Uri.parse('http://192.168.4.1/api/setup_connect'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'ssid': ssid, 'pass': pass}),
+            body: {'ssid': ssid, 'pass': pass},
           )
-          // Timeout dài (đúng bằng ~ thời gian firmware tự chặn chờ WiFi.begin() ở phía nó, +biên an toàn)
+          // Timeout dài — firmware nay phản hồi gần như ngay lập tức (không còn chờ xác nhận
+          // kết nối trước khi trả lời), giữ mốc này chỉ để phòng mạng LAN cục bộ chập chờn.
           .timeout(const Duration(seconds: 25));
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       if (!mounted) return;
