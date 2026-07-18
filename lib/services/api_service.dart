@@ -19,7 +19,54 @@ enum AddDeviceStatus { success, notOnlineYet, ownershipConflict, forbidden, othe
 class AddDeviceResult {
   final AddDeviceStatus status;
   final String? message; // câu chữ THẬT server trả về (giữ nguyên để hiện cho user)
-  const AddDeviceResult(this.status, [this.message]);
+  // [LUỒNG CHUYỂN GIAO] Chỉ có giá trị khi status == ownershipConflict — email chủ cũ ĐÃ CHE
+  // sẵn từ Backend (vd "sale.****@gmail.com"), App KHÔNG BAO GIỜ tự ý xử lý/tính toán việc che
+  // này, chỉ hiển thị y nguyên những gì server trả.
+  final String? maskedOwnerEmail;
+  final String? conflictMac;
+  const AddDeviceResult(this.status, [this.message, this.maskedOwnerEmail, this.conflictMac]);
+}
+
+/// [GIAO DIỆN QUẢN TRỊ TOÀN CỤC] 1 dòng trong bảng PaginatedDataTable của SUPER_USER — khớp
+/// đúng khuôn adminDeviceRow (Backend Go, admin_system.go).
+class AdminDeviceRow {
+  final String mac;
+  final String name;
+  final String homeId;
+  final String homeName;
+  final String ownerEmail; // SUPER_USER thấy email THẬT, không che
+  final bool online;
+  final String category;
+  final String fwType;
+
+  const AdminDeviceRow({
+    required this.mac,
+    required this.name,
+    required this.homeId,
+    required this.homeName,
+    required this.ownerEmail,
+    required this.online,
+    this.category = '',
+    this.fwType = '',
+  });
+
+  factory AdminDeviceRow.fromJson(Map<String, dynamic> j) => AdminDeviceRow(
+        mac: j['mac_address']?.toString() ?? '',
+        name: j['name']?.toString() ?? '',
+        homeId: j['home_id']?.toString() ?? '',
+        homeName: j['home_name']?.toString() ?? '',
+        ownerEmail: j['owner_email']?.toString() ?? '',
+        online: j['online'] == true,
+        category: j['category']?.toString() ?? '',
+        fwType: j['fw_type']?.toString() ?? '',
+      );
+}
+
+/// Kết quả 1 trang GET /api/admin/devices — kèm total để PaginatedDataTable tính số trang.
+class AdminDevicePage {
+  final List<AdminDeviceRow> rows;
+  final int total;
+  const AdminDevicePage(this.rows, this.total);
 }
 
 class ApiService {
@@ -41,9 +88,17 @@ class ApiService {
       );
 
       String? serverMsg;
+      String? maskedOwnerEmail;
+      String? conflictMac;
       try {
         final body = json.decode(response.body);
-        if (body is Map) serverMsg = (body['error'] ?? body['message'])?.toString();
+        if (body is Map) {
+          serverMsg = (body['error'] ?? body['message'])?.toString();
+          // [LUỒNG CHUYỂN GIAO] Chỉ 409 mới có 2 trường này (xem LinkDeviceToHomeHandler) — Map
+          // rỗng/thiếu key vẫn an toàn nhờ toán tử ?. + ?? null, không throw.
+          maskedOwnerEmail = body['owner_email_mask']?.toString();
+          conflictMac = body['mac']?.toString();
+        }
       } catch (_) {}
 
       switch (response.statusCode) {
@@ -52,7 +107,7 @@ class ApiService {
         case 404:
           return AddDeviceResult(AddDeviceStatus.notOnlineYet, serverMsg);
         case 409:
-          return AddDeviceResult(AddDeviceStatus.ownershipConflict, serverMsg);
+          return AddDeviceResult(AddDeviceStatus.ownershipConflict, serverMsg, maskedOwnerEmail, conflictMac);
         case 403:
           return AddDeviceResult(AddDeviceStatus.forbidden, serverMsg);
         default:
@@ -147,6 +202,27 @@ class ApiService {
     }
   }
 
+  // --- [CỬA CUỐN ĐA NĂNG — "SERVER MÙ"] CHỌN LOẠI ĐỘNG CƠ ---
+  /// PUT /api/devices/{mac}/motor-type với {"motor_type": "AC_220V"|"DC_24V"}. Backend tra bảng
+  /// preset (pulse_ms/interlock_ms) rồi đẩy xuống mạch qua đúng cơ chế devices_v2/{mac}/config
+  /// (retained) đã có sẵn trong firmware — App KHÔNG tự tính pulse/interlock, chỉ chọn loại.
+  Future<bool> setMotorType(String mac, String motorType) async {
+    try {
+      final token = await SecureStorageService.getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/devices/${Uri.encodeComponent(mac)}/motor-type'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode({'motor_type': motorType}),
+      );
+      if (response.statusCode == 200) return true;
+      if (kDebugMode) print('⚠️ Server từ chối lưu motor-type $mac (HTTP ${response.statusCode}): ${response.body}');
+      return false;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi lưu motor-type: $e');
+      return false;
+    }
+  }
+
   // --- [DIGITAL TWIN] CÀI ĐẶT TỔNG QUÁT KHÁC (Thời gian hành trình cửa cuốn, vị trí %...) ---
   /// PUT /api/devices/{mac}/setting {"key":"...","value":"..."} — mirror setPowerBehavior
   /// nhưng dùng chung MỘT endpoint cho mọi field mới (key phải nằm trong allowlist phía Backend:
@@ -199,6 +275,62 @@ class ApiService {
     }
   }
 
+  // --- [LUỒNG CHUYỂN GIAO] User bị 409 bấm "Gửi yêu cầu gỡ" -> Backend gửi email kèm link tự
+  // xác thực tới chủ hiện tại (RequestUnbindHandler). success=false không phải lúc nào cũng là
+  // lỗi thật — Backend cố ý trả 200 im lặng khi bị rate-limit (chống spam 1 email/giờ/MAC).
+  Future<bool> requestUnbind(String mac) async {
+    try {
+      final response = await authorizedPost('$baseUrl/devices/${Uri.encodeComponent(mac)}/request-unbind');
+      if (response.statusCode == 200) return true;
+      if (kDebugMode) print('⚠️ requestUnbind($mac) -> HTTP ${response.statusCode}: ${response.body}');
+      return false;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi requestUnbind($mac): $e');
+      return false;
+    }
+  }
+
+  // --- [GIAO DIỆN QUẢN TRỊ TOÀN CỤC — CHỈ SUPER_USER] ---
+  /// GET /api/admin/devices?search=&page=&page_size= — Backend tự lọc "Smart Search" (tên thiết
+  /// bị/tên nhà/email chủ/MAC cùng lúc) + phân trang. Trả null khi lỗi mạng/HTTP (UI tự hiện lại
+  /// nút Thử lại, không đoán mò dữ liệu rỗng nghĩa là "không có thiết bị nào").
+  Future<AdminDevicePage?> listAllDevicesAdmin({String search = '', int page = 1, int pageSize = 20}) async {
+    try {
+      final uri = Uri.parse('$baseUrl/admin/devices').replace(queryParameters: {
+        if (search.isNotEmpty) 'search': search,
+        'page': '$page',
+        'page_size': '$pageSize',
+      });
+      final token = await SecureStorageService.getToken();
+      final response = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ listAllDevicesAdmin -> HTTP ${response.statusCode}: ${response.body}');
+        return null;
+      }
+      final body = json.decode(response.body);
+      final List<dynamic> raw = (body['devices'] as List?) ?? [];
+      final rows = raw.map((e) => AdminDeviceRow.fromJson(e as Map<String, dynamic>)).toList();
+      return AdminDevicePage(rows, (body['total'] as num?)?.toInt() ?? rows.length);
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi listAllDevicesAdmin: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/admin/devices/{mac}/force-unbind — "Quyền Tối cao": SUPER_USER ép gỡ thiết bị
+  /// khỏi BẤT KỲ tài khoản nào ngay lập tức, không cần email xác nhận (khác requestUnbind()).
+  Future<bool> forceUnbindDevice(String mac) async {
+    try {
+      final response = await authorizedPost('$baseUrl/admin/devices/${Uri.encodeComponent(mac)}/force-unbind');
+      if (response.statusCode == 200) return true;
+      if (kDebugMode) print('⚠️ forceUnbindDevice($mac) -> HTTP ${response.statusCode}: ${response.body}');
+      return false;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi forceUnbindDevice($mac): $e');
+      return false;
+    }
+  }
+
   // --- HÀM TRỢ GIÚP GẮN TOKEN VÀO HEADER ---
   Future<http.Response> authorizedGet(String url) async {
     final token = await SecureStorageService.getToken();
@@ -238,5 +370,37 @@ class ApiService {
       },
       body: body != null ? json.encode(body) : null,
     );
+  }
+
+  // --- HÀM TRỢ GIÚP GỬI LỆNH PUT KÈM TOKEN + BODY JSON ---
+  Future<http.Response> authorizedPut(String url, [Map<String, dynamic>? body]) async {
+    final token = await SecureStorageService.getToken();
+
+    return await http.put(
+      Uri.parse(url),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: body != null ? json.encode(body) : null,
+    );
+  }
+
+  // --- [GIAI ĐOẠN 72 — KÉO THẢ SẮP XẾP] Lưu thứ tự thẻ thiết bị theo Nhà ---
+  /// PUT /api/homes/{homeId}/device-order {"ordered_macs": [...]} — SetDeviceOrderHandler (Go)
+  /// lưu vào Redis device_order:{homeId}; applyDeviceOrder() sẽ tự sắp lại danh sách mỗi lần
+  /// GET devices/dashboard-sync sau đó. Trả về true/false đơn giản, App tự optimistic-update
+  /// UI trước rồi gọi hàm này, revert nếu false (giống RoomGroupProvider.reorderRooms).
+  Future<bool> setDeviceOrder(String homeId, List<String> orderedMacs) async {
+    try {
+      final response = await authorizedPut(
+        '$baseUrl/homes/${Uri.encodeComponent(homeId)}/device-order',
+        {'ordered_macs': orderedMacs},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi setDeviceOrder: $e');
+      return false;
+    }
   }
 }

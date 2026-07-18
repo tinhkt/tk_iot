@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, SocketException;
 import 'dart:math';
 
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, ValueNotifier;
@@ -97,10 +97,23 @@ class MqttService {
         final origin = client?.connectionStatus?.disconnectionOrigin;
         if (_manualDisconnect || origin == MqttDisconnectionOrigin.solicited) {
           if (kDebugMode) print('ℹ️ [MQTT] Đã ngắt kết nối theo yêu cầu (đăng xuất).');
-        } else {
-          // Đứt KHÔNG do chủ ý (broker timeout/PC ngủ) — autoReconnect sẽ tự cứu
-          if (kDebugMode) print('⚠️ [MQTT] MẤT KẾT NỐI NGẦM! Thư viện đang tự động nối lại...');
+          return;
         }
+        // Đứt KHÔNG do chủ ý (broker timeout/PC ngủ, hoặc OS chuyển mạng AP<->4G đột ngột gây
+        // "Software caused connection abort") — autoReconnect (đã bật ở trên) thường tự cứu.
+        if (kDebugMode) print('⚠️ [MQTT] MẤT KẾT NỐI NGẦM! Thư viện đang tự động nối lại...');
+        // [LƯỚI AN TOÀN THỨ 2] Phòng trường hợp cơ chế autoReconnect nội bộ không kịp kích hoạt
+        // đúng lúc (đứt kiểu abort đột ngột giữa lúc OS đang chuyển interface mạng) — kiểm tra
+        // lại sau 3s, NẾU VẪN chưa tự nối lại được (và không phải do chủ ý ngắt) thì chủ động
+        // gọi connect() một lần nữa. An toàn tuyệt đối để gọi thừa: connect() tự no-op ngay từ
+        // dòng đầu nếu đã kết nối rồi (autoReconnect lỡ cứu kịp trong lúc chờ 3s).
+        Timer(const Duration(seconds: 3), () {
+          if (_manualDisconnect) return;
+          if (!_isClientConnected) {
+            if (kDebugMode) print('🔁 [MQTT] Sau 3s vẫn chưa tự nối lại được — chủ động thử lại...');
+            connect();
+          }
+        });
       };
       c.onAutoReconnect = () {
         brokerOnline.value = false;
@@ -132,17 +145,49 @@ class MqttService {
 
       // Bắt đầu lắng nghe luồng tin nhắn đổ về — stream này SỐNG XUYÊN các lần
       // auto-reconnect vì client không bị tạo mới, nên không lo listener mồ côi.
-      c.updates!.listen((List<MqttReceivedMessage<MqttMessage>> messages) {
-        final MqttPublishMessage recMess = messages[0].payload as MqttPublishMessage;
-        final String message = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
-        final String topic = messages[0].topic;
+      // [BẢO VỆ STREAM] Trước đây .listen() không có onError — một SocketException rò rỉ từ
+      // socket bên dưới (vd "Software caused connection abort" khi OS chuyển AP<->4G đột ngột
+      // giữa lúc đang đọc dữ liệu) sẽ lọt thành Unhandled Exception làm crash App. Thêm
+      // onError để NUỐT lỗi + log thay vì rethrow; cancelOnError: false để stream KHÔNG tự hủy
+      // sau 1 lỗi — vẫn tiếp tục nhận tin khi kênh nối lại (autoReconnect tái dùng cùng stream).
+      c.updates!.listen(
+        (List<MqttReceivedMessage<MqttMessage>> messages) {
+          // [RÀO CHẮN AN TOÀN] Payload rỗng/null hoặc gói tin dị dạng — bỏ qua thay vì crash.
+          if (messages.isEmpty) return;
+          final dynamic rawPayload = messages[0].payload;
+          if (rawPayload is! MqttPublishMessage) return;
+          final MqttPublishMessage recMess = rawPayload;
+          final String message = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+          final String topic = messages[0].topic;
+          if (topic.isEmpty) return;
 
-        if (kDebugMode) print('📥 [MQTT NHẬN]: Topic: $topic | Payload: $message');
+          if (kDebugMode) print('📥 [MQTT NHẬN]: Topic: $topic | Payload: $message');
 
-        // Bắn dữ liệu về cho DeviceProvider bóc tách và vẽ lại UI
-        if (onMessageReceived != null) {
-          onMessageReceived!(topic, message);
-        }
+          // Bắn dữ liệu về cho DeviceProvider bóc tách và vẽ lại UI
+          if (onMessageReceived != null) {
+            onMessageReceived!(topic, message);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          // TUYỆT ĐỐI không rethrow — đây chính là nơi rò rỉ "Unhandled Exception:
+          // SocketException: Software caused connection abort" trước đây.
+          if (kDebugMode) print('⚠️ [MQTT] Stream lỗi (kênh đọc dữ liệu bị rớt ngang): $error');
+          isConnected = false;
+          brokerOnline.value = false;
+        },
+        cancelOnError: false,
+      );
+    } on SocketException catch (e) {
+      // [NHIỆM VỤ 1] Bắt RIÊNG SocketException (vd "Software caused connection abort" khi OS
+      // chuyển mạng AP<->4G đột ngột giữa lúc bắt tay/đọc-ghi TCP) — log rõ ràng, TUYỆT ĐỐI
+      // không rethrow, để lộ thành Unhandled Exception làm crash App.
+      if (kDebugMode) print('MQTT TCP Connection aborted: $e — sẽ tự thử lại sau 10 giây.');
+      isConnected = false;
+      brokerOnline.value = false;
+      client?.disconnect();
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 10), () {
+        if (!_manualDisconnect) connect();
       });
     } catch (e) {
       // Kết nối thất bại HOÀN TOÀN (chưa từng nối được nên autoReconnect chưa kích
@@ -183,9 +228,21 @@ class MqttService {
     final builder = MqttClientPayloadBuilder();
     builder.addString(payload);
 
-    client!.publishMessage(topic, MqttQos.atLeastOnce, builder.payload!);
-    // Log ra terminal để bác dễ kiểm soát
-    if (kDebugMode) print('📤 [MQTT PUBLISH]: $payload -> Topic: $topic');
+    // [NHIỆM VỤ 1 — áp cho mọi điểm publish] Nút bấm UI gọi thẳng xuống đây; nếu đúng lúc
+    // OS đang chuyển AP<->4G, socket ghi có thể chết đột ngột (SocketException errno=103)
+    // NGAY TẠI publishMessage() chứ không phải ở connect(). Bọc lại để không rò rỉ thành
+    // Unhandled Exception làm crash App — mất 1 lệnh còn hơn crash cả app.
+    try {
+      client!.publishMessage(topic, MqttQos.atLeastOnce, builder.payload!);
+      // Log ra terminal để bác dễ kiểm soát
+      if (kDebugMode) print('📤 [MQTT PUBLISH]: $payload -> Topic: $topic');
+    } on SocketException catch (e) {
+      if (kDebugMode) print('MQTT TCP Connection aborted (publish): $e');
+      isConnected = false;
+      brokerOnline.value = false;
+    } catch (e) {
+      if (kDebugMode) print('⚠️ [MQTT] Publish thất bại (kênh vừa rớt giữa chừng): $e');
+    }
   }
 
   /// [HỢP ĐỒNG MỚI] Mọi lệnh điều khiển đi qua Cầu nối Backend thay vì publish thẳng
@@ -229,8 +286,18 @@ class MqttService {
     }
 
     for (final topic in targets) {
-      client!.publishMessage(topic, MqttQos.atLeastOnce, (MqttClientPayloadBuilder()..addString(payload)).payload!);
-      if (kDebugMode) print('⚡ [LỆNH QUA BRIDGE]: $payload -> Topic: $topic');
+      // Bọc từng lượt publish riêng lẻ trong vòng lặp — một target rớt (socket abort giữa
+      // chừng lúc OS đổi mạng) không được kéo sập cả vòng lặp, các target còn lại vẫn bắn tiếp.
+      try {
+        client!.publishMessage(topic, MqttQos.atLeastOnce, (MqttClientPayloadBuilder()..addString(payload)).payload!);
+        if (kDebugMode) print('⚡ [LỆNH QUA BRIDGE]: $payload -> Topic: $topic');
+      } on SocketException catch (e) {
+        if (kDebugMode) print('MQTT TCP Connection aborted (publishCommand): $e');
+        isConnected = false;
+        brokerOnline.value = false;
+      } catch (e) {
+        if (kDebugMode) print('⚠️ [MQTT] Gửi lệnh thất bại tới $topic (kênh vừa rớt giữa chừng): $e');
+      }
     }
   }
 

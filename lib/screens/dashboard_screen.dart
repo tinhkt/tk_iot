@@ -18,6 +18,7 @@ import '../services/dashboard_sync_service.dart';
 import 'auth/login_screen.dart';
 import 'admin/role_management_view.dart';
 import 'admin/admin_system_screen.dart';
+import 'admin/device_management_screen.dart';
 import '../services/admin_service.dart';
 import 'devices/add_device_dialog.dart';
 import 'admin/profile_management_view.dart';
@@ -35,11 +36,14 @@ import '../providers/home_provider.dart';
 import '../providers/automation_provider.dart';
 import 'groups/edit_group_screen.dart';
 import 'groups/room_management_screen.dart';
+import 'package:reorderable_grid_view/reorderable_grid_view.dart'; // [GIAI ĐOẠN 72 — IN-PLACE REORDER]
+import 'dart:math' show Random;
 import 'automation/automation_screen.dart';
 import 'automation/create_automation_screen.dart';
 import 'devices/device_timer_screen.dart';
 import 'devices/device_history_screen.dart';
 import '../widgets/share_device_dialog.dart';
+import '../widgets/ownership_conflict_dialog.dart'; // [LUỒNG CHUYỂN GIAO] Dialog 409 dùng chung
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
@@ -472,15 +476,163 @@ class _DashboardScreenState extends State<DashboardScreen> {
       : currentHomeId;
 
   // ==========================================================================
+  // ↕️ [GIAI ĐOẠN 72 — REWRITE] KÉO-THẢ SẮP XẾP TẠI CHỖ (in-place, ngay trên Dashboard)
+  // ==========================================================================
+  // [TẠI SAO ĐỔI TỪ MÀN RIÊNG SANG TẠI CHỖ] Bản trước dùng DeviceOrderScreen (List dọc, màn
+  // riêng) — đúng chuẩn UX Room reorder cũ nhưng SAI yêu cầu người dùng ("in-place, giống iOS
+  // Jiggle"). Bản này: bấm Cây bút -> đúng vùng lưới thiết bị TRÊN Dashboard đổi thành lưới
+  // rung-lắc kéo-thả, KHÔNG điều hướng màn hình nào cả.
+  //
+  // [TẠI SAO KHÔNG GỘP THẲNG CÁC THẺ GỐC (Fan/Switch/Cửa cuốn/...) VÀO 1 LƯỚI] Các thẻ gốc có
+  // kích thước/tỉ lệ khác nhau hoàn toàn theo category (thẻ Cửa cuốn cao gấp nhiều lần thẻ Công
+  // tắc) và được build qua nhiều vòng lặp + hàm dịch DPS phức tạp trong _buildDevicesGridBody —
+  // ép chung vào 1 SliverGridDelegateWithFixedCrossAxisCount đồng nhất sẽ vỡ layout hoặc buộc
+  // viết lại toàn bộ hàm build thẻ (rủi ro cao, ngoài phạm vi yêu cầu). Thay vào đó, ĐÚNG như
+  // iOS Home Screen thật: khi vào Jiggle mode, icon app KHÔNG chạy nội dung sống của nó — chỉ
+  // hiện icon + tên tĩnh. Ở đây cũng vậy: edit mode hiện 1 lưới Ô ĐỒNG NHẤT (icon + tên) cho
+  // MỌI thiết bị bất kể category — không đụng logic build thẻ gốc, tap/long-press tự động bị
+  // "vô hiệu hóa" vì các ô edit-mode này KHÔNG hề gắn handler nào ngoài kéo-thả.
+  bool _isEditingOrder = false;
+  bool _savingOrder = false;
+  List<Map<String, dynamic>> _editOrderDraft = [];
+
+  void _toggleEditOrder() {
+    if (_isEditingOrder) {
+      _saveDeviceOrder();
+      return;
+    }
+    setState(() {
+      _isEditingOrder = true;
+      _editOrderDraft = _currentHomeDevices.whereType<Map>().map((d) => Map<String, dynamic>.from(d)).toList();
+    });
+  }
+
+  Future<void> _saveDeviceOrder() async {
+    final homeId = _provisioningTargetHomeId;
+    final orderedMacs = _editOrderDraft
+        .map((d) => (d['mac_address'] ?? d['mac'] ?? '').toString())
+        .where((m) => m.isNotEmpty)
+        .toList();
+    if (homeId.isEmpty || orderedMacs.isEmpty) {
+      setState(() => _isEditingOrder = false);
+      return;
+    }
+    setState(() => _savingOrder = true);
+    final ok = await ApiService().setDeviceOrder(homeId, orderedMacs);
+    if (!mounted) return;
+    setState(() {
+      _savingOrder = false;
+      _isEditingOrder = false;
+    });
+    if (ok) {
+      _handleRefresh();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể lưu thứ tự, vui lòng thử lại'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  IconData _iconForOrderCategory(String category) {
+    switch (category) {
+      case 'fan':
+        return Icons.mode_fan_off_outlined;
+      case 'curtain':
+        return Icons.blinds_outlined;
+      case 'sensor':
+        return Icons.sensors_rounded;
+      case 'ac':
+        return Icons.ac_unit_rounded;
+      case 'light':
+        return Icons.lightbulb_outline_rounded;
+      case 'pump':
+        return Icons.water_drop_outlined;
+      case 'fridge':
+        return Icons.kitchen_outlined;
+      default:
+        return Icons.power_settings_new_rounded;
+    }
+  }
+
+  // Lưới edit-mode: Ô đồng nhất (icon + tên) cho MỌI thiết bị, kéo-thả trực tiếp trên Dashboard.
+  Widget _buildEditOrderGrid(DeviceProvider provider, bool isDark, Color textMain, Color textSub) {
+    final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
+    if (_editOrderDraft.isEmpty) {
+      return _buildEmptyState(isDark, textSub, "Chưa có thiết bị nào để sắp xếp.");
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        int crossAxisCount = constraints.maxWidth < 500 ? 3 : (constraints.maxWidth / 130).floor();
+        if (crossAxisCount < 3) crossAxisCount = 3;
+        return ReorderableGridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(4),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 0.85,
+          ),
+          itemCount: _editOrderDraft.length,
+          onReorder: (oldIndex, newIndex) {
+            setState(() {
+              final item = _editOrderDraft.removeAt(oldIndex);
+              _editOrderDraft.insert(newIndex, item);
+            });
+          },
+          itemBuilder: (context, index) {
+            final d = _editOrderDraft[index];
+            final mac = (d['mac_address'] ?? d['mac'] ?? '').toString();
+            final category = (d['category'] ?? '').toString();
+            final name = provider.displayNameOf(mac, fallback: (d['name'] ?? '').toString());
+            return _JiggleTile(
+              key: ValueKey(mac.isNotEmpty ? mac : index),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: cardColor,
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 8, offset: const Offset(0, 3))],
+                ),
+                padding: const EdgeInsets.all(10),
+                child: Stack(
+                  children: [
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(_iconForOrderCategory(category), color: tkGreen, size: 32),
+                        const SizedBox(height: 8),
+                        Text(
+                          name.isNotEmpty ? name : 'Thiết bị',
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: textMain, fontSize: 12, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                    Positioned(top: 0, right: 0, child: Icon(Icons.drag_indicator_rounded, size: 16, color: textSub)),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================================
   // ➕ LIÊN KẾT THIẾT BỊ VỪA QUÉT/NHẬP VÀO NHÀ (POST /api/homes/:id/devices)
   // ==========================================================================
   /// AddDeviceDialog chỉ trả về mã MAC (String) — hàm này mới là nơi GỌI API THẬT.
   /// [FIX] Trước đây dashboard bỏ quên kết quả dialog: quét QR xong không link gì cả.
-  /// Bắt buộc có phản hồi rõ ràng cho người dùng:
-  ///   - Thành công  -> SnackBar xanh + làm mới danh sách
-  ///   - Server chê  -> SnackBar đỏ kèm ĐÚNG thông báo lỗi server trả về
-  ///                    (vd: "Thiết bị (Mã MAC: XXX) hiện không trực tuyến!")
-  ///   - Rớt mạng    -> SnackBar đỏ báo lỗi kết nối
+  /// [FIX TIẾP — lỗ hổng 409 thật] Trước đây hàm này TỰ gọi http.post() thô rồi hiện SnackBar đỏ
+  /// chung chung cho MỌI lỗi kể cả 409 — luồng QR/Nhập tay/Quét LAN không hề có Dialog "Thiết bị
+  /// đã có chủ" như luồng AP Mode (add_device_dialog.dart), lệch hẳn trải nghiệm giữa 2 lối vào
+  /// cùng một tính năng. Nay dùng CHUNG ApiService.addDevice() (đã có type AddDeviceResult) +
+  /// showOwnershipConflictDialog() dùng chung — 409 luôn ra đúng 1 Dialog dù đi lối nào.
+  ///   - Thành công        -> SnackBar xanh + làm mới danh sách
+  ///   - 409 đã có chủ     -> Dialog chuyên biệt + email chủ cũ đã che + nút "Gửi yêu cầu gỡ"
+  ///   - Server chê khác   -> SnackBar đỏ kèm ĐÚNG thông báo lỗi server trả về
+  ///   - Rớt mạng          -> SnackBar đỏ báo lỗi kết nối
   Future<void> _linkScannedDevice(dynamic dialogResult) async {
     // Dialog đóng không quét gì (null) hoặc luồng AP Mode trả bool -> không link
     if (dialogResult is! String || dialogResult.trim().isEmpty) return;
@@ -496,42 +648,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    try {
-      if (kDebugMode) print('🤝 [LINK] Gửi yêu cầu link $mac vào nhà $homeId...');
-      final token = await AuthService().getToken();
-      final response = await http.post(
-        Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/devices'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'mac_address': mac}),
-      );
-      if (kDebugMode) print('🤝 [LINK] $mac -> HTTP ${response.statusCode}: ${response.body}');
-      if (!mounted) return;
+    if (kDebugMode) print('🤝 [LINK] Gửi yêu cầu link $mac vào nhà $homeId...');
+    final AddDeviceResult result = await ApiService().addDevice(homeId, mac);
+    if (!mounted) return;
 
-      if (response.statusCode == 200) {
+    switch (result.status) {
+      case AddDeviceStatus.success:
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('✅ Đã thêm thiết bị $mac vào nhà thành công!'),
           backgroundColor: const Color(0xFF00A651),
         ));
         _handleRefresh(); // kéo danh sách mới -> thẻ thiết bị hiện ra ngay
-      } else {
-        // Moi đúng câu chữ lỗi server gửi về (MAC sai, thiết bị chưa kết nối mạng...)
-        String errMsg = 'Lỗi máy chủ (HTTP ${response.statusCode})';
-        try {
-          final body = jsonDecode(response.body);
-          if (body is Map && (body['error'] ?? '').toString().isNotEmpty) errMsg = body['error'].toString();
-        } catch (_) {}
+        break;
+      case AddDeviceStatus.ownershipConflict:
+        // [LUỒNG CHUYỂN GIAO] KHÔNG hiện SnackBar chung chung nữa — bung đúng Dialog chuyên biệt
+        // kèm email chủ cũ đã che + nút "Gửi yêu cầu gỡ" (dùng chung với luồng AP Mode).
+        await showOwnershipConflictDialog(context, mac: mac, maskedOwnerEmail: result.maskedOwnerEmail);
+        break;
+      case AddDeviceStatus.networkError:
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('❌ Không thể kết nối máy chủ — kiểm tra mạng rồi thử lại.'),
+          backgroundColor: Colors.redAccent,
+        ));
+        break;
+      case AddDeviceStatus.notOnlineYet:
+      case AddDeviceStatus.forbidden:
+      case AddDeviceStatus.otherError:
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('❌ $errMsg'),
+          content: Text('❌ ${result.message ?? 'Lỗi máy chủ không xác định'}'),
           backgroundColor: Colors.redAccent,
           duration: const Duration(seconds: 5),
         ));
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('❌ Không thể kết nối máy chủ — kiểm tra mạng rồi thử lại.'),
-        backgroundColor: Colors.redAccent,
-      ));
+        break;
     }
   }
 
@@ -1765,36 +1913,72 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: isMobile
           ? AppBar(
               backgroundColor: isGlass ? Colors.transparent : (isDark ? surfaceLight : bgLight), elevation: 0, iconTheme: IconThemeData(color: tkGreen),
-              title: Text(_selectedIndex == 3 ? 'THÔNG BÁO' : _selectedIndex == 4 ? 'CÀI ĐẶT' : 'MY HOME', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, letterSpacing: 1.2)), centerTitle: true, 
+              title: Text(_selectedIndex == 3 ? 'THÔNG BÁO' : _selectedIndex == 4 ? 'CÀI ĐẶT' : 'MY HOME', style: TextStyle(color: textMain, fontWeight: FontWeight.w900, letterSpacing: 1.2)), centerTitle: true,
               actions: _selectedIndex == 4 ? [] : [
-                IconButton(
-                  icon: Icon(Icons.add_circle_outline_rounded, color: textMain),
-                  onPressed: () async {
-                    // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
-                    // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                    final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
-                    await _linkScannedDevice(result);
-                    _handleRefresh();
-                  },
-                ),
+                // [VÁ LỖ HỔNG "THIẾT BỊ MA"] Trước đây nút + hiện ở MỌI tab (trừ Cài đặt) — kể cả
+                // khi đang ở Quản trị Hệ thống(7)/Quản trị Thiết bị(8)/Vai trò(6)/Quản lý Nhà(5),
+                // nơi KHÔNG có ngữ cảnh 1 Ngôi nhà cụ thể. SUPER_USER bấm nhầm ở các tab đó tạo ra
+                // AddDeviceDialog với homeId RỖNG -> thiết bị lơ lửng ngoài không gian. Nay CHỈ
+                // hiện khi đang ở tab "MY HOME" (index 0) VÀ đã có ngữ cảnh nhà hợp lệ — cùng điều
+                // kiện với nút + bản Desktop (xem "all_devices" section bên dưới).
+                if (_selectedIndex == 0 && (userRole != 'SUPER_USER' || _selectedHomeForSuperUser != null)) ...[
+                  // [GIAI ĐOẠN 72 — REWRITE] Cây bút -> chuyển isEditing tại chỗ, KHÔNG điều
+                  // hướng màn hình nào. Đang sửa -> đổi thành nút "Xong" xanh, ẩn nút "+" (tránh
+                  // thêm thiết bị giữa lúc đang kéo-thả làm lệch draft thứ tự).
+                  _isEditingOrder
+                      ? TextButton.icon(
+                          onPressed: _savingOrder ? null : _toggleEditOrder,
+                          icon: _savingOrder
+                              ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+                              : Icon(Icons.check_circle_rounded, color: tkGreen, size: 20),
+                          label: Text('Xong', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold)),
+                        )
+                      : IconButton(
+                          icon: Icon(Icons.edit_note_rounded, color: textMain),
+                          tooltip: 'Sắp xếp thiết bị',
+                          onPressed: _toggleEditOrder,
+                        ),
+                  if (!_isEditingOrder)
+                    IconButton(
+                      icon: Icon(Icons.add_circle_outline_rounded, color: textMain),
+                      onPressed: () async {
+                        // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
+                        // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                        final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
+                        await _linkScannedDevice(result);
+                        _handleRefresh();
+                      },
+                    ),
+                ],
                 _buildNotificationBell(textMain, textSub), const SizedBox(width: 8),
               ]
             )
           : null,
-      drawer: isMobile ? _buildMobileDrawer(isDark, surfaceLight, textMain, textSub) : null,
-      
+      // [ĐÓNG BĂNG RENDER] RepaintBoundary — Drawer chỉ hiện khi user vuốt mở nên ít khi là điểm
+      // nóng, nhưng bọc luôn cho đồng bộ với Sidebar Desktop bên dưới, chống layer cha (nếu có
+      // rebuild ngoài ý muốn) kéo theo vẽ lại nội dung Drawer.
+      drawer: isMobile ? RepaintBoundary(child: _buildMobileDrawer(isDark, surfaceLight, textMain, textSub)) : null,
+
       body: Column(
         children: [
-          if (!kIsWeb && !isMobile && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) _buildCustomTitleBar(isDark),
+          // [ĐÓNG BĂNG RENDER] Header/title bar Desktop là vùng TĨNH (chỉ đổi khi bấm phóng to/
+          // thu nhỏ/đóng cửa sổ) — RepaintBoundary chống nó bị kéo vẽ lại theo body bên dưới.
+          if (!kIsWeb && !isMobile && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) RepaintBoundary(child: _buildCustomTitleBar(isDark)),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (!isMobile) _buildDesktopFloatingSidebar(isDark, textMain, textSub),
+                // [ĐÓNG BĂNG RENDER] Sidebar Desktop là vùng TĨNH (menu điều hướng) — bọc
+                // RepaintBoundary để lớp vẽ (paint layer) của nó độc lập với phần body bên cạnh
+                // (nơi lưới thiết bị nhấp nháy liên tục theo MQTT); Flutter không cần vẽ lại
+                // Sidebar mỗi khi layer body thay đổi.
+                if (!isMobile) RepaintBoundary(child: _buildDesktopFloatingSidebar(isDark, textMain, textSub)),
                 Expanded(
                   child: SafeArea(
                     // [ADMIN] index 7 = Quản trị hệ thống, nhúng thẳng vào body (giữ sidebar + header)
                     child: _selectedIndex == 7 ? const AdminSystemScreen(embedded: true)
+                         // [ADMIN] index 8 = Quản trị Thiết bị toàn cục, cùng khuôn mẫu nhúng
+                         : _selectedIndex == 8 ? const DeviceManagementScreen(embedded: true)
                          // [PHÒNG] index 1 = Quản lý phòng, nhúng làm tab body (embedded: bỏ AppBar Back)
                          : _selectedIndex == 1 ? const RoomManagementScreen(embedded: true)
                          // [NGỮ CẢNH] index 2 = Automation/Scene, nhúng làm tab body
@@ -1944,6 +2128,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildMenuItem(6, Icons.security_rounded, t.text('permissions'), txtMain, txtSub),
                   // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
                   if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub),
+                  // [ADMIN] Nút Quản trị Thiết bị toàn cục — cùng điều kiện SUPER_USER
+                  if (_isSuperUser) _buildDeviceAdminMenuItem(txtMain, txtSub),
                   _buildMenuItem(4, Icons.settings_rounded, t.text('settings'), txtMain, txtSub),
                 ],
               ),
@@ -1998,6 +2184,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildMenuItem(6, Icons.security_rounded, t.text('permissions'), txtMain, txtSub, isFromDrawer: true),
                   // [ADMIN] Nút Quản trị hệ thống — chỉ SUPER_USER thấy, đặt NGAY TRÊN 'Cài đặt'
                   if (_isSuperUser) _buildAdminMenuItem(txtMain, txtSub, isFromDrawer: true),
+                  // [ADMIN] Nút Quản trị Thiết bị toàn cục — cùng điều kiện SUPER_USER
+                  if (_isSuperUser) _buildDeviceAdminMenuItem(txtMain, txtSub, isFromDrawer: true),
                   _buildMenuItem(4, Icons.settings_rounded, t.text('settings'), txtMain, txtSub, isFromDrawer: true),
                 ],
               ),
@@ -2061,6 +2249,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () {
             if (isFromDrawer) Navigator.of(context).pop(); // đóng Drawer trượt (Mobile) trước khi đổi tab
             setState(() => _selectedIndex = kAdminIndex);
+          },
+        ),
+      ),
+    );
+  }
+
+  // Index dành riêng cho màn Quản trị Thiết bị toàn cục (nhúng trong body qua _selectedIndex).
+  static const int kDeviceAdminIndex = 8;
+
+  // [ADMIN] Nút Sidebar "Quản trị Thiết bị" — CHỈ SUPER_USER thấy (gate ở nơi gọi, không lặp lại
+  // ở đây), cùng khuôn mẫu _buildAdminMenuItem ở trên, nhúng qua _selectedIndex.
+  Widget _buildDeviceAdminMenuItem(Color txtMain, Color txtSub, {bool isFromDrawer = false}) {
+    final bool isSelected = _selectedIndex == kDeviceAdminIndex;
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
+    final t = AppTranslations.of(context);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          leading: Icon(Icons.dns_rounded, color: isSelected ? tkGreen : txtSub, size: 22, shadows: sh),
+          title: Text(t.text('device_admin_title'),
+              style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
+          onTap: () {
+            if (isFromDrawer) Navigator.of(context).pop();
+            setState(() => _selectedIndex = kDeviceAdminIndex);
           },
         ),
       ),
@@ -2147,17 +2369,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           else
                             Text(t.text('all_devices'), style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.bold)),
                           
-                          if (userRole != 'SUPER_USER' || _selectedHomeForSuperUser != null) 
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), foregroundColor: tkGreen, elevation: 0, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-                              icon: const Icon(Icons.add, size: 20), label: Text(t.text('add_device'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                              onPressed: () async {
-                                // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
-                                // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
-                                final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
-                                await _linkScannedDevice(result);
-                                _handleRefresh();
-                              },
+                          if (userRole != 'SUPER_USER' || _selectedHomeForSuperUser != null)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // [GIAI ĐOẠN 72 — REWRITE] Cây bút -> chuyển isEditing tại chỗ,
+                                // KHÔNG điều hướng màn hình nào (xem comment đầy đủ tại _toggleEditOrder).
+                                _isEditingOrder
+                                    ? TextButton.icon(
+                                        onPressed: _savingOrder ? null : _toggleEditOrder,
+                                        icon: _savingOrder
+                                            ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+                                            : Icon(Icons.check_circle_rounded, color: tkGreen, size: 20),
+                                        label: Text('Xong', style: TextStyle(color: tkGreen, fontWeight: FontWeight.bold)),
+                                      )
+                                    : IconButton(
+                                        icon: Icon(Icons.edit_note_rounded, color: textMain),
+                                        tooltip: 'Sắp xếp thiết bị',
+                                        onPressed: _toggleEditOrder,
+                                      ),
+                                if (!_isEditingOrder) ...[
+                                  const SizedBox(width: 4),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(backgroundColor: tkGreen.withValues(alpha: 0.15), foregroundColor: tkGreen, elevation: 0, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+                                    icon: const Icon(Icons.add, size: 20), label: Text(t.text('add_device'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    onPressed: () async {
+                                      // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
+                                      // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                                      final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
+                                      await _linkScannedDevice(result);
+                                      _handleRefresh();
+                                    },
+                                  ),
+                                ],
+                              ],
                             ),
                         ],
                       ),
@@ -2168,8 +2413,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // [PHÒNG] Thanh chọn phòng ngang — đồng bộ PC/Tablet như Mobile
-                              _buildRoomTabs(),
+                              // [PHÒNG] Thanh chọn phòng ngang — đồng bộ PC/Tablet như Mobile.
+                              // [ĐÓNG BĂNG RENDER] RepaintBoundary — danh sách phòng gần như tĩnh
+                              // (chỉ đổi khi user thêm/xóa/đổi tên phòng), không cần vẽ lại mỗi
+                              // khi lưới thiết bị bên dưới nhấp nháy theo MQTT.
+                              RepaintBoundary(child: _buildRoomTabs()),
                               const SizedBox(height: 20),
                               _buildDevicesGrid(isDark, textMain, textSub),
                             ],
@@ -2254,7 +2502,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 12),
           // [PHÒNG] Thanh điều hướng phòng ngang (ngay trên lưới thiết bị)
-          _buildRoomTabs(),
+          // [ĐÓNG BĂNG RENDER] RepaintBoundary — cùng lý do bản Mobile phía trên.
+          RepaintBoundary(child: _buildRoomTabs()),
           const SizedBox(height: 16),
           _buildDevicesGrid(isDark, textMain, textSub),
           const SizedBox(height: 24),
@@ -2668,12 +2917,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(turnOn ? 'Đã bật tất cả thiết bị trong phòng' : 'Đã tắt tất cả thiết bị trong phòng'), backgroundColor: tkGreen));
   }
 
+  // [CÁCH LY REBUILD — chống quá tải Accessibility Tree] Trước đây gọi thẳng
+  // Provider.of<DeviceProvider>(context) [listen:true] BẰNG context của _DashboardScreenState —
+  // vì _buildDevicesGrid() chỉ là MỘT PHƯƠNG THỨC (không phải Widget/Element riêng) được gọi
+  // TRONG build() của State, dependency đó bị đăng ký lên chính Element của DashboardScreen. Kết
+  // quả: MỖI notifyListeners() từ DeviceProvider (kể cả 1 gói MQTT của đúng 1 cảm biến) kích hoạt
+  // build() lại TOÀN BỘ màn hình — sidebar, header, danh sách phòng, TẤT CẢ — gây "Failed to
+  // update ui::AXTree, Nodes left pending" trên Desktop khi dữ liệu MQTT đổ về dồn dập.
+  // Fix: bọc lưới trong Consumer<DeviceProvider> NGAY TẠI 2 nơi gọi (Mobile/Desktop, xem bên
+  // dưới) — Consumer tạo MỘT Element RIÊNG, dependency đăng ký lên Element đó thay vì lên
+  // DashboardScreen, nên khi DeviceProvider đổi CHỈ đúng lưới thiết bị vẽ lại, sidebar/header/
+  // rooms giữ nguyên không rebuild. _buildDevicesGrid giờ nhận [provider] qua tham số thay vì tự
+  // tra bằng context của State.
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
-    if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
+    return Consumer<DeviceProvider>(
+      builder: (_, provider, _) => _isEditingOrder
+          ? _buildEditOrderGrid(provider, isDark, textMain, textSub)
+          : _buildDevicesGridBody(provider, isDark, textMain, textSub),
+    );
+  }
 
-    // listen: true — mỗi notifyListeners() từ DeviceProvider (sóng MQTT đổ vào kho DPS)
-    // sẽ tự kích hoạt vẽ lại lưới này NGAY LẬP TỨC, không cần kéo lại HTTP API.
-    final provider = Provider.of<DeviceProvider>(context);
+  Widget _buildDevicesGridBody(DeviceProvider provider, bool isDark, Color textMain, Color textSub) {
+    if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
     // [PHÒNG] Phòng đang chọn (null = Tất cả) — dùng để LỌC thiết bị + chèn Công tắc tổng.
     final roomProv = context.watch<RoomGroupProvider>();
@@ -2926,6 +3191,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           endpointTypes[k] == 'fan' ||
           endpointSpeeds.containsKey(k)).toSet();
 
+      // [FIX FACTORY BUILDER — chống thẻ đôi Fan+Switch] Cờ đánh dấu thiết bị ĐÃ được dựng thành
+      // thẻ Quạt ở khối này (bất kể qua nhánh endpoint chuẩn hay nhánh đoán legacy bên dưới) —
+      // dùng để CHẶN CỨNG việc rơi tiếp xuống các nhánh category khác ngay sau khối này.
+      bool isFanDevice = false;
       if (fanEndpoints.isNotEmpty) {
         // Mỗi endpoint dạng quạt -> đúng MỘT thẻ SmartFanCard tích hợp (icon cánh quạt
         // quay theo tốc độ thật); speed/swing đã được đè lớp sống từ dps ở trên.
@@ -2941,6 +3210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           });
         }
         if (deviceCategory.isEmpty) deviceCategory = 'fan'; // Backend chưa gắn -> tự suy
+        isFanDevice = true;
       } else {
         // Không có endpoint gắn type quạt -> đoán theo tên/khóa cũ (Fan_Control đời đầu
         // chưa qua bridge): GOM 3 relay tốc độ + relay đảo gió thành MỘT thẻ duy nhất
@@ -2969,8 +3239,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           allFans.add({'mac': mac, 'endpoint': 'fan', 'speed': speed, 'swing': swing, 'name': 'Fan-${last4Of(mac)}', 'online': deviceOnline, 'rawDevice': device});
           if (deviceCategory.isEmpty) deviceCategory = 'fan';
+          isFanDevice = true;
         }
       }
+      // [FIX FACTORY BUILDER — GỐC RỄ THẬT của bug "1 quạt ra 2 thẻ"] TRƯỚC ĐÂY không có
+      // continue ở đây — category "fan" lại NẰM SẴN trong primaryDeviceCategories (dòng 139) nên
+      // thiết bị vừa được dựng thẻ Quạt xong vẫn tiếp tục CHẢY XUỐNG khối exclude-list bên dưới
+      // (dòng ~3120), bị dựng THÊM một GenericDeviceCard/Switch chỉ 1 nút nguồn cho ĐÚNG MAC đó.
+      // Thoát vòng lặp NGAY khi đã xác định là quạt — tuyệt đối không rơi xuống bất kỳ nhánh
+      // category nào khác nữa.
+      if (isFanDevice) continue;
 
       // ======================================================================
       // [DIGITAL TWIN — Đợt 23] NHẬN DIỆN CỬA CUỐN / BƠM / ĐÈN CHIẾT ÁP
@@ -4567,6 +4845,12 @@ class DeviceSettingsPopup extends StatelessWidget {
                           initialSeconds: int.tryParse(_asMap(rawDeviceData['settings'])['travel_time_sec']?.toString() ?? '') ?? 0,
                           isDark: isDark,
                         ),
+                        // ---------- [CỬA CUỐN ĐA NĂNG] LOẠI ĐỘNG CƠ (AC_220V / DC_24V) ----------
+                        MotorTypeSection(
+                          mac: mac,
+                          initialMotorType: _asMap(rawDeviceData['settings'])['motor_type']?.toString() ?? '',
+                          isDark: isDark,
+                        ),
                       ],
 
                       // ---------- VÙNG FIRMWARE OTA ----------
@@ -4691,6 +4975,92 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
               style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
               items: _labels(t).entries
                   .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
+                  .toList(),
+              onChanged: _change,
+            ),
+    );
+  }
+}
+
+// ============================================================================
+// 🔧 [CỬA CUỐN ĐA NĂNG — "SERVER MÙ"] KHỐI CHỌN "LOẠI ĐỘNG CƠ" (AC_220V / DC_24V)
+// (nhúng trong Popup Cài đặt thiết bị — CHỈ hiện khi category == "curtain")
+// Chọn xong -> PUT /api/devices/{mac}/motor-type -> Backend tra bảng preset pulse_ms/
+// interlock_ms rồi đẩy xuống mạch qua devices_v2/{mac}/config (retained) — App KHÔNG tự tính
+// timing, chỉ chọn loại cửa; Server giữ toàn bộ tri thức "loại nào cần thông số gì".
+// ============================================================================
+class MotorTypeSection extends StatefulWidget {
+  final String mac;
+  final String initialMotorType; // '' = chưa chọn (thiết bị vẫn dùng mặc định cứng của firmware)
+  final bool isDark;
+
+  const MotorTypeSection({super.key, required this.mac, required this.initialMotorType, required this.isDark});
+
+  @override
+  State<MotorTypeSection> createState() => _MotorTypeSectionState();
+}
+
+class _MotorTypeSectionState extends State<MotorTypeSection> {
+  final Color tkGreen = const Color(0xFF00A651);
+  static const List<String> _validTypes = ['AC_220V', 'DC_24V'];
+  late String? _motorType; // null = chưa chọn, hiện placeholder
+  bool _saving = false;
+
+  Map<String, String> _labels(AppTranslations t) => {
+    'AC_220V': t.text('motor_type_ac220v_option'),
+    'DC_24V': t.text('motor_type_dc24v_option'),
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _motorType = _validTypes.contains(widget.initialMotorType) ? widget.initialMotorType : null;
+  }
+
+  Future<void> _change(String? newType) async {
+    if (newType == null || newType == _motorType || _saving) return;
+    final t = AppTranslations.of(context, listen: false);
+    final String? oldType = _motorType;
+    setState(() { _motorType = newType; _saving = true; });
+    final ok = await ApiService().setMotorType(widget.mac, newType);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${t.text('motor_type_saved_prefix')} "${_labels(t)[newType]}"'),
+        backgroundColor: tkGreen,
+      ));
+    } else {
+      setState(() => _motorType = oldType);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(t.text('motor_type_save_error')),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      leading: Icon(Icons.settings_input_component_rounded, color: textSub, size: 20),
+      title: Text(t.text('motor_type_label'), style: TextStyle(color: textMain, fontSize: 14)),
+      subtitle: Text(t.text('motor_type_sublabel'), style: TextStyle(color: textSub, fontSize: 11)),
+      trailing: _saving
+          ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+          : DropdownButton<String>(
+              value: _motorType,
+              hint: Text(t.text('motor_type_unset_hint'), style: TextStyle(color: textSub, fontSize: 12)),
+              underline: const SizedBox.shrink(),
+              borderRadius: BorderRadius.circular(12),
+              dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
+              style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
+              items: _labels(t).entries
+                  .map((e) => DropdownMenuItem<String>(value: e.key, child: Text(e.value)))
                   .toList(),
               onChanged: _change,
             ),
@@ -4969,6 +5339,46 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
           ],
         );
       },
+    );
+  }
+}
+
+// [GIAI ĐOẠN 72 — IN-PLACE REORDER] _JiggleTile — bọc rung-lắc kiểu "iOS Jiggle Mode" cho từng
+// ô trong lưới edit-mode. Mỗi ô tự có AnimationController riêng (SingleTickerProviderStateMixin)
+// + góc lệch pha ngẫu nhiên (+1/-1) để các ô rung LỆCH nhịp nhau (giống thật), không đồng loạt
+// rung cùng lúc như 1 khối cứng.
+class _JiggleTile extends StatefulWidget {
+  final Widget child;
+  const _JiggleTile({super.key, required this.child});
+
+  @override
+  State<_JiggleTile> createState() => _JiggleTileState();
+}
+
+class _JiggleTileState extends State<_JiggleTile> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final double _phaseSign;
+
+  @override
+  void initState() {
+    super.initState();
+    _phaseSign = Random().nextBool() ? 1.0 : -1.0;
+    _ctrl = AnimationController(vsync: this, duration: Duration(milliseconds: 140 + Random().nextInt(60)))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) => Transform.rotate(angle: _phaseSign * 0.03 * _ctrl.value, child: child),
+      child: widget.child,
     );
   }
 }

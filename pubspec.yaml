@@ -25,6 +25,7 @@ dependencies:
   geolocator: ^13.0.2
   lottie: ^3.3.1
   geocoding: ^3.0.0
+  reorderable_grid_view: ^2.2.8
 
 dev_dependencies:
   flutter_test:

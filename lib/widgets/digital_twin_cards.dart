@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
@@ -194,14 +195,28 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
   bool _dragging = false;
   double? _dragValue;
 
-  // Giữ nút Lên/Xuống: bấm-giữ = chạy liên tục, thả tay = STOP + tính lại vị trí theo thời gian giữ
+  // Giữ nút Lên/Xuống: bấm-giữ = chạy liên tục, thả tay = STOP (vị trí đã được Timer nội suy
+  // cập nhật sống trong lúc giữ — xem _liveTimer bên dưới, không còn tính bù một lần lúc thả tay).
   String? _holdingDirection; // 'up' | 'down' | null
-  DateTime? _holdStartedAt;
+
+  // [DEAD RECKONING — NỘI SUY VỊ TRÍ THEO THỜI GIAN] Phần cứng KHÔNG có cảm biến hành trình thật
+  // nên đây là nguồn sự thật DUY NHẤT cho vị trí % hiển thị khi cửa đang chạy. Timer này CHỈ vẽ
+  // lại UI (_positionPct) mượt theo thời gian thực trong đúng khoảng thời lượng lệnh MQTT ĐÃ GỬI
+  // (pulseDoorRelay gọi trước đó với duration_ms tường minh — firmware tự đóng relay đúng lúc,
+  // xem handleDoorLogic() bên SW_rolling_doors.ino) — TUYỆT ĐỐI không tự gửi thêm lệnh MQTT nào
+  // ở đây, tránh spam Broker mỗi 16ms.
+  Timer? _liveTimer;
+  double _liveStartPct = 0;
+  double _liveTargetPct = 0;
+  DateTime? _liveStartedAt;
+  int _liveDurationMs = 0;
 
   late final AnimationController _motionController; // shimmer khi cửa đang chuyển động
 
   int get _travelSec => widget.travelTimeSec > 0 ? widget.travelTimeSec : _defaultTravelSec;
-  bool get _isMoving => _holdingDirection != null;
+  // Cửa "đang chuyển động" khi giữ nút HOẶC khi Timer nội suy còn chạy (kể cả do kéo Slider) —
+  // để shimmer/animation phản ánh đúng CẢ 2 nguồn kích hoạt, không riêng nút giữ như trước.
+  bool get _isMoving => _holdingDirection != null || _liveTimer != null;
 
   @override
   void initState() {
@@ -215,7 +230,7 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
     super.didUpdateWidget(oldWidget);
     // Vị trí đổi từ NGUỒN NGOÀI (vd mở App trên máy khác vừa lưu lại) -> chỉ đồng bộ khi
     // KHÔNG đang thao tác dở dang, tránh giật ngược tay người dùng đang kéo/giữ.
-    if (!_dragging && _holdingDirection == null && oldWidget.initialPositionPct != widget.initialPositionPct) {
+    if (!_dragging && _holdingDirection == null && _liveTimer == null && oldWidget.initialPositionPct != widget.initialPositionPct) {
       _positionPct = widget.initialPositionPct.clamp(0, 100).toDouble();
     }
   }
@@ -223,6 +238,7 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
   @override
   void dispose() {
     _motionController.dispose();
+    _liveTimer?.cancel(); // BẮT BUỘC — tránh Timer sống ngoài đời widget gây memory leak/setState-on-unmounted
     super.dispose();
   }
 
@@ -230,46 +246,76 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
     ApiService().setDeviceSetting(widget.mac, 'door_position_pct', pct.round().toString());
   }
 
+  // Chạy Timer.periodic 16ms/lần (~60fps) kéo _positionPct tuyến tính từ vị trí hiện tại về
+  // [target] trong đúng [durationMs] — khớp CHÍNH XÁC thời lượng lệnh MQTT vừa gửi, để Slider +
+  // hình mô phỏng "đi" đồng bộ với những gì phần cứng đang thật sự làm.
+  void _startLiveInterpolation(double target, int durationMs) {
+    _liveTimer?.cancel();
+    _liveStartPct = _positionPct.clamp(0.0, 100.0);
+    _liveTargetPct = target.clamp(0.0, 100.0);
+    _liveStartedAt = DateTime.now();
+    _liveDurationMs = durationMs <= 0 ? 1 : durationMs;
+
+    _liveTimer = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+      if (!mounted) { timer.cancel(); return; }
+      final int elapsedMs = DateTime.now().difference(_liveStartedAt!).inMilliseconds;
+      final double t = (elapsedMs / _liveDurationMs).clamp(0.0, 1.0);
+      // [AN TOÀN TUYỆT ĐỐI — chống tràn số] Về lý thuyết công thức nội suy tuyến tính giữa 2 đầu
+      // ĐÃ kẹp (start/target) không thể vượt biên, nhưng vẫn bọc .clamp() tường minh ở chính nơi
+      // gán — không bao giờ để lọt giá trị ngoài [0,100] ra tới Slider dù có sửa code sau này.
+      setState(() => _positionPct = (_liveStartPct + (_liveTargetPct - _liveStartPct) * t).clamp(0.0, 100.0));
+      if (t >= 1.0) {
+        timer.cancel();
+        _liveTimer = null;
+        // Nếu đang giữ nút mà chạy hết quãng đường lý thuyết (chạm 0%/100%) thì tự dọn trạng
+        // thái nút — firmware đã tự đóng relay đúng lúc, không cần tay người dùng thả mới sạch.
+        if (_holdingDirection != null) {
+          setState(() { _holdingDirection = null; });
+        }
+        _persistPosition(_positionPct);
+      }
+    });
+  }
+
   // ---- SLIDER: kéo tới % đích -> tính đúng số ms cần thiết -> phát 1 xung có thời lượng ----
   void _onSliderChangeEnd(double target) {
     final double delta = target - _positionPct;
-    setState(() { _dragging = false; _dragValue = null; _positionPct = target; });
-    if (delta.abs() < 1 || widget.isOffline) return;
+    setState(() { _dragging = false; _dragValue = null; });
+    if (delta.abs() < 1 || widget.isOffline) { setState(() => _positionPct = target.clamp(0.0, 100.0)); return; }
     final int durationMs = ((delta.abs() / 100) * _travelSec * 1000).round().clamp(100, 30000);
     final String endpoint = delta > 0 ? widget.upEndpoint : widget.downEndpoint;
-    widget.provider.pulseDoorRelay(widget.mac, endpoint, durationMs);
-    _persistPosition(target);
+    widget.provider.pulseDoorRelay(widget.mac, endpoint, durationMs); // 1 lệnh MQTT DUY NHẤT
+    _startLiveInterpolation(target, durationMs); // UI mượt song song — KHÔNG gửi thêm lệnh nào
   }
 
   // ---- NÚT LÊN/XUỐNG: bấm-giữ chạy liên tục (kiểu remote thật), thả tay = STOP ----
   void _startHold(String direction) {
     if (widget.isOffline || _holdingDirection != null) return;
-    setState(() { _holdingDirection = direction; _holdStartedAt = DateTime.now(); });
+    setState(() { _holdingDirection = direction; });
     final String endpoint = direction == 'up' ? widget.upEndpoint : widget.downEndpoint;
     // Chạy "dài" (trọn thời gian hành trình còn lại theo hướng đó) — thả tay sẽ STOP sớm hơn,
     // xem _endHold(). Kẹp trong biên hợp lệ của firmware (100-30000ms).
     final double maxRemaining = direction == 'up' ? (100 - _positionPct) : _positionPct;
     final int durationMs = ((maxRemaining / 100) * _travelSec * 1000).round().clamp(100, 30000);
-    widget.provider.pulseDoorRelay(widget.mac, endpoint, durationMs);
+    widget.provider.pulseDoorRelay(widget.mac, endpoint, durationMs); // 1 lệnh MQTT DUY NHẤT
+    final double target = direction == 'up' ? 100.0 : 0.0;
+    _startLiveInterpolation(target, durationMs); // cộng/trừ dần liên tục — _endHold() cắt sớm nếu thả tay trước
   }
 
   void _endHold() {
     if (_holdingDirection == null) return;
-    final direction = _holdingDirection!;
-    final elapsedMs = DateTime.now().difference(_holdStartedAt!).inMilliseconds;
     widget.provider.pulseDoorRelay(widget.mac, widget.stopEndpoint, 0); // STOP ngay — dùng xung mặc định
-    final double deltaPct = (elapsedMs / (_travelSec * 1000)) * 100;
-    setState(() {
-      _positionPct = (direction == 'up' ? _positionPct + deltaPct : _positionPct - deltaPct).clamp(0, 100);
-      _holdingDirection = null;
-      _holdStartedAt = null;
-    });
+    _liveTimer?.cancel(); // hủy Timer NGAY LẬP TỨC — giữ nguyên _positionPct hiện tại, không nội suy tiếp
+    _liveTimer = null;
+    setState(() { _holdingDirection = null; });
     _persistPosition(_positionPct);
   }
 
   void _tapStop() {
     if (widget.isOffline) return;
     widget.provider.pulseDoorRelay(widget.mac, widget.stopEndpoint, 0);
+    _liveTimer?.cancel(); // bấm Dừng khi đang kéo Slider dở dang cũng phải cắt nội suy ngay
+    _liveTimer = null;
   }
 
   String _displayName(AppTranslations t) => widget.backendName?.isNotEmpty == true ? widget.backendName! : t.text('rolling_door_default_name');
@@ -277,6 +323,11 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
   Widget _buildHoldButton({required IconData icon, required String direction, required bool isDark}) {
     final bool active = _holdingDirection == direction;
     return GestureDetector(
+      // [CÁCH LY CẢM ỨNG] behavior: opaque bắt buộc — không có nó, giữ tay lên nút Lên/Xuống có
+      // thể để lọt sự kiện lên GestureDetector.onLongPress của _TwinCardShell bên ngoài (mở Menu
+      // Popup ngoài ý muốn giữa lúc đang giữ nút). opaque ép GestureDetector này "nuốt" trọn mọi
+      // sự kiện chạm trong vùng của nó, Card cha coi như không hề có cú chạm nào xảy ra.
+      behavior: HitTestBehavior.opaque,
       onTapDown: (_) => _startHold(direction),
       onTapUp: (_) => _endHold(),
       onTapCancel: _endHold,
@@ -319,9 +370,18 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
       child: Column(
         children: [
           // ---- PHẦN TRÊN: ẢNH ĐỘNG MÔ PHỎNG NAN CỬA CUỐN ----
-          SizedBox(
+          // [GIAI ĐOẠN 71 — UI POLISH] Đổ bóng nổi khối + viền kính nhẹ (glassmorphism) cho vùng
+          // graphic — trước đây chỉ có ClipRRect trơn, không có chiều sâu 3D.
+          Container(
             height: 90,
             width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.12), blurRadius: 14, offset: const Offset(0, 6)),
+              ],
+              border: Border.all(color: Colors.white.withValues(alpha: isDark ? 0.08 : 0.5), width: 1),
+            ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Stack(
@@ -344,24 +404,59 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
                       ),
                     ),
                   ),
+                  // [GLASSMORPHISM NHẸ] Dải sáng chéo mờ ở góc trên — hiệu ứng kính phản chiếu,
+                  // không che nội dung graphic bên dưới (IgnorePointer để không nuốt cảm ứng).
+                  IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Colors.white.withValues(alpha: isDark ? 0.06 : 0.18), Colors.transparent, Colors.transparent],
+                          stops: const [0.0, 0.4, 1.0],
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
           const SizedBox(height: 10),
-          // ---- PHẦN GIỮA: SLIDER 0-100% ----
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 4,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+          // ---- PHẦN GIỮA: SLIDER 0-100% (bọc khung đổ bóng + viền gradient nổi bật) ----
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [_tkGreen.withValues(alpha: isDark ? 0.16 : 0.10), Colors.transparent],
+              ),
+              boxShadow: [
+                BoxShadow(color: _tkGreen.withValues(alpha: isDark ? 0.18 : 0.12), blurRadius: 10, offset: const Offset(0, 3)),
+              ],
+              border: Border.all(color: _tkGreen.withValues(alpha: isDark ? 0.25 : 0.18), width: 1),
             ),
-            child: Slider(
-              value: shownPct.clamp(0, 100),
-              activeColor: _tkGreen,
-              inactiveColor: isDark ? Colors.white24 : Colors.grey.shade300,
-              onChanged: widget.isOffline ? null : (v) => setState(() { _dragging = true; _dragValue = v; }),
-              onChangeEnd: widget.isOffline ? null : _onSliderChangeEnd,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+              ),
+              child: Slider(
+                // [FIX CRASH THẬT] Slider mặc định min=0.0/max=1.0 nếu KHÔNG khai báo tường minh —
+                // value 0-100% (phần trăm) vượt xa max mặc định là văng đúng lỗi Assertion
+                // "value ... is not between minimum 0.0 and maximum 1.0". Khai rõ 0-100 để khớp
+                // đơn vị currentPosition đang dùng khắp widget này.
+                min: 0.0,
+                max: 100.0,
+                value: shownPct.clamp(0.0, 100.0),
+                activeColor: _tkGreen,
+                inactiveColor: isDark ? Colors.white24 : Colors.grey.shade300,
+                onChanged: widget.isOffline ? null : (v) => setState(() { _dragging = true; _dragValue = v.clamp(0.0, 100.0); }),
+                onChangeEnd: widget.isOffline ? null : (v) => _onSliderChangeEnd(v.clamp(0.0, 100.0)),
+              ),
             ),
           ),
           // ---- PHẦN DƯỚI: LÊN / DỪNG / XUỐNG ----
@@ -370,6 +465,7 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
             children: [
               _buildHoldButton(icon: Icons.keyboard_arrow_up_rounded, direction: 'up', isDark: isDark),
               GestureDetector(
+                behavior: HitTestBehavior.opaque, // cùng lý do cách ly cảm ứng như nút Lên/Xuống
                 onTap: widget.isOffline ? null : _tapStop,
                 child: Container(
                   width: 44, height: 36, alignment: Alignment.center,

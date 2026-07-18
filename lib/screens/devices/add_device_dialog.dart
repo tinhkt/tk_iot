@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:io' show Platform, Process, InternetAddress;
+import 'dart:io' show Platform, Process;
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart'; // Xin quyền Came
 import '../../services/lan_discovery_service.dart'; // Quét thiết bị LAN qua UDP Broadcast
 import '../../services/api_service.dart'; // [ĐỢT 25] Direct MAC Binding — đăng ký thẳng bằng MAC
 import '../../localization/app_translations.dart';
+import '../../widgets/ownership_conflict_dialog.dart'; // [LUỒNG CHUYỂN GIAO] Dialog 409 dùng chung
 
 // ============================================================================
 // POPUP CHÍNH: THÊM THIẾT BỊ
@@ -85,12 +86,19 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   // null = đang chạy/chưa thử; khác null = đã dừng hẳn, đang hiện lỗi cho user quyết định
   AddDeviceStatus? _registerFailStatus;
   String? _registerFailMessage;
+  // [LUỒNG CHUYỂN GIAO] Chỉ có giá trị khi _registerFailStatus == ownershipConflict — email chủ
+  // cũ ĐÃ CHE sẵn từ Backend (vd "sale.****@gmail.com"), hiển thị y nguyên trong Dialog chuyên
+  // biệt (xem _buildOwnershipConflictDialog) thay vì SnackBar lỗi chung chung.
+  String? _conflictOwnerEmailMask;
   int _registerAttempts = 0;
   Timer? _registerRetryTimer;
   static const int _maxRegisterAttempts = 8; // ~ (chờ Internet tối đa 10s) + 7×2s retry ≈ 24s tổng
   // [ĐỢT 29] true = đang chờ điện thoại có Internet thật (chưa gọi Cloud), khác với
   // _isRegisteringDevice (đang gọi ApiService.addDevice thật) — 2 trạng thái hiển thị khác nhau.
   bool _isWaitingForInternet = false;
+  // [ĐỢT 32 — HARD GATEKEEPER] true = đã hết 15s chờ mà VẪN không có Internet thật — dừng hẳn,
+  // hiện thông báo + nút "HOÀN TẤT ĐĂNG KÝ" thủ công, KHÔNG tự ý gọi Backend mù quáng.
+  bool _noInternetGate = false;
 
   @override
   void initState() {
@@ -245,11 +253,20 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           body: {'ssid': ssid, 'pass': pass},
         ).timeout(const Duration(seconds: 4)); // Đợi mỗi lần 4 giây
 
+        // [HOÀN TÁC] Bỏ xác thực body "tuan_kiet_ok" — "Erase All Flash Contents" +
+        // ESP.eraseConfig() (firmware) đã trị dứt điểm gốc rễ thật (Flash Corruption/Crash),
+        // không phải do 200 OK giả mạo. Quay về điều kiện gốc để đồng bộ tuyệt đối với các
+        // thiết bị cũ trên thị trường (chỉ trả "\"status\":\"ok\"", không có mật mã mới).
         if (response.statusCode == 200) {
           isSuccess = true;
           break; // ĐÃ NHẬN 200 OK TỪ ESP -> THOÁT LẶP
         }
       } catch (e) {
+        // [CHẨN ĐOÁN] In rõ loại Exception thật (vd "SocketException: Network is
+        // unreachable" khi máy đang route qua 4G, không có đường tới 192.168.4.1) — lỗi
+        // này KHÔNG được coi là thành công, isSuccess vẫn giữ nguyên false, vòng lặp
+        // chỉ đợi 1s rồi thử lại lần kế (KHÔNG break, KHÔNG set isSuccess=true ở đây).
+        if (kDebugMode) print('⚠️ [WIFI SETUP] Lỗi gửi WiFi lần ${i + 1}/3: $e');
         await Future.delayed(const Duration(seconds: 1)); // Lỗi thì chờ 1s rồi thử lại
       }
     }
@@ -300,7 +317,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       _isRegisteringDevice = true;
       _registerFailStatus = null;
       _registerFailMessage = null;
+      _conflictOwnerEmailMask = null;
       _registerAttempts = 0;
+      _noInternetGate = false;
     });
 
     if (homeId == null || homeId.isEmpty || mac == null || mac.isEmpty) {
@@ -316,28 +335,86 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       return;
     }
 
-    // [ĐỢT 31 — CỬA ẢI INTERNET] Lỗi "Không kết nối máy chủ" trước đây xảy ra vì App gọi
-    // ApiService().addDevice() lúc điện thoại CHƯA KỊP nhả AP của ESP (vẫn đang kẹt trong mạng
-    // cục bộ 192.168.4.x, không có đường ra Internet thật). BẮT BUỘC chờ có Internet thật
-    // (poll mỗi 2 giây, tối đa 15 giây) TRƯỚC KHI chạm tới ApiService — CHỈ khi có mạng thực sự
-    // mới gọi API.
+    // [ĐỢT 32 — HARD GATEKEEPER] Lỗi "Không kết nối máy chủ" trước đây xảy ra vì App gọi
+    // ApiService().addDevice() lúc điện thoại CHƯA KỊP nhả AP của ESP. Bản trước (Đợt 31) hết
+    // 15s vẫn CỐ gọi _attemptRegister() mù quáng dù chưa có mạng — sửa dứt điểm: hasInternet
+    // khai báo NGOÀI vòng lặp, biết CHẮC CHẮN giá trị cuối cùng sau khi thoát vòng lặp, và chỉ
+    // gọi Backend khi giá trị đó THẬT SỰ là true.
+    final bool hasInternet = await _waitForInternetOnce();
+    if (!mounted) return;
+
+    if (hasInternet) {
+      await _attemptRegister(homeId, mac);
+    } else {
+      // TUYỆT ĐỐI KHÔNG gọi _attemptRegister() — dừng hẳn, tắt spinner, chờ user tự xác nhận
+      // đã có mạng rồi bấm nút "HOÀN TẤT ĐĂNG KÝ" (xem _retryAfterInternetGate + View 7).
+      setState(() {
+        _isRegisteringDevice = false;
+        _noInternetGate = true;
+      });
+    }
+  }
+
+  // Poll Internet mỗi 2 giây, tối đa maxWaitMs — trả về giá trị CUỐI CÙNG thật sự đo được (không
+  // suy đoán). Dùng chung cho cả lần chờ tự động đầu tiên VÀ nút "HOÀN TẤT ĐĂNG KÝ" thủ công.
+  //
+  // [CHỐNG DNS HIJACKING — lỗ hổng thật] Trước đây dùng InternetAddress.lookup('google.com') —
+  // SAI: khi điện thoại còn nối AP của ESP, DNSServer captive portal (WiFiManager) trả lời MỌI
+  // truy vấn DNS bằng chính IP của nó (192.168.4.1) thay vì lỗi NXDOMAIN, nên lookup() "thành
+  // công" giả tạo NGAY LẬP TỨC dù máy chưa hề thoát khỏi AP -> Gatekeeper bị xuyên thủng, gọi
+  // thẳng Cloud API khi vẫn kẹt trong mạng ESP -> văng lỗi tức thời. Thay bằng HTTPS GET thật tới
+  // Backend: ESP không có chứng chỉ TLS hợp lệ cho api.iot-smart.vn nên KHÔNG THỂ giả mạo được
+  // response HTTPS — round-trip chỉ thành công khi điện thoại đã thật sự thoát AP và có Internet.
+  Future<bool> _waitForInternetOnce({int maxWaitMs = 15000}) async {
+    // Ép chờ ESP tắt sóng AP (firmware đợi ~1.5s rồi mới softAPdisconnect/chuyển WIFI_STA) TRƯỚC
+    // KHI làm bất cứ việc kiểm tra nào — bắt kịp đúng lúc AP vẫn còn sống sẽ luôn fail giả.
+    await Future.delayed(const Duration(seconds: 2));
+
     setState(() => _isWaitingForInternet = true);
-    final internetWaitStopwatch = Stopwatch()..start();
-    while (internetWaitStopwatch.elapsedMilliseconds < 15000) {
-      bool hasInternet = false;
+    bool hasInternet = false;
+    final sw = Stopwatch()..start();
+    while (sw.elapsedMilliseconds < maxWaitMs) {
       try {
-        final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 2));
-        hasInternet = result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+        // Endpoint công khai (không cần JWT), nhẹ — chỉ cần round-trip HTTPS thành công là đủ
+        // bằng chứng, không quan tâm nội dung trả về.
+        final checkRes = await http
+            .get(Uri.parse('${ApiService.baseUrl}/firmware/device-check'))
+            .timeout(const Duration(seconds: 3));
+        hasInternet = checkRes.statusCode >= 200; // Chạm được Backend thật -> chắc chắn có Internet
       } catch (_) {
+        // Lỗi bắt tay TLS / timeout / rớt mạng -> vẫn kẹt ở ESP (không có TLS thật) hoặc chưa
+        // có 4G/WiFi thật nào
         hasInternet = false;
       }
       if (hasInternet) break;
-      if (!mounted) return;
+      if (!mounted) return false;
       await Future.delayed(const Duration(seconds: 2));
     }
+    if (mounted) setState(() => _isWaitingForInternet = false);
+    return hasInternet;
+  }
+
+  // [ĐỢT 32] Nút "HOÀN TẤT ĐĂNG KÝ" — user tự xác nhận đã đổi mạng xong rồi bấm, App kiểm tra
+  // lại Internet MỘT LẦN NỮA (không đoán mò) trước khi thật sự gọi lên Backend.
+  Future<void> _retryAfterInternetGate() async {
+    final String? homeId = widget.homeId;
+    final String? mac = _provisioningMac;
+    if (homeId == null || homeId.isEmpty || mac == null || mac.isEmpty) return;
+
+    setState(() => _noInternetGate = false);
+    final bool hasInternet = await _waitForInternetOnce(maxWaitMs: 5000); // đã bấm nút = user tin là có mạng rồi, chỉ xác nhận nhanh
     if (!mounted) return;
-    setState(() => _isWaitingForInternet = false);
-    await _attemptRegister(homeId, mac);
+
+    if (hasInternet) {
+      setState(() => _isRegisteringDevice = true);
+      await _attemptRegister(homeId, mac);
+    } else {
+      setState(() => _noInternetGate = true);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(AppTranslations.of(context, listen: false).text('still_no_internet_error')),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
   }
 
   Future<void> _attemptRegister(String homeId, String mac) async {
@@ -368,7 +445,21 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       _isRegisteringDevice = false;
       _registerFailStatus = result.status;
       _registerFailMessage = result.message;
+      _conflictOwnerEmailMask = result.maskedOwnerEmail;
     });
+
+    // [LUỒNG CHUYỂN GIAO] 409 -> bung Dialog chuyên biệt NGAY (thay vì chỉ đổi View 7 âm thầm) —
+    // đúng yêu cầu "không báo lỗi chung chung", user thấy ngay tài khoản đã che + nút hành động.
+    if (result.status == AddDeviceStatus.ownershipConflict && mac.isNotEmpty) {
+      _showOwnershipConflictDialog(mac);
+    }
+  }
+
+  // [LUỒNG CHUYỂN GIAO] Dialog chuyên biệt khi MAC đã có chủ — nay DÙNG CHUNG với luồng QR/Nhập
+  // tay/Quét LAN (xem showOwnershipConflictDialog trong widgets/ownership_conflict_dialog.dart),
+  // tránh 2 nơi cùng vẽ 1 Dialog dễ lệch nhau khi sửa sau này.
+  Future<void> _showOwnershipConflictDialog(String mac) {
+    return showOwnershipConflictDialog(context, mac: mac, maskedOwnerEmail: _conflictOwnerEmailMask);
   }
 
   // ==========================================================================
@@ -1239,7 +1330,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     // [ĐỢT 29] "Đang xử lý" gộp cả 2 pha: chờ Internet hồi phục (_isWaitingForInternet) VÀ
     // đang gọi Cloud thật (_isRegisteringDevice) — 2 pha nối tiếp nhau, chỉ khác câu chữ hiển thị.
     final bool inProgress = _isWaitingForInternet || _isRegisteringDevice;
-    final bool failed = !inProgress && _registerFailStatus != null;
+    // [ĐỢT 32 — HARD GATEKEEPER] Trạng thái RIÊNG, không lẫn với lỗi Backend (_registerFailStatus)
+    // — đây là "chưa từng gọi Backend" chứ không phải "Backend từ chối", nên cần icon/nút khác hẳn.
+    final bool gateActive = _noInternetGate && !inProgress;
+    final bool failed = !inProgress && !gateActive && _registerFailStatus != null;
     // Xung đột sở hữu/Không đủ quyền là lỗi VĨNH VIỄN — không có ý nghĩa để "Thử lại" (MAC vẫn
     // sẽ thuộc người khác), chỉ còn đường Hủy. Các lỗi còn lại (mạng, timeout...) mới đáng thử lại.
     final bool permanentError = _registerFailStatus == AddDeviceStatus.ownershipConflict || _registerFailStatus == AddDeviceStatus.forbidden;
@@ -1257,25 +1351,39 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               child: inProgress
                   ? const CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)
                   : Icon(
-                      failed ? (permanentError ? Icons.block_rounded : Icons.error_rounded) : Icons.check_circle_rounded,
-                      color: failed ? (permanentError ? Colors.orange : Colors.redAccent) : tkGreen,
+                      gateActive ? Icons.wifi_off_rounded : (failed ? (permanentError ? Icons.block_rounded : Icons.error_rounded) : Icons.check_circle_rounded),
+                      color: gateActive ? Colors.orange : (failed ? (permanentError ? Colors.orange : Colors.redAccent) : tkGreen),
                       size: 64,
                     ),
             ),
           ),
           const SizedBox(height: 20),
           Text(
-            // [ĐỢT 29] Chờ Internet và đang gọi Cloud là 2 câu chữ RIÊNG — user cần biết App
-            // đang ở pha nào, tránh tưởng App treo trong lúc thực ra đang chủ động chờ mạng.
+            // [ĐỢT 29+32] Chờ Internet / đang gọi Cloud / Cửa ải hết giờ vẫn chưa có mạng — 3 câu
+            // chữ RIÊNG, user cần biết App đang ở pha nào, tránh tưởng App treo hoặc đơ.
             _isWaitingForInternet
                 ? t.text('device_waiting_internet_status')
-                : (_isRegisteringDevice ? t.text('device_registering_status') : (failed ? _registerErrorText(t) : '')),
-            style: TextStyle(color: failed ? (permanentError ? Colors.orange.shade800 : Colors.redAccent) : textMain, fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
+                : (_isRegisteringDevice
+                    ? t.text('device_registering_status')
+                    : (gateActive ? t.text('device_no_internet_gate_message') : (failed ? _registerErrorText(t) : ''))),
+            style: TextStyle(color: gateActive ? Colors.orange.shade800 : (failed ? (permanentError ? Colors.orange.shade800 : Colors.redAccent) : textMain), fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
             textAlign: TextAlign.center,
           ),
           if (_isRegisteringDevice && _registerAttempts > 1) ...[
             const SizedBox(height: 6),
             Text('${t.text('device_registering_attempt_prefix')}$_registerAttempts', style: TextStyle(color: textSub, fontSize: 11)),
+          ],
+          // [ĐỢT 32] Cửa ải Internet — CHỈ một nút thủ công, không tự động gọi lại Backend.
+          if (gateActive) ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                onPressed: _retryAfterInternetGate,
+                child: Text(t.text('complete_registration_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
           ],
           if (failed) ...[
             const SizedBox(height: 24),
