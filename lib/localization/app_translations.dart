@@ -534,6 +534,34 @@ class AppTranslations {
       'weather_thunderstorm': 'Giông bão',
       'weather_snow': 'Tuyết',
       'weather_mist': 'Sương mù',
+
+      // --- Đợt 22: Cài đặt WiFi App-driven (thay captive portal) — add_device_dialog.dart ---
+      'wifi_setup_header': 'Cấu hình WiFi',
+      'wifi_scanning_status': 'Đang quét mạng WiFi xung quanh...',
+      'wifi_scan_empty_hint': 'Không tìm thấy mạng nào — nhập tên WiFi thủ công bên dưới',
+      'wifi_ssid_hint': 'Tên WiFi (SSID)',
+      'wifi_password_hint': 'Mật khẩu WiFi',
+      'wifi_install_btn': 'CÀI ĐẶT',
+      'wifi_ssid_required': 'Vui lòng chọn hoặc nhập tên WiFi',
+      'wifi_installing_status': 'Đang gửi thông tin tới thiết bị...',
+      'wifi_installing_waiting_lan': 'Thành công! Thiết bị đang khởi động lại và kết nối vào mạng nhà bạn...',
+      'wifi_installing_fail': 'Kết nối thất bại — sai mật khẩu hoặc tín hiệu yếu. Vui lòng thử lại.',
+      'wifi_installing_timeout': 'Không nhận được phản hồi từ thiết bị. Vui lòng thử lại.',
+      'wifi_retry_btn': 'THỬ LẠI',
+      'wifi_rescan_btn': 'Quét lại',
+
+      // --- Đợt 23: Digital Twin — Cửa cuốn/Bơm/Đèn Chiết áp/Lưới an toàn ---
+      'rolling_door_default_name': 'Cửa cuốn',
+      'rolling_door_open_suffix': 'mở',
+      'pump_default_name': 'Máy bơm',
+      'pump_running_status': 'Đang bơm...',
+      'pump_idle_status': 'Đang nghỉ',
+      'dimmer_default_name': 'Đèn Chiết áp',
+      'generic_device_default_name': 'Thiết bị',
+      'on': 'Bật',
+      'off': 'Tắt',
+      'travel_time_label': 'Thời gian hành trình',
+      'travel_time_desc': 'Số giây cửa cuốn đi hết từ 0% đến 100% — dùng để Slider % kéo đúng vị trí',
     },
     'en': {
       // --- Round 1: Appearance ---
@@ -1007,6 +1035,34 @@ class AppTranslations {
       'weather_thunderstorm': 'Thunderstorm',
       'weather_snow': 'Snow',
       'weather_mist': 'Misty',
+
+      // --- Round 22: App-driven WiFi setup (replaces captive portal) — add_device_dialog.dart ---
+      'wifi_setup_header': 'WiFi Setup',
+      'wifi_scanning_status': 'Scanning nearby WiFi networks...',
+      'wifi_scan_empty_hint': 'No networks found — enter the WiFi name manually below',
+      'wifi_ssid_hint': 'WiFi name (SSID)',
+      'wifi_password_hint': 'WiFi password',
+      'wifi_install_btn': 'INSTALL',
+      'wifi_ssid_required': 'Please choose or enter a WiFi name',
+      'wifi_installing_status': 'Sending WiFi info to the device...',
+      'wifi_installing_waiting_lan': 'Success! The device is restarting and joining your home network...',
+      'wifi_installing_fail': 'Connection failed — wrong password or weak signal. Please try again.',
+      'wifi_installing_timeout': 'No response from the device. Please try again.',
+      'wifi_retry_btn': 'RETRY',
+      'wifi_rescan_btn': 'Rescan',
+
+      // --- Round 23: Digital Twin — Rolling Door/Pump/Dimmer/Generic fallback ---
+      'rolling_door_default_name': 'Rolling Door',
+      'rolling_door_open_suffix': 'open',
+      'pump_default_name': 'Water Pump',
+      'pump_running_status': 'Running...',
+      'pump_idle_status': 'Idle',
+      'dimmer_default_name': 'Dimmer Light',
+      'generic_device_default_name': 'Device',
+      'on': 'On',
+      'off': 'Off',
+      'travel_time_label': 'Travel Time',
+      'travel_time_desc': 'Seconds for the door to travel from 0% to 100% — used so the % Slider matches the real position',
     },
   };
 }

@@ -192,7 +192,10 @@ class MqttService {
   /// vào topic gốc của thiết bị (ACL động chỉ cho phép user hoạt động trong smarthub/{home_id}/#):
   /// App -> smarthub/{home_id}/{mac}/command (JSON {"endpoint","action","value"})
   /// Backend xác minh chủ quyền -> chuyển tiếp thô xuống devices_v2/{mac}/command cho firmware.
-  Future<void> publishCommand(String mac, String endpoint, String value, {String action = 'set'}) async {
+  /// [DIGITAL TWIN] durationMs (tùy chọn): kèm "duration_ms" vào payload — Cửa cuốn dùng để
+  /// kích relay đúng N mili-giây (mô phỏng kéo Slider %) thay vì xung cố định 500ms mặc định.
+  /// Backend (broker.go) kẹp biên 100-30000ms trước khi chuyển tiếp xuống firmware.
+  Future<void> publishCommand(String mac, String endpoint, String value, {String action = 'set', int? durationMs}) async {
     // Kiểm tra kênh TRƯỚC khi gửi: đứt thì nối lại ngay rồi mới bắn —
     // không bao giờ publish vào client chết làm nút bấm "đơ" trong im lặng
     if (!await _ensureConnected()) return;
@@ -201,7 +204,9 @@ class MqttService {
     if (creds == null) return;
 
     final cleanMac = mac.replaceAll(':', '').toUpperCase();
-    final payload = jsonEncode({'endpoint': endpoint, 'action': action, 'value': value});
+    final Map<String, dynamic> body = {'endpoint': endpoint, 'action': action, 'value': value};
+    if (durationMs != null && durationMs > 0) body['duration_ms'] = durationMs;
+    final payload = jsonEncode(body);
 
     // Suy ra danh sách home_id từ chính các quyền ACL được cấp (smarthub/{home_id}/#):
     // - User thường: không biết thiết bị thuộc nhà nào -> bắn vào MỌI nhà user sở hữu,
@@ -240,6 +245,17 @@ class MqttService {
     }
     if (swing != null) await publishCommand(mac, endpoint, swing ? 'swing' : 'off', action: 'osc');
   }
+
+  /// [DIGITAL TWIN] Kích relay Cửa cuốn đúng [durationMs] mili-giây rồi để firmware TỰ tắt và
+  /// báo lại OFF (công tắc "chạm rồi tự bật lại", xem SW_rolling_doors.ino/handleDoorLogic).
+  /// value luôn là "ON" — "OFF" chỉ phát sinh từ chính firmware, App không bao giờ tự gửi.
+  Future<void> sendDoorPulse(String mac, String endpoint, int durationMs) =>
+      publishCommand(mac, endpoint, 'ON', durationMs: durationMs);
+
+  /// [DIGITAL TWIN] Đèn Chiết áp (Dimmer) — độ sáng 0-100, action riêng "brightness" (khác
+  /// "speed" của quạt dùng 0-3) để 2 loại thiết bị không đụng ngữ nghĩa trên cùng 1 trường.
+  Future<void> sendBrightness(String mac, String endpoint, int brightness) =>
+      publishCommand(mac, endpoint, brightness.toString(), action: 'brightness');
 
   /// Ngắt kết nối và quên client cũ — gọi khi đăng xuất để phiên MQTT
   /// của tài khoản trước không tiếp tục nhận dữ liệu.

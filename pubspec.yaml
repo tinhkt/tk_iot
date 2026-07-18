@@ -52,3 +52,4 @@ flutter:
     - assets/images/logo.png
     - assets/images/icon_app.png
     - assets/weather/
+    - assets/animations/

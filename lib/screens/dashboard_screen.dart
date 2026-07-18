@@ -27,6 +27,7 @@ import 'home/home_management_screen.dart';
 // AppContainer trong file này — mọi khối kính nay theo quyền kiểm soát của isGlassThemeEnabled.
 import '../widgets/app_ui_wrappers.dart';
 import '../widgets/device_menu_helper.dart';
+import '../widgets/digital_twin_cards.dart'; // [ĐỢT 23] SmartRollingDoorCard/SmartPumpCard/SmartDimmerCard/GenericDeviceCard
 import '../widgets/room_group_dialogs.dart';
 import '../widgets/adaptive_navigation.dart';
 import '../providers/room_group_provider.dart';
@@ -133,7 +134,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // (relay tốc độ, nút tổng...) ra thành thẻ công tắc ảo rời rạc.
   // CỐ Ý KHÔNG có 'hub': Hub V38 là bộ CHỨA nhiều thiết bị con -> các thẻ con D1..Dn
   // của nó vẫn phải hiện đầy đủ trên lưới (khác hẳn quạt/điều hòa là 1 khối đơn).
-  static const List<String> primaryDeviceCategories = ['fan', 'sensor', 'ac', 'curtain', 'pump', 'fridge'];
+  static const List<String> primaryDeviceCategories = ['fan', 'sensor', 'ac', 'curtain', 'pump', 'fridge', 'light'];
 
   @override
   void initState() {
@@ -2779,6 +2780,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final List<Map<String, dynamic>> allFans = [];
     final List<Map<String, dynamic>> allSwitches = [];
     final List<Map<String, dynamic>> allSensors = [];
+    // [DIGITAL TWIN — Đợt 23] 3 thẻ siêu cấp + lưới an toàn cho category chính chủ còn lại
+    final List<Map<String, dynamic>> allRollingDoors = [];
+    final List<Map<String, dynamic>> allPumps = [];
+    final List<Map<String, dynamic>> allDimmers = [];
+    final List<Map<String, dynamic>> allGenericPrimary = [];
 
     // ==========================================================================
     // BÓC TÁCH THÔNG MINH: REST làm nền, DPS realtime đè lên trên
@@ -2961,13 +2967,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       // ======================================================================
-      // [EXCLUDE LIST] CỔNG LOẠI TRỪ ENDPOINT ĐÃ TÍCH HỢP
+      // [DIGITAL TWIN — Đợt 23] NHẬN DIỆN CỬA CUỐN / BƠM / ĐÈN CHIẾT ÁP
       // ======================================================================
-      // Thiết bị thuộc category "chính chủ" (quạt/điều hòa/rèm/bơm...) đã được điều
-      // khiển TRỌN GÓI trong thẻ chuyên biệt vừa dựng ở trên -> DỪNG NGAY, tuyệt đối
-      // không nứt relay tốc độ/nút tổng nội bộ ra thành công tắc ảo rời rạc.
-      // Hub ('hub') KHÔNG nằm trong list nên vẫn chảy xuống để hiện đủ thiết bị con.
-      if (primaryDeviceCategories.contains(deviceCategory)) continue;
+      // pickPrimaryEndpoint: chọn 1 relay điều khiển chính cho thiết bị 1-cổng (bơm/đèn/lưới an
+      // toàn) — cùng bộ lọc ignoredKeys/isMasterKey đã dùng cho công tắc thường, KHÔNG có khái
+      // niệm đa kênh vì category này firmware chỉ khai đúng 1 relay hữu ích.
+      String? pickPrimaryEndpoint() {
+        for (final k in endpointStates.keys) {
+          if (isMasterKey(k)) continue;
+          final kl = k.toLowerCase();
+          if (ignoredKeys.any((w) => kl == w || kl.contains(w))) continue;
+          return k;
+        }
+        return null;
+      }
+
+      if (deviceCategory == 'curtain') {
+        // Quy ước kênh KHỚP firmware SW_rolling_doors.ino: channel 1=UP, 2=DOWN, 3=STOP.
+        String? upEp, downEp, stopEp;
+        for (final k in endpointStates.keys) {
+          final ch = channelOf(k);
+          if (ch == 1) { upEp = k; }
+          else if (ch == 2) { downEp = k; }
+          else if (ch == 3) { stopEp = k; }
+        }
+        // Thiết bị chưa từng gửi state (vừa Discovery) -> vẫn dựng thẻ chờ theo endpoint chuẩn
+        upEp ??= 'S_${mac}_1'; downEp ??= 'S_${mac}_2'; stopEp ??= 'S_${mac}_3';
+        final Map<String, dynamic> settings = Map<String, dynamic>.from(device['settings'] ?? {});
+        allRollingDoors.add({
+          'mac': mac, 'upEp': upEp, 'downEp': downEp, 'stopEp': stopEp,
+          'name': endpointNames[upEp] ?? deviceName,
+          'online': deviceOnline, 'rawDevice': device,
+          'travelSec': int.tryParse(settings['travel_time_sec']?.toString() ?? '') ?? 0,
+          'positionPct': int.tryParse(settings['door_position_pct']?.toString() ?? '') ?? 0,
+        });
+        continue;
+      }
+
+      if (deviceCategory == 'pump') {
+        final String ep = pickPrimaryEndpoint() ?? 'S_$mac';
+        allPumps.add({
+          'mac': mac, 'endpoint': ep,
+          'state': endpointStates[ep] ?? 'OFF',
+          'name': endpointNames[ep] ?? deviceName,
+          'online': deviceOnline, 'rawDevice': device,
+        });
+        continue;
+      }
+
+      if (deviceCategory == 'light') {
+        final String ep = pickPrimaryEndpoint() ?? 'S_$mac';
+        allDimmers.add({
+          'mac': mac, 'endpoint': ep,
+          'state': endpointStates[ep] ?? 'OFF',
+          'brightness': endpointSpeeds[ep] ?? 0, // "speed" tái dùng làm % độ sáng lưu cuối cùng
+          'name': endpointNames[ep] ?? deviceName,
+          'online': deviceOnline, 'rawDevice': device,
+        });
+        continue;
+      }
+
+      // ======================================================================
+      // [EXCLUDE LIST] LƯỚI AN TOÀN CHO CATEGORY CHÍNH CHỦ CÒN LẠI (vd "ac"/"fridge")
+      // ======================================================================
+      // Trước đây các category này bị `continue` THẲNG — ÂM THẦM BIẾN MẤT khỏi Bảng điều
+      // khiển vì không có thẻ chuyên biệt nào dựng cho chúng. Nay LUÔN có GenericDeviceCard
+      // (ít nhất một công tắc bật/tắt) — không còn thiết bị nào "vô hình" nữa.
+      // Hub ('hub') KHÔNG nằm trong primaryDeviceCategories nên vẫn chảy xuống bên dưới để
+      // hiện đủ thiết bị con — KHÔNG đụng nhánh này.
+      if (primaryDeviceCategories.contains(deviceCategory)) {
+        final String ep = pickPrimaryEndpoint() ?? 'S_$mac';
+        allGenericPrimary.add({
+          'mac': mac, 'endpoint': ep, 'category': deviceCategory,
+          'state': endpointStates[ep] ?? 'OFF',
+          'name': endpointNames[ep] ?? deviceName,
+          'online': deviceOnline, 'rawDevice': device,
+        });
+        continue;
+      }
 
       // ---------- CÔNG TẮC: NỨT MỖI ENDPOINT THÀNH MỘT THẺ ĐỘC LẬP ----------
       // LỌC NỘI BỘ: chỉ giữ endpoint là RELAY THẬT, loại sạch các khóa "thông báo/
@@ -3077,6 +3154,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // nên nút "Ẩn khỏi Bảng điều khiển" có gọi được cũng không thấy tác dụng
     final visibleFans = allFans.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
     final visibleSensors = allSensors.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
+    // [DIGITAL TWIN — Đợt 23] Cửa cuốn dùng upEp làm khóa Ẩn/Hiện đại diện (1 thẻ = 3 relay vật lý)
+    final visibleRollingDoors = allRollingDoors.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['upEp']}") || _showHiddenFilter).toList();
+    final visiblePumps = allPumps.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
+    final visibleDimmers = allDimmers.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
+    final visibleGenericPrimary = allGenericPrimary.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3198,6 +3280,102 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }).toList(),
           ),
         ),
+
+        // ====================================================================
+        // 1c. [DIGITAL TWIN — Đợt 23] CỬA CUỐN / BƠM / ĐÈN CHIẾT ÁP / LƯỚI AN TOÀN
+        // ====================================================================
+        if (visibleRollingDoors.isNotEmpty || visiblePumps.isNotEmpty || visibleDimmers.isNotEmpty || visibleGenericPrimary.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 24.0),
+            child: Wrap(
+              spacing: 16, runSpacing: 16,
+              children: [
+                ...visibleRollingDoors.map((e) {
+                  final String hideKey = "${e['mac']}_${e['upEp']}";
+                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['upEp']);
+                  return SmartRollingDoorCard(
+                    key: ValueKey("${hideKey}_${e['positionPct']}_${e['travelSec']}_${e['online']}"),
+                    mac: e['mac'],
+                    upEndpoint: e['upEp'], downEndpoint: e['downEp'], stopEndpoint: e['stopEp'],
+                    backendName: e['name'],
+                    isOffline: e['online'] != true,
+                    travelTimeSec: e['travelSec'] ?? 0,
+                    initialPositionPct: e['positionPct'] ?? 0,
+                    provider: provider,
+                    isHidden: _hiddenDevices.contains(hideKey),
+                    onToggleHide: (hide) => setState(() {
+                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                      _persistHiddenDevices();
+                    }),
+                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+                    callbacks: cb,
+                  );
+                }),
+                ...visiblePumps.map((e) {
+                  final String hideKey = "${e['mac']}_${e['endpoint']}";
+                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+                  return SmartPumpCard(
+                    key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
+                    mac: e['mac'],
+                    endpoint: e['endpoint'],
+                    isOn: e['state'] == 'ON',
+                    isOffline: e['online'] != true,
+                    backendName: e['name'],
+                    provider: provider,
+                    isHidden: _hiddenDevices.contains(hideKey),
+                    onToggleHide: (hide) => setState(() {
+                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                      _persistHiddenDevices();
+                    }),
+                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+                    callbacks: cb,
+                  );
+                }),
+                ...visibleDimmers.map((e) {
+                  final String hideKey = "${e['mac']}_${e['endpoint']}";
+                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+                  return SmartDimmerCard(
+                    key: ValueKey("${hideKey}_${e['state']}_${e['brightness']}_${e['online']}"),
+                    mac: e['mac'],
+                    endpoint: e['endpoint'],
+                    isOn: e['state'] == 'ON',
+                    brightness: e['brightness'] ?? 0,
+                    isOffline: e['online'] != true,
+                    backendName: e['name'],
+                    provider: provider,
+                    isHidden: _hiddenDevices.contains(hideKey),
+                    onToggleHide: (hide) => setState(() {
+                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                      _persistHiddenDevices();
+                    }),
+                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+                    callbacks: cb,
+                  );
+                }),
+                ...visibleGenericPrimary.map((e) {
+                  final String hideKey = "${e['mac']}_${e['endpoint']}";
+                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+                  return GenericDeviceCard(
+                    key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
+                    mac: e['mac'],
+                    endpoint: e['endpoint'],
+                    category: e['category'] ?? '',
+                    isOn: e['state'] == 'ON',
+                    isOffline: e['online'] != true,
+                    backendName: e['name'],
+                    provider: provider,
+                    isHidden: _hiddenDevices.contains(hideKey),
+                    onToggleHide: (hide) => setState(() {
+                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+                      _persistHiddenDevices();
+                    }),
+                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+                    callbacks: cb,
+                  );
+                }),
+              ],
+            ),
+          ),
 
         // ====================================================================
         // 2. KHỐI DƯỚI: LƯỚI CÔNG TẮC (mỗi kênh một thẻ độc lập)
@@ -4235,6 +4413,9 @@ class DeviceSettingsPopup extends StatelessWidget {
     final String rssi = rssiRaw == null ? '—' : '$rssiRaw dBm';
     final String fwType = (rawDeviceData['fw_type'] ?? metadata['type'] ?? '').toString();
     final String fwVersion = (rawDeviceData['fw_version'] ?? metadata['fw_ver'] ?? '—').toString();
+    // [DIGITAL TWIN — Đợt 23] category do Backend gắn (Schema-Driven UI) — "curtain" mở khối
+    // hiệu chỉnh "Thời gian hành trình" riêng của Cửa cuốn.
+    final String deviceCategory = (rawDeviceData['category'] ?? metadata['category'] ?? '').toString().toLowerCase();
 
     Widget specRow(IconData icon, String label, String value) => Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -4371,6 +4552,17 @@ class DeviceSettingsPopup extends StatelessWidget {
                         ),
                       ],
 
+                      // ---------- [DIGITAL TWIN] THỜI GIAN HÀNH TRÌNH (chỉ Cửa cuốn) ----------
+                      if (deviceCategory == 'curtain') ...[
+                        const SizedBox(height: 14),
+                        Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1),
+                        TravelTimeSection(
+                          mac: mac,
+                          initialSeconds: int.tryParse(_asMap(rawDeviceData['settings'])['travel_time_sec']?.toString() ?? '') ?? 0,
+                          isDark: isDark,
+                        ),
+                      ],
+
                       // ---------- VÙNG FIRMWARE OTA ----------
                       const SizedBox(height: 14),
                       Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1),
@@ -4495,6 +4687,84 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
                   .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
                   .toList(),
               onChanged: _change,
+            ),
+    );
+  }
+}
+
+// ============================================================================
+// 🚪 [DIGITAL TWIN — Đợt 23] KHỐI HIỆU CHỈNH "THỜI GIAN HÀNH TRÌNH" CỬA CUỐN
+// (nhúng trong Popup Cài đặt thiết bị — CHỈ hiện khi category == "curtain")
+// SmartRollingDoorCard dùng giá trị này (giây) để tính số mili-giây cần kích relay khi kéo
+// Slider % — hiệu chỉnh đúng bằng thời gian thật cửa cuốn đi từ 0% đến 100% thì Slider mới
+// khớp vị trí thật; chưa hiệu chỉnh (0) thì Card tự dùng giá trị mặc định 15 giây.
+// ============================================================================
+class TravelTimeSection extends StatefulWidget {
+  final String mac;
+  final int initialSeconds; // 0 = chưa hiệu chỉnh — Card tự dùng mặc định 15s
+  final bool isDark;
+
+  const TravelTimeSection({super.key, required this.mac, required this.initialSeconds, required this.isDark});
+
+  @override
+  State<TravelTimeSection> createState() => _TravelTimeSectionState();
+}
+
+class _TravelTimeSectionState extends State<TravelTimeSection> {
+  final Color tkGreen = const Color(0xFF00A651);
+  late int _seconds;
+  bool _saving = false;
+
+  static const int _minSec = 3;
+  static const int _maxSec = 120;
+
+  @override
+  void initState() {
+    super.initState();
+    _seconds = widget.initialSeconds > 0 ? widget.initialSeconds.clamp(_minSec, _maxSec) : 15;
+  }
+
+  Future<void> _change(int delta) async {
+    if (_saving) return;
+    final int newVal = (_seconds + delta).clamp(_minSec, _maxSec);
+    if (newVal == _seconds) return;
+    final int oldVal = _seconds;
+    setState(() { _seconds = newVal; _saving = true; });
+    final ok = await ApiService().setDeviceSetting(widget.mac, 'travel_time_sec', newVal.toString());
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (!ok) {
+      setState(() => _seconds = oldVal);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Không lưu được Thời gian hành trình — kiểm tra kết nối hoặc quyền tài khoản!'),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    final t = AppTranslations.of(context);
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      leading: Icon(Icons.timer_outlined, color: textSub, size: 20),
+      title: Text(t.text('travel_time_label'), style: TextStyle(color: textMain, fontSize: 14)),
+      subtitle: Text(t.text('travel_time_desc'), style: TextStyle(color: textSub, fontSize: 11)),
+      trailing: _saving
+          ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(icon: Icon(Icons.remove_circle_outline_rounded, color: textSub, size: 20), onPressed: () => _change(-1), splashRadius: 18),
+                SizedBox(
+                  width: 44,
+                  child: Text('${_seconds}s', textAlign: TextAlign.center, style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.bold)),
+                ),
+                IconButton(icon: Icon(Icons.add_circle_outline_rounded, color: textSub, size: 20), onPressed: () => _change(1), splashRadius: 18),
+              ],
             ),
     );
   }

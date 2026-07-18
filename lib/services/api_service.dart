@@ -90,6 +90,27 @@ class ApiService {
     }
   }
 
+  // --- [DIGITAL TWIN] CÀI ĐẶT TỔNG QUÁT KHÁC (Thời gian hành trình cửa cuốn, vị trí %...) ---
+  /// PUT /api/devices/{mac}/setting {"key":"...","value":"..."} — mirror setPowerBehavior
+  /// nhưng dùng chung MỘT endpoint cho mọi field mới (key phải nằm trong allowlist phía Backend:
+  /// travel_time_sec, door_position_pct). Không đẩy MQTT xuống mạch (thuần App/Backend dùng).
+  Future<bool> setDeviceSetting(String mac, String key, String value) async {
+    try {
+      final token = await SecureStorageService.getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/devices/${Uri.encodeComponent(mac)}/setting'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode({'key': key, 'value': value}),
+      );
+      if (response.statusCode == 200) return true;
+      if (kDebugMode) print('⚠️ Server từ chối lưu cài đặt $mac.$key (HTTP ${response.statusCode}): ${response.body}');
+      return false;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi lưu cài đặt $key: $e');
+      return false;
+    }
+  }
+
   // --- KIỂM TRA KHO FIRMWARE OTA ---
   /// GET /api/firmware/check — trả về meta {version, url, sha256} khi kho có bản MỚI HƠN
   /// (HTTP 200); trả null khi đang ở bản mới nhất (304) hoặc kho chưa có firmware (404).

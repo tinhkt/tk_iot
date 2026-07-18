@@ -3,7 +3,9 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:io' show Platform, Process;
 import 'dart:async';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart'; // [ĐỢT 24] Nhớ mật khẩu WiFi cục bộ
 import 'package:app_settings/app_settings.dart'; // Thư viện mở WiFi Settings
 import 'package:permission_handler/permission_handler.dart'; // Xin quyền Camera trước khi quét QR
 import '../../services/lan_discovery_service.dart'; // Quét thiết bị LAN qua UDP Broadcast
@@ -28,7 +30,8 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   
   final Color tkGreen = const Color(0xFF00A651);
 
-  // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động, 4: Quét mạng LAN
+  // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động, 4: Quét mạng LAN,
+  // 5: Nhập WiFi nhà (App-driven provisioning), 6: Đang cài đặt WiFi
   int _currentView = 0;
   bool _isProcessing = false;
 
@@ -36,6 +39,21 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   Timer? _apDetectionTimer;
   late AnimationController _pulseController;
   bool isConnectedToHub = false;
+
+  // --- [ĐỢT 22] Trạng thái cho luồng CÀI ĐẶT WIFI App-driven (thay thế captive portal HTML) ---
+  // Luồng: phát hiện đã nối vào AP thiết bị (isConnectedToHub, ở trên) -> quét WiFi xung quanh
+  // qua chính thiết bị (GET /api/scan + poll /api/scan_res) -> user chọn/gõ SSID+mật khẩu ngay
+  // trong App -> gọi /api/setup_connect -> thiết bị tự lưu + khởi động lại vào mạng nhà -> App
+  // đợi vài giây rồi tự chuyển sang Quét mạng LAN (View 4) để hoàn tất ghép nối như bình thường.
+  final TextEditingController _wifiSsidController = TextEditingController();
+  final TextEditingController _wifiPassController = TextEditingController();
+  bool _obscureWifiPass = true;
+  List<Map<String, dynamic>> _wifiScanResults = [];
+  bool _isScanningWifi = false;
+  Timer? _wifiScanPollTimer;
+  bool _isInstallingWifi = false;
+  // null = đang cài/chưa thử; 'fail' = thiết bị từ chối kết nối; 'timeout' = không phản hồi
+  String? _wifiInstallError;
 
   // --- Trạng thái cho luồng QUÉT MẠNG LAN (dùng LanDiscoveryService) ---
   final LanDiscoveryService _lanService = LanDiscoveryService();
@@ -69,7 +87,133 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     _lanSub?.cancel();
     _lanService.dispose(); // đóng UDP socket + hủy timer khi thoát, tránh rò tài nguyên
     _pulseController.dispose();
+    _wifiScanPollTimer?.cancel();
+    _wifiSsidController.dispose();
+    _wifiPassController.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // 🔑 [ĐỢT 24] GHI NHỚ MẬT KHẨU WIFI CỤC BỘ (SharedPreferences) — một khóa duy nhất chứa
+  // JSON map {"Tên WiFi":"mật khẩu"}. KHÔNG dùng flutter_secure_storage vì đây chỉ là tiện ích
+  // auto-fill lại đúng mật khẩu nhà đã gõ trước đó (giảm gõ lại khi cài thêm thiết bị mới cùng
+  // WiFi), không phải bí mật cấp tài khoản như JWT/refresh token.
+  static const String _wifiCredsPrefsKey = 'saved_wifi_credentials';
+
+  Future<Map<String, String>> _loadSavedWifiCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_wifiCredsPrefsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      return decoded.map((k, v) => MapEntry(k, v.toString()));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _saveWifiCredential(String ssid, String password) async {
+    if (ssid.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final creds = await _loadSavedWifiCredentials();
+    creds[ssid] = password;
+    await prefs.setString(_wifiCredsPrefsKey, jsonEncode(creds));
+  }
+
+  // ==========================================================================
+  // 📶 [ĐỢT 22] CÀI ĐẶT WIFI APP-DRIVEN — thay hẳn giao diện HTML captive portal thủ công.
+  // Gọi thẳng API cục bộ trên chính thiết bị (192.168.4.1) mà firmware vừa được bổ sung
+  // (wm.setWebServerCallback -> /api/check_ip, /api/scan, /api/scan_res, /api/setup_connect).
+  // ==========================================================================
+  Future<void> _scanWifiNetworks() async {
+    setState(() {
+      _isScanningWifi = true;
+      _wifiScanResults = [];
+    });
+    try {
+      await http.get(Uri.parse('http://192.168.4.1/api/scan')).timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // Bỏ qua — có thể thiết bị chưa kịp phục vụ request đầu, vòng poll bên dưới vẫn thử tiếp
+    }
+
+    _wifiScanPollTimer?.cancel();
+    int attempts = 0;
+    _wifiScanPollTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      attempts++;
+      if (!mounted) { timer.cancel(); return; }
+      try {
+        final res = await http.get(Uri.parse('http://192.168.4.1/api/scan_res')).timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          if (data['status'] == 'done') {
+            timer.cancel();
+            final raw = (data['data'] as List?) ?? [];
+            final list = raw
+                .map((e) => {'ssid': (e['s'] ?? '').toString(), 'rssi': (e['r'] is int) ? e['r'] as int : int.tryParse('${e['r']}') ?? -100})
+                .where((e) => (e['ssid'] as String).isNotEmpty)
+                .toList();
+            list.sort((a, b) => (b['rssi'] as int).compareTo(a['rssi'] as int));
+            if (mounted) setState(() { _wifiScanResults = list; _isScanningWifi = false; });
+            return;
+          }
+          if (data['status'] == 'error') {
+            timer.cancel();
+            if (mounted) setState(() => _isScanningWifi = false);
+            return;
+          }
+        }
+      } catch (_) {
+        // Rớt 1 nhịp poll — thử lại ở lần kế, chỉ dừng hẳn khi hết số lần cho phép bên dưới
+      }
+      if (attempts >= 10) {
+        timer.cancel();
+        if (mounted) setState(() => _isScanningWifi = false);
+      }
+    });
+  }
+
+  Future<void> _submitWifiCredentials() async {
+    final String ssid = _wifiSsidController.text.trim();
+    final String pass = _wifiPassController.text;
+    if (ssid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(AppTranslations.of(context, listen: false).text('wifi_ssid_required')),
+        backgroundColor: Colors.redAccent,
+      ));
+      return;
+    }
+
+    _wifiScanPollTimer?.cancel();
+    setState(() {
+      _currentView = 6;
+      _isInstallingWifi = true;
+      _wifiInstallError = null;
+    });
+
+    // [ĐỢT 24] Lưu ngay khi user bấm Xác nhận — không chờ biết cài đặt có thành công hay không
+    // (đúng như user đã chủ ý gõ để dùng cho thiết bị này); lần cài kế tiếp cùng WiFi sẽ tự
+    // điền lại mật khẩu này khi chọn đúng SSID trong danh sách quét.
+    await _saveWifiCredential(ssid, pass);
+
+    try {
+      final uri = Uri.parse('http://192.168.4.1/api/setup_connect').replace(queryParameters: {'ssid': ssid, 'pass': pass});
+      // Timeout dài (đúng bằng ~ thời gian firmware tự chặn chờ WiFi.begin() ở phía nó, +biên an toàn)
+      final res = await http.get(uri).timeout(const Duration(seconds: 25));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (data['status'] == 'ok') {
+        setState(() => _isInstallingWifi = false);
+        // Thiết bị đang restart + đổi mạng; điện thoại cũng cần vài giây để tự rời AP của thiết
+        // bị và quay lại đúng WiFi nhà trước khi UDP LAN scan có thể tìm thấy nó lần nữa.
+        await Future.delayed(const Duration(seconds: 6));
+        if (!mounted) return;
+        _startLanScan();
+      } else {
+        setState(() { _isInstallingWifi = false; _wifiInstallError = 'fail'; });
+      }
+    } catch (e) {
+      if (mounted) setState(() { _isInstallingWifi = false; _wifiInstallError = 'timeout'; });
+    }
   }
 
   // ==========================================================================
@@ -160,13 +304,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             });
             _pulseController.stop();
             
-            // Đợi 1.5s cho người dùng nhìn thấy dấu Check Xanh rồi chuyển bước
+            // Đợi 1.5s cho người dùng nhìn thấy dấu Check Xanh rồi chuyển sang màn hình nhập
+            // WiFi nhà NGAY TRONG APP (thay vì bắt user tự mở trình duyệt vào captive portal).
             Future.delayed(const Duration(milliseconds: 1500), () {
               if (mounted) {
-                // Tạm thời trả về "true" (Thành công). 
-                // Bác có thể thay dòng pop này bằng Navigator.push sang một màn hình WebView 
-                // trỏ tới "http://192.168.4.1" để cấu hình WiFi nhà nhé.
-                Navigator.pop(context, true); 
+                setState(() => _currentView = 5);
+                _scanWifiNetworks();
               }
             });
           }
@@ -216,6 +359,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               if (_currentView == 1) _cameraController.stop();
               _stopAPDetection();
               _lanService.stop(); // đóng socket UDP khi rời màn quét LAN
+              _wifiScanPollTimer?.cancel(); // dừng poll /api/scan_res khi rời màn nhập WiFi
               setState(() => _currentView = 0);
             },
             splashRadius: 20,
@@ -716,6 +860,202 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     );
   }
 
+  // --- VIEW 5: [ĐỢT 22] NHẬP WIFI NHÀ — App-driven, thay hẳn captive portal HTML ---
+  Widget _buildWifiCredentialView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
+    return Padding(
+      // [FIX — Whitespace lãng phí] xem giải thích ở các _build*View khác trong file này.
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildHeader(t.text('wifi_setup_header'), textMain, textSub),
+          const SizedBox(height: 16),
+
+          // Danh sách mạng WiFi quét được TỪ CHÍNH thiết bị (App gọi /api/scan + /api/scan_res
+          // qua 192.168.4.1) — không dùng WiFi scan của điện thoại vì điện thoại đang nối vào
+          // AP thiết bị, không "thấy" được sóng nhà theo góc của chính thiết bị.
+          Row(
+            children: [
+              if (_isScanningWifi)
+                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent))
+              else
+                Icon(Icons.wifi_rounded, color: Colors.blueAccent, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _isScanningWifi ? t.text('wifi_scanning_status') : (_wifiScanResults.isEmpty ? t.text('wifi_scan_empty_hint') : ''),
+                  style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (!_isScanningWifi)
+                TextButton.icon(
+                  onPressed: _scanWifiNetworks,
+                  icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.blueAccent),
+                  label: Text(t.text('wifi_rescan_btn'), style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold, fontSize: 12)),
+                ),
+            ],
+          ),
+          // [ĐỢT 24 — Bước 1] Lần quét ĐẦU TIÊN (chưa có kết quả nào) hiện khối Loading nổi
+          // bật căn giữa thay vì chỉ dòng trạng thái nhỏ ở Row trên — đúng yêu cầu "vòng quay
+          // Loading với text 'Đang tìm kiếm mạng WiFi xung quanh...'".
+          if (_isScanningWifi && _wifiScanResults.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 28),
+              child: Column(
+                children: [
+                  const SizedBox(width: 34, height: 34, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.blueAccent)),
+                  const SizedBox(height: 14),
+                  Text(t.text('wifi_scanning_status'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w600), textAlign: TextAlign.center),
+                ],
+              ),
+            ),
+          if (_wifiScanResults.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 160),
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const BouncingScrollPhysics(),
+                itemCount: _wifiScanResults.length,
+                itemBuilder: (context, index) {
+                  final net = _wifiScanResults[index];
+                  final String ssid = net['ssid'] as String;
+                  final int rssi = net['rssi'] as int;
+                  final bool selected = _wifiSsidController.text == ssid;
+                  final IconData signalIcon = rssi >= -60 ? Icons.wifi_rounded : (rssi >= -75 ? Icons.wifi_2_bar_rounded : Icons.wifi_1_bar_rounded);
+                  // [CHỐNG LỒNG KÍNH] Phẳng vĩnh viễn — cùng lý do các thẻ khác trong dialog này.
+                  return Material(
+                    color: selected ? tkGreen.withValues(alpha: 0.12) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      // [ĐỢT 24 — AUTO-FILL] Chọn SSID xong -> tra ngay Local Storage; nếu WiFi
+                      // này đã từng nhập mật khẩu ở lần cài thiết bị trước, tự điền lại luôn.
+                      onTap: () async {
+                        setState(() => _wifiSsidController.text = ssid);
+                        final saved = await _loadSavedWifiCredentials();
+                        final String? knownPass = saved[ssid];
+                        if (knownPass != null && mounted) {
+                          setState(() => _wifiPassController.text = knownPass);
+                        }
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        child: Row(
+                          children: [
+                            Icon(signalIcon, size: 18, color: selected ? tkGreen : textSub),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(ssid, style: TextStyle(color: selected ? tkGreen : textMain, fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.normal), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                            if (selected) Icon(Icons.check_circle_rounded, size: 16, color: tkGreen),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+
+          // Ô SSID luôn hiện — cho phép gõ tay đè lên lựa chọn từ danh sách quét (mạng ẩn/2.4GHz
+          // trùng tên 5GHz...), khớp đúng khả năng mà captive portal HTML gốc cũng cho phép.
+          TextField(
+            controller: _wifiSsidController,
+            style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.bold),
+            decoration: InputDecoration(
+              hintText: t.text('wifi_ssid_hint'),
+              hintStyle: TextStyle(color: textSub.withValues(alpha: 0.5), fontWeight: FontWeight.normal, fontSize: 13),
+              prefixIcon: Icon(Icons.wifi_rounded, color: textSub, size: 18),
+              filled: true,
+              fillColor: isDark ? Colors.black26 : Colors.grey.shade100,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _wifiPassController,
+            obscureText: _obscureWifiPass,
+            style: TextStyle(color: textMain, fontSize: 14),
+            decoration: InputDecoration(
+              hintText: t.text('wifi_password_hint'),
+              hintStyle: TextStyle(color: textSub.withValues(alpha: 0.5), fontSize: 13),
+              prefixIcon: Icon(Icons.lock_outline_rounded, color: textSub, size: 18),
+              suffixIcon: IconButton(
+                icon: Icon(_obscureWifiPass ? Icons.visibility_off_rounded : Icons.visibility_rounded, color: textSub, size: 18),
+                onPressed: () => setState(() => _obscureWifiPass = !_obscureWifiPass),
+              ),
+              filled: true,
+              fillColor: isDark ? Colors.black26 : Colors.grey.shade100,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: tkGreen, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              onPressed: _submitWifiCredentials,
+              child: Text(t.text('wifi_install_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- VIEW 6: [ĐỢT 22] ĐANG CÀI ĐẶT WIFI — gọi /api/setup_connect + chờ thiết bị khởi động lại ---
+  Widget _buildWifiInstallingView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
+    final bool success = !_isInstallingWifi && _wifiInstallError == null;
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildHeader(t.text('wifi_setup_header'), textMain, textSub),
+          const SizedBox(height: 32),
+          SizedBox(
+            height: 100,
+            child: Center(
+              child: _isInstallingWifi
+                  ? const CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)
+                  : Icon(
+                      success ? Icons.check_circle_rounded : Icons.error_rounded,
+                      color: success ? tkGreen : Colors.redAccent,
+                      size: 64,
+                    ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            _isInstallingWifi
+                ? t.text('wifi_installing_status')
+                : (success
+                    ? t.text('wifi_installing_waiting_lan')
+                    : (_wifiInstallError == 'timeout' ? t.text('wifi_installing_timeout') : t.text('wifi_installing_fail'))),
+            style: TextStyle(color: success ? tkGreen : (_isInstallingWifi ? textMain : Colors.redAccent), fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
+            textAlign: TextAlign.center,
+          ),
+          if (!_isInstallingWifi && !success) ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                onPressed: () => setState(() => _currentView = 5),
+                child: Text(t.text('wifi_retry_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -748,7 +1088,11 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                           ? _buildManualEntryView(isDark, textMain, textSub, t)
                           : _currentView == 3
                               ? _buildAPModeView(isDark, textMain, textSub, t) // View 3: AP Mode
-                              : _buildLanScanView(isDark, textMain, textSub, t), // View 4: Quét LAN
+                              : _currentView == 4
+                                  ? _buildLanScanView(isDark, textMain, textSub, t) // View 4: Quét LAN
+                                  : _currentView == 5
+                                      ? _buildWifiCredentialView(isDark, textMain, textSub, t) // View 5: Nhập WiFi nhà
+                                      : _buildWifiInstallingView(isDark, textMain, textSub, t), // View 6: Đang cài đặt
             ),
         ),
     );

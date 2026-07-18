@@ -569,6 +569,27 @@ class DeviceProvider with ChangeNotifier {
     _mqttService.sendCommand(mac, endpoint, speed > 0, speed: speed, swing: swing);
   }
 
+  /// [DIGITAL TWIN] Kích relay Cửa cuốn (UP/DOWN) đúng [durationMs] mili-giây — dùng khi kéo
+  /// Slider % (SmartRollingDoorCard tự tính durationMs theo Thời gian hành trình đã hiệu chỉnh).
+  void pulseDoorRelay(String mac, String endpoint, int durationMs) {
+    final device = _devices[_cleanMac(mac)];
+    if (device != null && !device.online) {
+      if (kDebugMode) print('🚫 [DPS] ${_cleanMac(mac)} đang Ngoại tuyến — bỏ qua lệnh cửa cuốn');
+      return;
+    }
+    _mqttService.sendDoorPulse(mac, endpoint, durationMs);
+  }
+
+  /// [DIGITAL TWIN] Chỉnh độ sáng Đèn Chiết áp (Dimmer) 0-100.
+  void setDimmerBrightness(String mac, String endpoint, int brightness) {
+    final device = _devices[_cleanMac(mac)];
+    if (device != null && !device.online) {
+      if (kDebugMode) print('🚫 [DPS] ${_cleanMac(mac)} đang Ngoại tuyến — bỏ qua lệnh độ sáng');
+      return;
+    }
+    _mqttService.sendBrightness(mac, endpoint, brightness);
+  }
+
   // ==========================================================================
   // 🗑️ GỠ THIẾT BỊ KHỎI NHÀ (UNPAIR) — ĐỒNG BỘ SERVER + RAM
   // ==========================================================================
