@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:io' show Platform, Process, SocketException, InternetAddress;
+import 'dart:io' show Platform, Process, InternetAddress;
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -63,11 +63,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   List<Map<String, dynamic>> _wifiScanResults = [];
   bool _isScanningWifi = false;
   Timer? _wifiScanPollTimer;
-  bool _isInstallingWifi = false;
-  // null = đang cài/chưa thử; 'fail' = thiết bị từ chối kết nối; 'timeout' = không phản hồi
-  String? _wifiInstallError;
-  // [ĐỢT 29 — SMART RETRY] Lần thử hiện tại (1-3) — hiện cho user thấy tiến trình thay vì
-  // spinner im lặng suốt ~15s.
+  // [ĐỢT 30] Lần thử hiện tại (1-5) — hiện cho user thấy tiến trình thay vì spinner im lặng.
   int _wifiInstallAttempt = 1;
 
   // --- Trạng thái cho luồng QUÉT MẠNG LAN (dùng LanDiscoveryService) — vẫn dùng cho mục menu
@@ -231,8 +227,6 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
     _wifiScanPollTimer?.cancel();
     setState(() {
       _currentView = 6;
-      _isInstallingWifi = true;
-      _wifiInstallError = null;
       _wifiInstallAttempt = 1;
     });
 
@@ -246,17 +240,17 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
       await _forgetWifiCredential(ssid);
     }
 
-    // [ĐỢT 29 — SMART RETRY] Bản Anti-Hang trước (timeout 3s, coi MỌI lỗi mạng là thành công
-    // ngầm định NGAY LẦN ĐẦU) bị "tác dụng ngược" trên hiện trường: OS cần một khoảng thời gian
-    // để ổn định kết nối AP vừa bắt được, TimeoutException/SocketException hoàn toàn có thể nổ
-    // ra NGAY LẬP TỨC (gói tin chưa kịp rời máy) — không phải bằng chứng ESP đã nhận lệnh. Nay
-    // THỬ LẠI THẬT (tối đa 3 lần, timeout 5s/lần, nghỉ 1s giữa các lần) trước khi kết luận —
-    // chỉ khi CẢ 3 LẦN đều thất bại vì lỗi mạng mới coi là "khả năng cao ESP đã nhận lệnh và
-    // đang tắt AP", KHÔNG còn kết luận vội ở lần thử đầu tiên.
-    const int maxAttempts = 3;
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+    // [ĐỢT 30 — KHÔNG CÒN COI EXCEPTION LÀ THÀNH CÔNG] Bản Smart Retry trước (Đợt 29) vẫn còn
+    // nhánh "hết số lần thử vẫn coi là thành công" — đúng là ít nhảy cóc hơn bản Đợt 28 nhưng
+    // BẢN CHẤT vẫn suy đoán. Từ Giai đoạn 31, firmware đã trả 200 OK THẬT SỰ TRƯỚC KHI tắt AP
+    // 1.5 giây (xem processPendingWifiSetup() trong C++) — nghĩa là nếu App đủ kiên nhẫn thử
+    // lại, CHẮC CHẮN sẽ nhận được phản hồi 200 thật trong cửa sổ 1.5s đó. Vì vậy KHÔNG CÒN LÝ
+    // DO nào để suy đoán qua Exception nữa — chỉ HTTP 200 thật mới được coi là thành công.
+    bool success = false;
+    const int maxAttempts = 5;
+    for (int i = 0; i < maxAttempts; i++) {
       if (!mounted) return;
-      setState(() => _wifiInstallAttempt = attempt);
+      setState(() => _wifiInstallAttempt = i + 1);
       try {
         // TUYỆT ĐỐI không dùng jsonEncode/header JSON — truyền thẳng Map<String,String> làm
         // body, gói http tự set application/x-www-form-urlencoded + tự mã hoá, khớp CHÍNH XÁC
@@ -267,33 +261,33 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
               body: {'ssid': ssid, 'pass': pass},
             )
             .timeout(const Duration(seconds: 5));
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        if (!mounted) return;
-        if (data['status'] == 'ok') {
-          _proceedToDeviceRegistration();
-        } else {
-          setState(() { _isInstallingWifi = false; _wifiInstallError = 'fail'; });
+
+        if (res.statusCode == 200) {
+          success = true;
+          break;
         }
-        return; // có phản hồi HTTP thật (dù ok hay fail) -> dừng hẳn, không thử lại nữa
-      } on TimeoutException {
-        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
-        // [XÁC ĐỊNH SẬP MẠNG THẬT] Đã thử đủ 3 lần trong ~15s mà lần nào cũng timeout — lúc
-        // này mới đủ căn cứ kết luận ESP đã nhận lệnh và đang bận ghi Flash/khởi động lại.
-        if (mounted) _proceedToDeviceRegistration();
-        return;
-      } on SocketException {
-        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
-        if (mounted) _proceedToDeviceRegistration();
-        return;
-      } on http.ClientException {
-        if (attempt < maxAttempts) { await Future.delayed(const Duration(seconds: 1)); continue; }
-        if (mounted) _proceedToDeviceRegistration();
-        return;
+        // Có phản hồi THẬT nhưng khác 200 (vd 400 "Missing SSID") — vẫn thử lại cho đủ 5 lần
+        // thay vì bỏ cuộc ngay, phòng trường hợp gói tin lần trước bị lỗi cục bộ nhất thời.
+        if (i < maxAttempts - 1) await Future.delayed(const Duration(seconds: 1));
       } catch (e) {
-        // Lỗi KHÁC hẳn (vd JSON phản hồi dị dạng thật sự) — đây mới là lỗi thật, không thử lại.
-        if (mounted) setState(() { _isInstallingWifi = false; _wifiInstallError = 'timeout'; });
-        return;
+        // [KHÔNG CÒN "COI LÀ THÀNH CÔNG"] Socket/Timeout/ClientException đều chỉ là lý do để
+        // THỬ LẠI — không còn nhánh nào tự ý kết luận thành công từ một Exception nữa.
+        if (i < maxAttempts - 1) await Future.delayed(const Duration(seconds: 1));
       }
+    }
+
+    if (!mounted) return;
+    if (success) {
+      _proceedToDeviceRegistration();
+    } else {
+      // [TUYỆT ĐỐI KHÔNG CHUYỂN VIEW SANG ĐĂNG KÝ] Hết 5 lần vẫn không có phản hồi 200 thật —
+      // quay lại màn hình Cài đặt WiFi (View 5, còn nguyên SSID/mật khẩu đã gõ) để user tự
+      // kiểm tra lại kết nối WiFi nội bộ rồi thử lại, thay vì âm thầm đoán mò tiếp.
+      setState(() => _currentView = 5);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(AppTranslations.of(context, listen: false).text('wifi_send_failed_error')),
+        backgroundColor: Colors.redAccent,
+      ));
     }
   }
 
@@ -302,7 +296,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   // còn bắt user tự bấm "Thêm ngay" thêm một bước nữa. Đã có MAC thật từ /api/check_ip (View 3,
   // lưu trong _provisioningMac) nên đăng ký THẲNG lên Backend bằng chính MAC đó.
   void _proceedToDeviceRegistration() {
-    setState(() { _isInstallingWifi = false; _currentView = 7; });
+    setState(() => _currentView = 7);
     _registerDeviceDirect();
   }
 
@@ -1242,8 +1236,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
   }
 
   // --- VIEW 6: [ĐỢT 22] ĐANG CÀI ĐẶT WIFI — gọi /api/setup_connect + chờ thiết bị khởi động lại ---
+  // [ĐỢT 30] View này giờ CHỈ còn hiển thị pha "đang thử gửi" (spinner + số lần thử) — thất bại
+  // sau 5 lần không còn dừng lại ở đây để hiện icon lỗi/nút Thử lại nữa (xem _submitWifiCredentials):
+  // quay thẳng về View 5 kèm SnackBar, và thành công thì chuyển thẳng sang View 7 trong CÙNG một
+  // setState() nên trạng thái "đã xong" của view này trên thực tế không bao giờ được vẽ ra một
+  // khung hình riêng — bỏ hẳn field _isInstallingWifi (không còn ai đọc) lẫn UI thành công/lỗi cũ.
   Widget _buildWifiInstallingView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
-    final bool success = !_isInstallingWifi && _wifiInstallError == null;
     return Padding(
       padding: const EdgeInsets.all(12.0),
       child: Column(
@@ -1251,44 +1249,21 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
         children: [
           _buildHeader(t.text('wifi_setup_header'), textMain, textSub),
           const SizedBox(height: 32),
-          SizedBox(
+          const SizedBox(
             height: 100,
-            child: Center(
-              child: _isInstallingWifi
-                  ? const CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)
-                  : Icon(
-                      success ? Icons.check_circle_rounded : Icons.error_rounded,
-                      color: success ? tkGreen : Colors.redAccent,
-                      size: 64,
-                    ),
-            ),
+            child: Center(child: CircularProgressIndicator(color: Colors.blueAccent, strokeWidth: 3)),
           ),
           const SizedBox(height: 20),
           Text(
-            _isInstallingWifi
-                ? t.text('wifi_installing_status')
-                : (success
-                    ? t.text('wifi_installing_waiting_lan')
-                    : (_wifiInstallError == 'timeout' ? t.text('wifi_installing_timeout') : t.text('wifi_installing_fail'))),
-            style: TextStyle(color: success ? tkGreen : (_isInstallingWifi ? textMain : Colors.redAccent), fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
+            t.text('wifi_installing_status'),
+            style: TextStyle(color: textMain, fontSize: 14, fontWeight: FontWeight.w600, height: 1.5),
             textAlign: TextAlign.center,
           ),
-          // [ĐỢT 29 — SMART RETRY] Hiện số lần đang thử — tránh spinner câm suốt ~15s khiến
-          // user tưởng App treo trong lúc thực ra đang tự thử lại theo đúng thiết kế.
-          if (_isInstallingWifi && _wifiInstallAttempt > 1) ...[
+          // Hiện số lần đang thử — tránh spinner câm suốt tối đa ~30s (5×5s+4×1s) khiến user
+          // tưởng App treo trong lúc thực ra đang tự thử lại theo đúng thiết kế.
+          if (_wifiInstallAttempt > 1) ...[
             const SizedBox(height: 6),
-            Text('${t.text('device_registering_attempt_prefix')}$_wifiInstallAttempt/3', style: TextStyle(color: textSub, fontSize: 11)),
-          ],
-          if (!_isInstallingWifi && !success) ...[
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: tkGreen, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                onPressed: () => setState(() => _currentView = 5),
-                child: Text(t.text('wifi_retry_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              ),
-            ),
+            Text('${t.text('device_registering_attempt_prefix')}$_wifiInstallAttempt/5', style: TextStyle(color: textSub, fontSize: 11)),
           ],
         ],
       ),

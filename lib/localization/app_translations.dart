@@ -546,9 +546,10 @@ class AppTranslations {
       'save_wifi_checkbox': 'Lưu mạng WiFi này cho các lần cài đặt sau',
       'wifi_ssid_required': 'Vui lòng chọn hoặc nhập tên WiFi',
       'wifi_installing_status': 'Đang gửi thông tin tới thiết bị...',
-      'wifi_installing_waiting_lan': 'Thành công! Thiết bị đang khởi động lại và kết nối vào mạng nhà bạn...',
-      'wifi_installing_fail': 'Kết nối thất bại — sai mật khẩu hoặc tín hiệu yếu. Vui lòng thử lại.',
-      'wifi_installing_timeout': 'Không nhận được phản hồi từ thiết bị. Vui lòng thử lại.',
+      // [ĐỢT 30] Hết 5 lần thử vẫn không nhận được HTTP 200 thật — báo lỗi qua SnackBar, quay
+      // lại màn nhập WiFi (không còn nhánh "coi Exception là thành công" nên không cần 2 khóa
+      // wifi_installing_waiting_lan/wifi_installing_fail/wifi_installing_timeout cũ nữa).
+      'wifi_send_failed_error': 'Không thể gửi thông tin tới thiết bị. Vui lòng kiểm tra lại kết nối WiFi nội bộ.',
       'wifi_retry_btn': 'THỬ LẠI',
       'wifi_rescan_btn': 'Quét lại',
 
@@ -1061,9 +1062,7 @@ class AppTranslations {
       'save_wifi_checkbox': 'Save this Wi-Fi network for future setups',
       'wifi_ssid_required': 'Please choose or enter a WiFi name',
       'wifi_installing_status': 'Sending WiFi info to the device...',
-      'wifi_installing_waiting_lan': 'Success! The device is restarting and joining your home network...',
-      'wifi_installing_fail': 'Connection failed — wrong password or weak signal. Please try again.',
-      'wifi_installing_timeout': 'No response from the device. Please try again.',
+      'wifi_send_failed_error': 'Could not send information to the device. Please check your local WiFi connection.',
       'wifi_retry_btn': 'RETRY',
       'wifi_rescan_btn': 'Rescan',
 
