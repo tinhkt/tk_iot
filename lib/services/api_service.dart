@@ -389,14 +389,21 @@ class ApiService {
   // --- [GIAI ĐOẠN 72 — KÉO THẢ SẮP XẾP] Lưu thứ tự thẻ thiết bị theo Nhà ---
   /// PUT /api/homes/{homeId}/device-order {"ordered_macs": [...]} — SetDeviceOrderHandler (Go)
   /// lưu vào Redis device_order:{homeId}; applyDeviceOrder() sẽ tự sắp lại danh sách mỗi lần
-  /// GET devices/dashboard-sync sau đó. Trả về true/false đơn giản, App tự optimistic-update
-  /// UI trước rồi gọi hàm này, revert nếu false (giống RoomGroupProvider.reorderRooms).
+  /// GET devices/dashboard-sync sau đó.
+  /// [FIX GIAI ĐOẠN 97 — KHÔNG NUỐT LỖI] Trước đây MỌI lỗi (404 route chưa deploy, 403 hết quyền,
+  /// 500...) đều rơi về `false` trần trụi — App chỉ hiện được "Không thể lưu thứ tự" chung chung,
+  /// không cách nào phân biệt "Backend chưa có route này" với "lỗi thật khác". Nay LUÔN log status
+  /// code + response body ra console khi thất bại — cùng nguyên tắc đã áp cho uploadAvatar().
   Future<bool> setDeviceOrder(String homeId, List<String> orderedMacs) async {
     try {
       final response = await authorizedPut(
         '$baseUrl/homes/${Uri.encodeComponent(homeId)}/device-order',
         {'ordered_macs': orderedMacs},
       );
+      // [FIX GIAI ĐOẠN 100 — CHỨNG MINH API ĐÃ ĐƯỢC GỌI] Log CẢ status code + body khi THÀNH
+      // CÔNG (trước đây chỉ log lúc thất bại) — người dùng cần thấy bằng chứng request thật sự
+      // đã bắn đi và Server đã trả lời gì, không chỉ suy đoán qua hành vi UI.
+      if (kDebugMode) print('📡 [DEVICE ORDER] HTTP ${response.statusCode} — ${response.body}');
       return response.statusCode == 200;
     } catch (e) {
       if (kDebugMode) print('❌ Lỗi mạng khi setDeviceOrder: $e');

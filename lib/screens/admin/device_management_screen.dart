@@ -63,7 +63,14 @@ class _DeviceManagementScreenState extends State<DeviceManagementScreen> {
   }
 
   Future<void> _confirmForceUnbind(AdminDeviceRow row) async {
-    final t = AppTranslations.of(context);
+    // [FIX GIAI ĐOẠN 93] Hàm này chạy TỪ onPressed (IconButton trong DataRow) — một trình xử lý
+    // sự kiện chạm, KHÔNG PHẢI đang giữa pha build() thật. AppTranslations.of() mặc định
+    // listen:true gọi context.watch() nội bộ -> Provider assert bằng cờ context.owner!.
+    // debugBuilding (chỉ true trong lúc Flutter thật sự chạy buildScope() của một khung hình) ->
+    // ném "Tried to listen to a value exposed with provider, from outside of the widget tree."
+    // đúng như stack trace người dùng gửi. `t` chỉ cần ĐỌC MỘT LẦN, không cần widget này tự
+    // rebuild theo LanguageProvider (hàm không trả Widget) — listen:false là đúng.
+    final t = AppTranslations.of(context, listen: false);
     // Cùng lưới an toàn chuỗi rỗng như bảng danh sách — String không nullable nên không thể
     // "null crash", nhưng vẫn tránh hiện dòng trống trơn khó hiểu trong Dialog xác nhận.
     final String displayName = row.name.trim().isEmpty ? '⚠️ Chưa đặt tên' : row.name;
@@ -84,7 +91,15 @@ class _DeviceManagementScreenState extends State<DeviceManagementScreen> {
     );
     if (ok != true || !mounted) return;
 
-    final bool success = await _api.forceUnbindDevice(row.mac);
+    // [GIAI ĐOẠN 92] Bật spinner NGAY trước khi gọi API — finally đảm bảo LUÔN tắt lại dù thành
+    // công/lỗi/rớt mạng, không bao giờ kẹt spinner treo vĩnh viễn.
+    _dataSource.setPending(row.mac, true);
+    bool success = false;
+    try {
+      success = await _api.forceUnbindDevice(row.mac);
+    } finally {
+      _dataSource.setPending(row.mac, false);
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(success ? t.text('force_unbind_success') : t.text('force_unbind_error')),
@@ -205,6 +220,20 @@ class _AdminDeviceDataSource extends DataTableSource {
   bool _loadedOnce = false;
   bool _disposed = false;
 
+  // [GIAI ĐOẠN 92 — LOADING KHI FORCE UNBIND] MAC nào đang chờ API force-unbind trả lời — hiện
+  // spinner thay icon ĐÚNG DÒNG đó, không đụng các dòng khác. Owner (_confirmForceUnbind) gọi
+  // setPending(true) TRƯỚC khi await API, setPending(false) trong finally để LUÔN tắt spinner
+  // dù thành công/lỗi/ngoại lệ mạng.
+  final Set<String> _pendingUnbindMacs = {};
+  void setPending(String mac, bool pending) {
+    if (pending) {
+      _pendingUnbindMacs.add(mac);
+    } else {
+      _pendingUnbindMacs.remove(mac);
+    }
+    notifyListeners();
+  }
+
   void fetchInitial() => _fetchPage(1);
 
   Future<void> _fetchPage(int page) async {
@@ -269,11 +298,22 @@ class _AdminDeviceDataSource extends DataTableSource {
           color: row.online ? const Color(0xFF00A651) : Colors.grey,
           size: 12,
         )),
-        DataCell(IconButton(
-          icon: const Icon(Icons.link_off_rounded, color: Colors.redAccent),
-          tooltip: 'Force Unbind',
-          onPressed: () => onForceUnbind(row),
-        )),
+        DataCell(
+          _pendingUnbindMacs.contains(row.mac)
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Padding(
+                    padding: EdgeInsets.all(2.0),
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent),
+                  ),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.link_off_rounded, color: Colors.redAccent),
+                  tooltip: 'Force Unbind',
+                  onPressed: () => onForceUnbind(row),
+                ),
+        ),
       ],
     );
   }

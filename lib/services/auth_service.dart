@@ -356,32 +356,52 @@ class AuthService {
   }
 
   // Hàm đẩy ảnh Avatar lên Server (Multi-part Request)
-  Future<String?> uploadAvatar(File imageFile) async {
+  // [FIX GIAI ĐOẠN 94 — THÔNG ĐƯỜNG ỐNG UPLOAD] Trước đây MỌI lỗi (400/413/500...) đều rơi về
+  // `return null` — nuốt sạch status code + response body, App chỉ hiện được câu chung chung
+  // "Tải lên thất bại". Nay trả về record (url, error): url khác null = thành công; error mang
+  // NGUYÊN VĂN lỗi Server trả (hoặc mô tả lỗi mạng) để UI hiện chi tiết thay vì đoán mò — kèm log
+  // console status code + body TRƯỚC khi trả lỗi để chẩn đoán ngay từ log.
+  Future<({String? url, String? error})> uploadAvatar(File imageFile) async {
     try {
       final token = await getToken();
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
       }
-      // Gắn file vật lý vào luồng Stream
-      request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
-      
+      // [FIX GIAI ĐOẠN 94 — LỆCH TÊN FIELD] Trước đây field 'image' — Backend (UploadAvatarHandler,
+      // auth.go) đọc bằng c.FormFile("avatar") -> KHÔNG BAO GIỜ khớp -> LUÔN 400 "Không tìm thấy
+      // file tải lên" trên MỌI lần upload, bất kể dung lượng ảnh hay bất cứ điều gì khác. Đổi tên
+      // field khớp ĐÚNG "avatar" Backend đang chờ.
+      request.files.add(await http.MultipartFile.fromPath('avatar', imageFile.path));
+
       var streamedResponse = await request.send();
       var response = await http.Response.fromStream(streamedResponse);
-      
+
       if (response.statusCode == 401) {
         handleUnauthorized();
-        return null;
+        return (url: null, error: "Phiên làm việc hết hạn.");
       }
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return data['avatar_url']; // Trả về đường dẫn ảnh tĩnh sau khi server lưu xong
+        return (url: data['avatar_url'] as String?, error: null); // Trả về đường dẫn ảnh tĩnh sau khi server lưu xong
       }
-      return null;
+
+      // [KHÔNG NUỐT LỖI] Log NGUYÊN VĂN status code + body ra console để chẩn đoán chính xác
+      // Server đang phàn nàn điều gì (413 quá dung lượng, 500 thiếu thư mục lưu, 400 sai field
+      // name...) — thay vì chỉ biết "thất bại" mà không rõ lý do.
+      if (kDebugMode) print("⚠️ uploadAvatar thất bại: HTTP ${response.statusCode} — ${response.body}");
+      String detail;
+      try {
+        final data = jsonDecode(response.body);
+        detail = (data['error'] ?? data['message'] ?? response.body).toString();
+      } catch (_) {
+        detail = response.body.isNotEmpty ? response.body : "Lỗi không xác định";
+      }
+      return (url: null, error: "Lỗi ${response.statusCode}: $detail");
     } catch (e) {
       if (kDebugMode) print("Lỗi uploadAvatar: $e");
-      return null;
+      return (url: null, error: "Lỗi kết nối máy chủ: $e");
     }
   }
 

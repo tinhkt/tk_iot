@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -26,7 +27,13 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
   final _addressCtrl = TextEditingController();
   String _editingEmail = '';
   String _avatarUrl = '';
-  
+  // [FIX GIAI ĐOẠN 96 — CACHE BUST] Server đặt tên file theo "avatar_{email}_{filename gốc}" —
+  // nếu ảnh mới upload trùng tên file gốc với ảnh cũ (rất hay gặp, image_picker nhiều máy trả
+  // tên file cố định/lặp lại), URL không đổi -> NetworkImage cache theo URL vẫn hiện ảnh CŨ dù
+  // server đã lưu ảnh MỚI đè lên. Đổi giá trị này mỗi lần _avatarUrl cập nhật (upload thành công
+  // HOẶC nạp lại hồ sơ) để buộc Flutter luôn tải lại, không dùng cache stale.
+  int _avatarCacheBuster = 0;
+
   // Trạng thái file ảnh chọn từ máy để review trước khi upload
   File? _selectedImage;
 
@@ -64,6 +71,7 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
       _phoneCtrl.text = myProfile['phone'] ?? '';
       _addressCtrl.text = myProfile['address'] ?? '';
       _avatarUrl = myProfile['avatar_url'] ?? '';
+      _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
     }
 
     // Nếu là SUPER_USER, lấy thêm danh sách tất cả các user hệ thống
@@ -85,8 +93,58 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
       _phoneCtrl.text = user['phone'] ?? '';
       _addressCtrl.text = user['address'] ?? '';
       _avatarUrl = user['avatar_url'] ?? '';
+      _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
       _selectedImage = null; // Reset ảnh tạm
     });
+  }
+
+  // [FIX GIAI ĐOẠN 103 — DÙNG Uri CHUẨN, KHÔNG TỰ GHÉP CHUỖI] Bản trước (Giai đoạn 102) tự cắt
+  // hậu tố "/api" bằng substring thủ công — ĐÃ ĐÚNG và đã tự chạy verify bằng Dart CLI, nhưng vẫn
+  // là ghép chuỗi tay, dễ sai lại nếu baseUrl đổi hình dạng sau này. Đổi hẳn sang Uri.replace(path:)
+  // — ĐÃ TỰ CHẠY THẬT bằng Dart CLI để xác nhận hành vi (không suy đoán):
+  //   Uri.parse('https://api.iot-smart.vn/api').replace(path: '/uploads/avatar_test.jpg').toString()
+  //   -> "https://api.iot-smart.vn/uploads/avatar_test.jpg"
+  // replace(path:) THAY THẾ TOÀN BỘ path cũ (kể cả "/api") bằng path mới — KHÔNG cần tự cắt hậu tố
+  // "/api" nữa (Uri tự lo), VÀ tự thêm dấu "/" đầu nếu thiếu (đã verify: path truyền vào không có
+  // "/" đầu vẫn ra kết quả đúng) — loại bỏ hoàn toàn lớp cắt-ghép chuỗi thủ công trước đây.
+  // queryParameters cũng qua Uri (không tự nối "?v=..." bằng chuỗi) — không bao giờ ra "??" hay
+  // thiếu "?" nếu sau này path đã có sẵn query string.
+  String? _resolveAvatarDisplayUrl() {
+    if (_avatarUrl.isEmpty) return null;
+    // Nếu Server đã trả URL TUYỆT ĐỐI (dữ liệu cũ/hành vi khác sau này) thì giữ nguyên gốc, chỉ
+    // gắn thêm cache-buster qua Uri.replace — không parse lại domain, không nối chồng domain.
+    final bool isAbsolute = _avatarUrl.startsWith('http://') || _avatarUrl.startsWith('https://');
+    final Uri baseUri = isAbsolute ? Uri.parse(_avatarUrl) : Uri.parse(_authService.baseUrl);
+    final Uri finalUri = isAbsolute
+        ? baseUri.replace(queryParameters: {'v': '$_avatarCacheBuster'})
+        : baseUri.replace(path: _avatarUrl, queryParameters: {'v': '$_avatarCacheBuster'});
+    final String finalUrl = finalUri.toString();
+    if (kDebugMode) print('🖼️ [AVATAR] URL đang tải: $finalUrl');
+    return finalUrl;
+  }
+
+  // Widget ảnh đại diện lấy từ Server — tách riêng để CHỈ resolve URL (và in log) ĐÚNG MỘT LẦN
+  // mỗi lượt build, tránh gọi _resolveAvatarDisplayUrl() lặp lại ở nhiều nhánh.
+  Widget _buildAvatarImage() {
+    final String? url = _resolveAvatarDisplayUrl();
+    if (url == null) {
+      return Icon(Icons.business_center_rounded, size: 48, color: tkGreen.withValues(alpha: 0.5));
+    }
+    return Image.network(
+      url,
+      width: 108,
+      height: 108,
+      fit: BoxFit.cover,
+      // [FIX GIAI ĐOẠN 98] Icon lỗi màu ĐỎ RÕ RÀNG — phân biệt hẳn với icon mặc định "chưa có
+      // ảnh" (màu xanh nhạt) để người dùng biết CHẮC CHẮN là URL bị chết (404/mất mạng/CORS...),
+      // không nhầm lẫn với trạng thái "chưa từng đặt ảnh đại diện".
+      errorBuilder: (context, error, stackTrace) {
+        if (kDebugMode) print('❌ [AVATAR] Lỗi tải ảnh từ $url: $error');
+        return const Icon(Icons.error_outline_rounded, size: 48, color: Colors.redAccent);
+      },
+      loadingBuilder: (context, child, progress) =>
+          progress == null ? child : Center(child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen.withValues(alpha: 0.5))),
+    );
   }
 
   // --- LOGIC GỌI CAMERA / BỘ SƯU TẬP ẢNH ---
@@ -102,16 +160,18 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
       });
 
       // Gọi API Upload ảnh thật lên server Golang
-      String? uploadedUrl = await _authService.uploadAvatar(_selectedImage!);
+      // [FIX GIAI ĐOẠN 94] uploadAvatar giờ trả record (url, error) — hiện ĐÚNG lỗi Server trả
+      // (hoặc lỗi mạng) thay vì câu chung chung "Tải ảnh thất bại" không rõ nguyên nhân.
+      final result = await _authService.uploadAvatar(_selectedImage!);
 
       if (!mounted) return; // màn hình đã đóng trong lúc chờ upload
       setState(() { _isUploading = false; });
 
-      if (uploadedUrl != null) {
-        setState(() { _avatarUrl = uploadedUrl; });
+      if (result.url != null) {
+        setState(() { _avatarUrl = result.url!; _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch; });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tải ảnh lên thành công! Bấm Cập Nhật để lưu.'), backgroundColor: Color(0xFF00A651)));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tải ảnh thất bại! Vui lòng thử lại.'), backgroundColor: Colors.redAccent));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.error ?? 'Tải ảnh thất bại! Vui lòng thử lại.'), backgroundColor: Colors.redAccent));
       }
     }
   }
@@ -189,16 +249,23 @@ class _ProfileManagementViewState extends State<ProfileManagementView> {
                 Center(
                   child: Stack(
                     children: [
+                      // [FIX GIAI ĐOẠN 96/98] Đổi từ CircleAvatar.backgroundImage (KHÔNG có
+                      // errorBuilder — lỗi tải chỉ gọi onBackgroundImageError, không tự động rơi
+                      // về icon mặc định được) sang CircleAvatar bọc ClipOval + _buildAvatarImage()
+                      // (Image.network có đủ errorBuilder/loadingBuilder — xem hàm bên dưới).
                       CircleAvatar(
                         radius: 54,
                         backgroundColor: isDark ? Colors.white10 : Colors.grey.shade200,
-                        // Hiển thị ưu tiên: Ảnh vừa chọn Local -> Ảnh từ Server -> Icon mặc định
-                        backgroundImage: _selectedImage != null 
-                            ? FileImage(_selectedImage!) as ImageProvider
-                            : (_avatarUrl.isNotEmpty ? NetworkImage('${_authService.baseUrl.replaceAll('/api', '')}$_avatarUrl') : null),
-                        child: (_selectedImage == null && _avatarUrl.isEmpty)
-                            ? Icon(Icons.business_center_rounded, size: 48, color: tkGreen.withValues(alpha: 0.5))
-                            : null,
+                        child: ClipOval(
+                          child: SizedBox(
+                            width: 108,
+                            height: 108,
+                            // Hiển thị ưu tiên: Ảnh vừa chọn Local -> Ảnh từ Server -> Icon mặc định
+                            child: _selectedImage != null
+                                ? Image.file(_selectedImage!, width: 108, height: 108, fit: BoxFit.cover)
+                                : _buildAvatarImage(),
+                          ),
+                        ),
                       ),
                       if (_isUploading)
                         const Positioned.fill(child: CircularProgressIndicator(color: Color(0xFF00A651), strokeWidth: 3)),

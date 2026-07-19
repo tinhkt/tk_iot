@@ -93,7 +93,14 @@ class RoomManagementScreen extends StatelessWidget {
               },
               itemBuilder: (context, index) {
                 final room = rooms[index];
-                final int devCount = provider.devicesInRoom(room.id).length;
+                // [FIX ĐẾM THIẾT BỊ] devicesInRoom() CHỈ đếm thiết bị gán NGUYÊN KHỐI (đường
+                // cũ, _deviceRoom) — bỏ sót hoàn toàn thiết bị gán qua kênh tách riêng (đường
+                // mới, _endpointRoom/endpointsInRoom). Đây là 2 nguồn TÁCH BIỆT theo đúng thiết
+                // kế của RoomGroupProvider (xem doc-comment tại endpointsInRoom) — màn hình PHẢI
+                // gộp cả hai mới ra tổng đúng, giống ĐÚNG cách room_detail_screen.dart đã làm.
+                // Trước đây thiếu bước gộp này khiến số đếm luôn kẹt ở nguồn duy nhất (thường là
+                // 0 hoặc 1) bất kể có bao nhiêu kênh đã gán qua đường tách relay mới hơn.
+                final int devCount = provider.devicesInRoom(room.id).length + provider.endpointsInRoom(room.id).length;
                 // Key BẮT BUỘC trên widget gốc trả về cho ReorderableListView; margin thay separator
                 return Padding(
                   key: ValueKey(room.id),

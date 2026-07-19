@@ -36,7 +36,7 @@ import '../providers/home_provider.dart';
 import '../providers/automation_provider.dart';
 import 'groups/edit_group_screen.dart';
 import 'groups/room_management_screen.dart';
-import 'package:reorderable_grid_view/reorderable_grid_view.dart'; // [GIAI ĐOẠN 72 — IN-PLACE REORDER]
+import 'package:reorderables/reorderables.dart'; // [GIAI ĐOẠN 75 — ReorderableWrap: thẻ khác kích thước]
 import 'dart:math' show Random;
 import 'automation/automation_screen.dart';
 import 'automation/create_automation_screen.dart';
@@ -131,6 +131,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       .toSet();
   Map<String, dynamic>? _selectedHomeForSuperUser;
   final Color tkGreen = const Color(0xFF00A651);
+  // [FIX NỔI BẬT MỤC ĐANG CHỌN — Sidebar/Drawer Kính] tkGreen gốc (0xFF00A651) làm chữ/icon
+  // MỤC ĐANG CHỌN hơi trầm khi đặt trên nền kính tối — dùng riêng bản sáng hơn (neon) chỉ cho
+  // chữ/icon Active State, KHÔNG đổi nền tint/viền (giữ nguyên tkGreen.withValues(alpha: ...)
+  // ở decoration như thiết kế cũ).
+  final Color tkGreenNeon = const Color(0xFF3DF2A0);
 
   // [EXCLUDE LIST] Các category là MỘT khối thiết bị được điều khiển TRỌN GÓI trong
   // một thẻ chuyên biệt (quạt, điều hòa, rèm, bơm, tủ lạnh, cảm biến). Gặp thiết bị
@@ -476,25 +481,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
       : currentHomeId;
 
   // ==========================================================================
-  // ↕️ [GIAI ĐOẠN 72 — REWRITE] KÉO-THẢ SẮP XẾP TẠI CHỖ (in-place, ngay trên Dashboard)
+  // ↕️ [GIAI ĐOẠN 75 — REWRITE #2] KÉO-THẢ TẠI CHỖ DÙNG ĐÚNG THẺ GỐC (không tráo icon nữa)
   // ==========================================================================
-  // [TẠI SAO ĐỔI TỪ MÀN RIÊNG SANG TẠI CHỖ] Bản trước dùng DeviceOrderScreen (List dọc, màn
-  // riêng) — đúng chuẩn UX Room reorder cũ nhưng SAI yêu cầu người dùng ("in-place, giống iOS
-  // Jiggle"). Bản này: bấm Cây bút -> đúng vùng lưới thiết bị TRÊN Dashboard đổi thành lưới
-  // rung-lắc kéo-thả, KHÔNG điều hướng màn hình nào cả.
+  // [TẠI SAO ĐỔI TIẾP TỪ BẢN LƯỚI ICON ĐỒNG NHẤT] Bản trước (Giai đoạn 72 rewrite) mô phỏng iOS
+  // Jiggle bằng cách hiện Ô icon+tên tĩnh khi sửa — đúng cơ chế iOS thật nhưng người dùng từ chối:
+  // yêu cầu rõ ràng là giữ NGUYÊN hình dáng/kích thước THẬT của từng thẻ (SmartFanCard/
+  // SmartRollingDoorCard/SmartSwitchCard...), chỉ thêm rung + khóa chạm. Bản này đáp ứng đúng.
   //
-  // [TẠI SAO KHÔNG GỘP THẲNG CÁC THẺ GỐC (Fan/Switch/Cửa cuốn/...) VÀO 1 LƯỚI] Các thẻ gốc có
-  // kích thước/tỉ lệ khác nhau hoàn toàn theo category (thẻ Cửa cuốn cao gấp nhiều lần thẻ Công
-  // tắc) và được build qua nhiều vòng lặp + hàm dịch DPS phức tạp trong _buildDevicesGridBody —
-  // ép chung vào 1 SliverGridDelegateWithFixedCrossAxisCount đồng nhất sẽ vỡ layout hoặc buộc
-  // viết lại toàn bộ hàm build thẻ (rủi ro cao, ngoài phạm vi yêu cầu). Thay vào đó, ĐÚNG như
-  // iOS Home Screen thật: khi vào Jiggle mode, icon app KHÔNG chạy nội dung sống của nó — chỉ
-  // hiện icon + tên tĩnh. Ở đây cũng vậy: edit mode hiện 1 lưới Ô ĐỒNG NHẤT (icon + tên) cho
-  // MỌI thiết bị bất kể category — không đụng logic build thẻ gốc, tap/long-press tự động bị
-  // "vô hiệu hóa" vì các ô edit-mode này KHÔNG hề gắn handler nào ngoài kéo-thả.
+  // [KIẾN TRÚC — TẠI SAO KHÔNG SỬA THẲNG return Column(...) CỦA _buildDevicesGridBody]
+  // Khối render bình thường (~300 dòng, nhiều vòng lặp dịch DPS phức tạp đã tinh chỉnh lâu dài)
+  // RỦI RO CAO nếu tái cấu trúc tại chỗ. Thay vào đó: nhánh edit-mode là một hàm HOÀN TOÀN CỘNG
+  // THÊM (_buildInPlaceEditWrap) — nhận CHÍNH các danh sách visibleFans/visibleSensors/...  đã
+  // tính sẵn (không đụng logic tính chúng), tự dựng lại ĐÚNG các Widget thẻ gốc (cùng constructor
+  // y hệt khối render bình thường) rồi xếp vào MỘT ReorderableWrap chung (gói "reorderables" —
+  // hỗ trợ trẻ kích thước KHÁC NHAU, không như GridView lưới đều). Khối Column bình thường ở
+  // dưới KHÔNG bị đụng một dòng nào -> zero rủi ro hồi quy khi Kính TẮT bật lại chế độ thường.
+  //
+  // [ĐƠN VỊ KÉO-THẢ LÀ THẺ (key = mac_endpoint), KHÔNG PHẢI MAC] Công tắc nhiều kênh render N
+  // thẻ/1 MAC — người dùng đòi kéo TỪNG thẻ riêng lẻ (kể cả xen giữa các loại khác), nên
+  // _editOrderDraft lưu theo key thẻ (giống hideKey dùng cho Ẩn/Hiện toàn hệ thống), KHÔNG theo
+  // MAC. Khi Lưu, dedupe về mảng MAC (giữ đúng model Backend Giai đoạn 72 — chỉ xếp hạng theo
+  // MAC): thẻ đầu tiên xuất hiện của một MAC trong thứ tự cuối cùng quyết định hạng MAC đó; các
+  // kênh khác cùng MAC không có hạng riêng (giới hạn THẬT của model Backend hiện có, không phải
+  // lỗi — nâng cấp Backend lên hạng theo từng kênh nằm ngoài phạm vi yêu cầu lần này).
   bool _isEditingOrder = false;
   bool _savingOrder = false;
-  List<Map<String, dynamic>> _editOrderDraft = [];
+  List<({String key, String mac})> _editOrderDraft = [];
+  // Thứ tự thẻ NHÌN THẤY gần nhất (key+mac, KHÔNG chứa Widget) — cập nhật ở CUỐI mỗi lượt
+  // _buildDevicesGridBody chạy (kể cả ngoài edit mode, rẻ vì chỉ đọc field có sẵn) để làm hạt
+  // giống khi bật chế độ Sửa, tránh phải dựng lại toàn bộ danh sách riêng.
+  List<({String key, String mac})> _lastVisualCardOrder = [];
 
   void _toggleEditOrder() {
     if (_isEditingOrder) {
@@ -503,28 +519,70 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     setState(() {
       _isEditingOrder = true;
-      _editOrderDraft = _currentHomeDevices.whereType<Map>().map((d) => Map<String, dynamic>.from(d)).toList();
+      _editOrderDraft = List<({String key, String mac})>.from(_lastVisualCardOrder);
     });
   }
 
+  // [FIX GIAI ĐOẠN 99 — TRUY VẾT NÚT LƯU] Log rõ TỪNG bước: hàm này có thực sự chạy không, mảng
+  // gửi lên là gì, gọi API thành công/thất bại ra sao — để lần test tới biết CHẮC CHẮN sự cố nằm
+  // ở đâu (nút không bắn sự kiện / mảng rỗng-sai / API lỗi / build cũ chưa deploy) thay vì đoán.
   Future<void> _saveDeviceOrder() async {
+    if (kDebugMode) print('💾 [SAVE ORDER] Bắt đầu lưu thứ tự...');
     final homeId = _provisioningTargetHomeId;
-    final orderedMacs = _editOrderDraft
-        .map((d) => (d['mac_address'] ?? d['mac'] ?? '').toString())
-        .where((m) => m.isNotEmpty)
-        .toList();
+    // Dedupe theo MAC — GIỮ vị trí xuất hiện ĐẦU TIÊN của MAC đó trong thứ tự thẻ cuối cùng
+    // (xem giải thích ở comment lớp trên).
+    final List<String> orderedMacs = [];
+    final Set<String> seenMacs = {};
+    for (final entry in _editOrderDraft) {
+      if (entry.mac.isNotEmpty && seenMacs.add(entry.mac)) orderedMacs.add(entry.mac);
+    }
+    if (kDebugMode) print('💾 [SAVE ORDER] home_id=$homeId — danh sách gửi lên (${orderedMacs.length} MAC): $orderedMacs');
     if (homeId.isEmpty || orderedMacs.isEmpty) {
+      if (kDebugMode) print('⚠️ [SAVE ORDER] Bỏ qua gọi API: home_id rỗng hoặc danh sách rỗng — thoát chế độ Sửa không lưu gì.');
       setState(() => _isEditingOrder = false);
       return;
     }
     setState(() => _savingOrder = true);
-    final ok = await ApiService().setDeviceOrder(homeId, orderedMacs);
+    bool ok = false;
+    try {
+      if (kDebugMode) print('💾 [SAVE ORDER] Đang gọi ApiService.setDeviceOrder()...');
+      ok = await ApiService().setDeviceOrder(homeId, orderedMacs);
+      if (kDebugMode) print('💾 [SAVE ORDER] Kết quả API: ${ok ? "THÀNH CÔNG" : "THẤT BẠI"}');
+    } catch (e) {
+      // [CẤM NUỐT LỖI] Mọi try-catch trong luồng này BẮT BUỘC phải print — dù setDeviceOrder() đã
+      // tự bắt lỗi mạng nội bộ (trả false, không throw), vẫn giữ lớp chặn này phòng lỗi bất ngờ
+      // khác (vd lỗi logic ngoài dự kiến) không lọt qua trong im lặng.
+      if (kDebugMode) print('❌ [SAVE ORDER] Lỗi Save Order: $e');
+      ok = false;
+    }
     if (!mounted) return;
+    // [FIX GIAI ĐOẠN 103 — "UI GIỮ NGUYÊN THỨ TỰ CŨ"] _isEditingOrder=false chuyển màn NGAY LẬP
+    // TỨC (đồng bộ) từ ReorderableWrap (edit mode) về _buildUnifiedDeviceWrap (bình thường) —
+    // nhưng màn bình thường đọc _currentHomeDevices, một biến TÁCH BIỆT HOÀN TOÀN, trước đây CHỈ
+    // được cập nhật SAU khi _handleRefresh() hoàn tất round-trip mạng (bất đồng bộ). Khoảng hở
+    // giữa "thoát Edit Mode" (ngay lập tức) và "_currentHomeDevices có thứ tự mới" (chờ mạng) là
+    // ĐÚNG nguyên nhân UI "bảo thủ" giữ thứ tự cũ trong lúc chờ. Nay sắp lại _currentHomeDevices
+    // TẠI CHỖ, TRONG CÙNG setState thoát Edit Mode, dùng ĐÚNG orderedMacs vừa gửi lên Server (dữ
+    // liệu local, không cần chờ Server trả về) — UI đổi ĐÚNG thứ tự mới NGAY, không còn độ trễ.
     setState(() {
       _savingOrder = false;
       _isEditingOrder = false;
+      if (ok) {
+        String macOf(dynamic d) => (d['mac_address'] ?? d['mac'] ?? '').toString().replaceAll(':', '').toUpperCase();
+        _currentHomeDevices.sort((a, b) {
+          final int ra = orderedMacs.indexOf(macOf(a));
+          final int rb = orderedMacs.indexOf(macOf(b));
+          final int rankA = ra == -1 ? orderedMacs.length : ra;
+          final int rankB = rb == -1 ? orderedMacs.length : rb;
+          return rankA.compareTo(rankB);
+        });
+      }
     });
     if (ok) {
+      // [ĐỐI CHIẾU NỀN] _currentHomeDevices đã đúng thứ tự NGAY ở setState trên — lệnh refresh
+      // này chỉ để đồng bộ lại với Server (phòng trường hợp Server tự chuẩn hóa khác đi), KHÔNG
+      // còn là nguồn DUY NHẤT quyết định thứ tự hiển thị như trước nữa.
+      if (kDebugMode) print('💾 [SAVE ORDER] Đã cập nhật local state ngay lập tức — đang đối chiếu nền với Server...');
       _handleRefresh();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -533,89 +591,498 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  IconData _iconForOrderCategory(String category) {
-    switch (category) {
-      case 'fan':
-        return Icons.mode_fan_off_outlined;
-      case 'curtain':
-        return Icons.blinds_outlined;
-      case 'sensor':
-        return Icons.sensors_rounded;
-      case 'ac':
-        return Icons.ac_unit_rounded;
-      case 'light':
-        return Icons.lightbulb_outline_rounded;
-      case 'pump':
-        return Icons.water_drop_outlined;
-      case 'fridge':
-        return Icons.kitchen_outlined;
-      default:
-        return Icons.power_settings_new_rounded;
+  // [GIAI ĐOẠN 100 — MASONRY/TETRIS FILL] Dựng ĐÚNG các Widget thẻ gốc (KHÔNG AbsorbPointer/
+  // Jiggle — dùng cho lưới BÌNH THƯỜNG, thao tác đầy đủ) thành MỘT danh sách phẳng duy nhất, để
+  // TOÀN BỘ loại thiết bị (Quạt to, Cảm biến nhỏ, Công tắc vuông...) cùng chảy (flow) trong MỘT
+  // Wrap thay vì bị nhốt riêng từng khối theo category như trước — đây chính là nguyên nhân
+  // "khoảng trống bên phải thẻ Quạt không được lấp" người dùng chỉ ra: Quạt và Cảm biến trước đây
+  // nằm ở 2 Wrap TÁCH BIỆT (2 khối xếp dọc), nên Cảm biến không bao giờ "chảy" lên lấp chỗ trống
+  // cạnh Quạt được — hợp nhất về 1 Wrap là the fix, không cần gói flutter_staggered_grid_view: một
+  // Wrap chảy tuần tự trái-sang-phải theo ĐÚNG thứ tự (đã được sắp qua device_order/Giai đoạn 72)
+  // đã đủ giải quyết đúng triệu chứng nêu (thẻ kế tiếp trong thứ tự tự chảy vào chỗ trống ngay
+  // hàng đó) — masonry thật (backfill NHIỀU hàng phía trên) là công cụ mạnh hơn mức cần thiết ở
+  // đây và rủi ro hồi quy cao hơn nhiều nếu không kiểm thử trực quan được (máy này không chạy
+  // được Flutter thật). Hàm này KHÔNG đụng _buildInPlaceEditWrap (edit mode) — TÁCH RIÊNG hoàn
+  // toàn, cùng nguyên tắc "cộng thêm, không sửa tại chỗ" đã dùng xuyên suốt phiên này.
+  List<({String key, String mac, Widget widget})> _buildAllDeviceCardEntries(
+    List<Map<String, dynamic>> visibleFans,
+    List<Map<String, dynamic>> visibleSensors,
+    List<Map<String, dynamic>> visibleRollingDoors,
+    List<Map<String, dynamic>> visiblePumps,
+    List<Map<String, dynamic>> visibleDimmers,
+    List<Map<String, dynamic>> visibleGenericPrimary,
+    List<Map<String, dynamic>> visibleSwitches,
+    DeviceProvider provider,
+    bool isDark,
+  ) {
+    final List<({String key, String mac, Widget widget})> entries = [];
+
+    for (final e in visibleFans) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final String status = "${e['speed']}_${e['swing']}_${e['online']}";
+      final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
+          ? e['endpoint'] : 'S_${e['mac']}';
+      final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: SmartFanCard(
+        key: ValueKey("${hideKey}_$status"),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        initialSpeed: e['speed'] ?? 0,
+        initialSwing: e['swing'] == true,
+        backendName: e['name'],
+        isOffline: e['online'] != true,
+        isHidden: _hiddenDevices.contains(hideKey),
+        provider: provider,
+        rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+        onRefresh: _handleRefresh,
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onDelete: cb.delete,
+        onRename: cb.rename,
+        onAssignHome: cb.assignHome,
+        onAssignRoom: cb.assignRoom,
+        onDeviceTimer: cb.timer,
+        onDeviceHistory: cb.history,
+        onDeviceAutomation: cb.automation,
+        onDeviceShare: cb.share,
+      )));
     }
+
+    for (final e in visibleSensors) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: SmartSensorCard(
+        key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        name: e['name'],
+        temperature: e['temp'],
+        humidity: e['hum'],
+        isOffline: e['online'] != true,
+        isHidden: _hiddenDevices.contains(hideKey),
+        provider: provider,
+        rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onRename: cb.rename,
+        onDelete: cb.delete,
+        onAssignHome: cb.assignHome,
+        onAssignRoom: cb.assignRoom,
+        onDeviceTimer: cb.timer,
+        onDeviceHistory: cb.history,
+        onDeviceAutomation: cb.automation,
+        onDeviceShare: cb.share,
+      )));
+    }
+
+    for (final e in visibleRollingDoors) {
+      final String hideKey = "${e['mac']}_${e['upEp']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['upEp']);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: SmartRollingDoorCard(
+        key: ValueKey("${hideKey}_${e['positionPct']}_${e['travelSec']}_${e['online']}"),
+        mac: e['mac'],
+        upEndpoint: e['upEp'], downEndpoint: e['downEp'], stopEndpoint: e['stopEp'],
+        backendName: e['name'],
+        isOffline: e['online'] != true,
+        travelTimeSec: e['travelSec'] ?? 0,
+        initialPositionPct: e['positionPct'] ?? 0,
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+        callbacks: cb,
+      )));
+    }
+
+    for (final e in visiblePumps) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: SmartPumpCard(
+        key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        isOn: e['state'] == 'ON',
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+        callbacks: cb,
+      )));
+    }
+
+    for (final e in visibleDimmers) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: SmartDimmerCard(
+        key: ValueKey("${hideKey}_${e['state']}_${e['brightness']}_${e['online']}"),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        isOn: e['state'] == 'ON',
+        brightness: e['brightness'] ?? 0,
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+        callbacks: cb,
+      )));
+    }
+
+    for (final e in visibleGenericPrimary) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      entries.add((key: hideKey, mac: e['mac'] as String, widget: GenericDeviceCard(
+        key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        category: e['category'] ?? '',
+        isOn: e['state'] == 'ON',
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (hide) => setState(() {
+          hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+          _persistHiddenDevices();
+        }),
+        onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
+        callbacks: cb,
+      )));
+    }
+
+    for (final item in visibleSwitches) {
+      final String mac = item['mac'];
+      final String ep = item['endpoint'];
+      final String deviceKey = "${mac}_$ep";
+      final bool isDevOnline = item['online'] == true;
+      final String status = "${item['state']}_$isDevOnline";
+      final bool isOn = item['state'] == 'ON';
+      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
+      // [BOUNDED SIZE] Giống hệt lý do đã áp cho _buildInPlaceEditWrap: SmartSwitchCard vốn chỉ
+      // sống trong GridView (kích thước ép bởi childAspectRatio) — Wrap cấp constraint KHÔNG giới
+      // hạn, phải tự bọc SizedBox vuông cố định. Dùng CHUNG 130x130 với edit mode để layout không
+      // "nhảy" khi bật/tắt chế độ Sửa (đúng fix triệt để cho triệu chứng Giai đoạn 90).
+      entries.add((key: deviceKey, mac: mac, widget: SizedBox(
+        width: 130,
+        height: 130,
+        child: SmartSwitchCard(
+          key: ValueKey("${mac}_${ep}_$status"),
+          mac: mac,
+          endpointKey: ep,
+          backendName: item['name'],
+          initialStatus: isOn,
+          isOffline: !isDevOnline,
+          isMaster: item['isMaster'] == true,
+          provider: provider,
+          onRefresh: _handleRefresh,
+          rawDeviceData: item['rawDevice'],
+          isHidden: _hiddenDevices.contains(deviceKey),
+          isSelectionMode: _isSelectionMode,
+          isSelected: _selectedDevices.contains(deviceKey),
+          hasHiddenDevices: _hiddenDevices.isNotEmpty,
+          isShowingHidden: _showHiddenFilter,
+          onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
+          onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
+          onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
+          onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
+          onDelete: cb.delete,
+          onRename: cb.rename,
+          onAssignHome: cb.assignHome,
+          onAssignRoom: cb.assignRoom,
+          onDeviceTimer: cb.timer,
+          onDeviceHistory: cb.history,
+          onDeviceAutomation: cb.automation,
+          onDeviceShare: cb.share,
+        ),
+      )));
+    }
+
+    return entries;
   }
 
-  // Lưới edit-mode: Ô đồng nhất (icon + tên) cho MỌI thiết bị, kéo-thả trực tiếp trên Dashboard.
-  Widget _buildEditOrderGrid(DeviceProvider provider, bool isDark, Color textMain, Color textSub) {
-    final Color cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
-    if (_editOrderDraft.isEmpty) {
-      return _buildEmptyState(isDark, textSub, "Chưa có thiết bị nào để sắp xếp.");
+  // Lưới BÌNH THƯỜNG (không sửa) — Wrap phẳng duy nhất chứa MỌI loại thẻ, chảy lấp khoảng trống
+  // theo ĐÚNG nguyên tắc runAlignment mặc định của Wrap (trái sang phải, hết hàng mới xuống dòng).
+  Widget _buildUnifiedDeviceWrap(List<({String key, String mac, Widget widget})> entries, bool isDark) {
+    if (entries.isEmpty) {
+      return _buildEmptyState(isDark, isDark ? Colors.white54 : const Color(0xFF64748B), "Khu vực này chưa kết nối với thiết bị/Hub nào.");
     }
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        int crossAxisCount = constraints.maxWidth < 500 ? 3 : (constraints.maxWidth / 130).floor();
-        if (crossAxisCount < 3) crossAxisCount = 3;
-        return ReorderableGridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(4),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 0.85,
-          ),
-          itemCount: _editOrderDraft.length,
-          onReorder: (oldIndex, newIndex) {
-            setState(() {
-              final item = _editOrderDraft.removeAt(oldIndex);
-              _editOrderDraft.insert(newIndex, item);
-            });
-          },
-          itemBuilder: (context, index) {
-            final d = _editOrderDraft[index];
-            final mac = (d['mac_address'] ?? d['mac'] ?? '').toString();
-            final category = (d['category'] ?? '').toString();
-            final name = provider.displayNameOf(mac, fallback: (d['name'] ?? '').toString());
-            return _JiggleTile(
-              key: ValueKey(mac.isNotEmpty ? mac : index),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: cardColor,
-                  borderRadius: BorderRadius.circular(18),
-                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 8, offset: const Offset(0, 3))],
-                ),
-                padding: const EdgeInsets.all(10),
-                child: Stack(
-                  children: [
-                    Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(_iconForOrderCategory(category), color: tkGreen, size: 32),
-                        const SizedBox(height: 8),
-                        Text(
-                          name.isNotEmpty ? name : 'Thiết bị',
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: textMain, fontSize: 12, fontWeight: FontWeight.w600),
-                        ),
-                      ],
-                    ),
-                    Positioned(top: 0, right: 0, child: Icon(Icons.drag_indicator_rounded, size: 16, color: textSub)),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
+    return Wrap(
+      spacing: 16,
+      runSpacing: 16,
+      children: [for (final en in entries) KeyedSubtree(key: ValueKey(en.key), child: en.widget)],
+    );
+  }
+
+  // [GIAI ĐOẠN 75] Lưới edit-mode CỘNG THÊM — dựng lại ĐÚNG các Widget thẻ gốc (không phải icon
+  // giả), bọc AbsorbPointer (khóa chạm bên trong, chỉ còn kéo-thả) rồi bọc tiếp _JiggleTile (rung
+  // lắc iOS). visibleFans...visibleSwitches truyền vào ĐÃ tính sẵn từ _buildDevicesGridBody —
+  // hàm này CHỈ đọc, không tính lại DPS.
+  Widget _buildInPlaceEditWrap(
+    List<Map<String, dynamic>> visibleFans,
+    List<Map<String, dynamic>> visibleSensors,
+    List<Map<String, dynamic>> visibleRollingDoors,
+    List<Map<String, dynamic>> visiblePumps,
+    List<Map<String, dynamic>> visibleDimmers,
+    List<Map<String, dynamic>> visibleGenericPrimary,
+    List<Map<String, dynamic>> visibleSwitches,
+    DeviceProvider provider,
+    bool isDark,
+  ) {
+    final Map<String, String> macByKey = {};
+    final Map<String, Widget> widgetByKey = {};
+    // [GIAI ĐOẠN 90] Nhãn category theo key — dùng để chèn "ngắt dòng" thị giác giữa các nhóm
+    // (xem đoạn dựng orderedKeys bên dưới), giảm cảm giác thẻ "nhảy loạn xạ" khi vào chế độ Sửa.
+    final Map<String, String> categoryByKey = {};
+
+    void addEntry(String key, String mac, String category, Widget rawCard) {
+      macByKey[key] = mac;
+      categoryByKey[key] = category;
+      // AbsorbPointer chặn TOÀN BỘ tap/swipe vào nội dung thẻ gốc (nút bật/tắt quạt, slider cửa
+      // cuốn...) — thẻ chỉ còn dùng để cầm-kéo. _JiggleTile bọc NGOÀI CÙNG để cả khối rung lắc.
+      widgetByKey[key] = _JiggleTile(
+        key: ValueKey('jiggle_$key'),
+        child: AbsorbPointer(child: rawCard),
+      );
+    }
+
+    for (final e in visibleFans) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final String status = "${e['speed']}_${e['swing']}_${e['online']}";
+      final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
+          ? e['endpoint'] : 'S_${e['mac']}';
+      final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
+      addEntry(hideKey, e['mac'] as String, 'fan', SmartFanCard(
+        key: ValueKey('edit_${hideKey}_$status'),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        initialSpeed: e['speed'] ?? 0,
+        initialSwing: e['swing'] == true,
+        backendName: e['name'],
+        isOffline: e['online'] != true,
+        isHidden: _hiddenDevices.contains(hideKey),
+        provider: provider,
+        rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+        onRefresh: _handleRefresh,
+        onToggleHide: (_) {},
+        onDelete: cb.delete,
+        onRename: cb.rename,
+        onAssignHome: cb.assignHome,
+        onAssignRoom: cb.assignRoom,
+        onDeviceTimer: cb.timer,
+        onDeviceHistory: cb.history,
+        onDeviceAutomation: cb.automation,
+        onDeviceShare: cb.share,
+      ));
+    }
+
+    for (final e in visibleSensors) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      addEntry(hideKey, e['mac'] as String, 'sensor', SmartSensorCard(
+        key: ValueKey('edit_${hideKey}_${e['temp']}_${e['hum']}_${e['online']}'),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        name: e['name'],
+        temperature: e['temp'],
+        humidity: e['hum'],
+        isOffline: e['online'] != true,
+        isHidden: _hiddenDevices.contains(hideKey),
+        provider: provider,
+        rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
+        onToggleHide: (_) {},
+        onRename: cb.rename,
+        onDelete: cb.delete,
+        onAssignHome: cb.assignHome,
+        onAssignRoom: cb.assignRoom,
+        onDeviceTimer: cb.timer,
+        onDeviceHistory: cb.history,
+        onDeviceAutomation: cb.automation,
+        onDeviceShare: cb.share,
+      ));
+    }
+
+    for (final e in visibleRollingDoors) {
+      final String hideKey = "${e['mac']}_${e['upEp']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['upEp']);
+      addEntry(hideKey, e['mac'] as String, 'rollingDoor', SmartRollingDoorCard(
+        key: ValueKey('edit_${hideKey}_${e['positionPct']}_${e['travelSec']}_${e['online']}'),
+        mac: e['mac'],
+        upEndpoint: e['upEp'], downEndpoint: e['downEp'], stopEndpoint: e['stopEp'],
+        backendName: e['name'],
+        isOffline: e['online'] != true,
+        travelTimeSec: e['travelSec'] ?? 0,
+        initialPositionPct: e['positionPct'] ?? 0,
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (_) {},
+        onOpenSettings: () {},
+        callbacks: cb,
+      ));
+    }
+
+    for (final e in visiblePumps) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      addEntry(hideKey, e['mac'] as String, 'pump', SmartPumpCard(
+        key: ValueKey('edit_${hideKey}_${e['state']}_${e['online']}'),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        isOn: e['state'] == 'ON',
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (_) {},
+        onOpenSettings: () {},
+        callbacks: cb,
+      ));
+    }
+
+    for (final e in visibleDimmers) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      addEntry(hideKey, e['mac'] as String, 'dimmer', SmartDimmerCard(
+        key: ValueKey('edit_${hideKey}_${e['state']}_${e['brightness']}_${e['online']}'),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        isOn: e['state'] == 'ON',
+        brightness: e['brightness'] ?? 0,
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (_) {},
+        onOpenSettings: () {},
+        callbacks: cb,
+      ));
+    }
+
+    for (final e in visibleGenericPrimary) {
+      final String hideKey = "${e['mac']}_${e['endpoint']}";
+      final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
+      addEntry(hideKey, e['mac'] as String, 'generic', GenericDeviceCard(
+        key: ValueKey('edit_${hideKey}_${e['state']}_${e['online']}'),
+        mac: e['mac'],
+        endpoint: e['endpoint'],
+        category: e['category'] ?? '',
+        isOn: e['state'] == 'ON',
+        isOffline: e['online'] != true,
+        backendName: e['name'],
+        provider: provider,
+        isHidden: _hiddenDevices.contains(hideKey),
+        onToggleHide: (_) {},
+        onOpenSettings: () {},
+        callbacks: cb,
+      ));
+    }
+
+    for (final item in visibleSwitches) {
+      final String mac = item['mac'];
+      final String ep = item['endpoint'];
+      final String deviceKey = "${mac}_$ep";
+      final bool isDevOnline = item['online'] == true;
+      final String status = "${item['state']}_$isDevOnline";
+      final bool isOn = item['state'] == 'ON';
+      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
+      // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
+      // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
+      // vuông cố định NGAY tại điểm tích hợp edit-mode này (không đụng chính widget/chỗ dùng gốc)
+      // để tránh lỗi layout "incoming constraints are unbounded".
+      addEntry(deviceKey, mac, 'switch', SizedBox(
+        width: 130,
+        height: 130,
+        child: SmartSwitchCard(
+          key: ValueKey('edit_${mac}_${ep}_$status'),
+          mac: mac,
+          endpointKey: ep,
+          backendName: item['name'],
+          initialStatus: isOn,
+          isOffline: !isDevOnline,
+          isMaster: item['isMaster'] == true,
+          provider: provider,
+          onRefresh: _handleRefresh,
+          rawDeviceData: item['rawDevice'],
+          isHidden: _hiddenDevices.contains(deviceKey),
+          isSelectionMode: false,
+          isSelected: false,
+          hasHiddenDevices: false,
+          isShowingHidden: false,
+          onToggleShowHidden: () {},
+          onEnterSelectionMode: () {},
+          onToggleSelect: () {},
+          onToggleHide: (_) {},
+          onDelete: cb.delete,
+          onRename: cb.rename,
+          onAssignHome: cb.assignHome,
+          onAssignRoom: cb.assignRoom,
+          onDeviceTimer: cb.timer,
+          onDeviceHistory: cb.history,
+          onDeviceAutomation: cb.automation,
+          onDeviceShare: cb.share,
+        ),
+      ));
+    }
+
+    if (widgetByKey.isEmpty) {
+      return _buildEmptyState(isDark, isDark ? Colors.white54 : const Color(0xFF64748B), "Chưa có thiết bị nào để sắp xếp.");
+    }
+
+    // Sắp theo _editOrderDraft đã lưu; thẻ MỚI (chưa từng thấy trong draft, vd vừa thêm thiết
+    // bị) rơi xuống CUỐI, giữ nguyên thứ tự tự nhiên giữa chúng — cùng kỹ thuật rank map với
+    // applyDeviceOrder() phía Backend.
+    final Set<String> knownKeys = widgetByKey.keys.toSet();
+    final List<String> orderedKeys = [
+      for (final d in _editOrderDraft) if (knownKeys.contains(d.key)) d.key,
+      for (final k in widgetByKey.keys) if (!_editOrderDraft.any((d) => d.key == k)) k,
+    ];
+
+    // [GIAI ĐOẠN 90 — VỀ "NHẢY VỊ TRÍ"] Thứ tự (sequence) các thẻ đã giữ ĐÚNG NGUYÊN VẸN ở
+    // orderedKeys — KHÔNG hề bị xáo trộn khi vào chế độ Sửa (đã lần theo _lastVisualCardOrder +
+    // _editOrderDraft, xác nhận không có bug sort/fetch nào). Cái người dùng thấy đổi là VỊ TRÍ
+    // (x,y) hiển thị: chế độ thường vẽ 7 khối Wrap TÁCH RIÊNG theo category (Quạt/Cảm biến/Cửa
+    // cuốn.../Công tắc, mỗi khối tự xuống dòng mới), còn ở đây TOÀN BỘ dồn vào MỘT Wrap liên tục
+    // (bắt buộc để cho phép kéo thẻ Cảm biến xen giữa thẻ Công tắc theo đúng yêu cầu Giai đoạn
+    // 75) — 1 Wrap liên tục với các thẻ kích thước khác nhau xếp khít khác hẳn 7 khối tách rời,
+    // nên dù dữ liệu giống hệt, tọa độ hiển thị vẫn đổi khi bật/tắt Sửa. ĐÃ THỬ chèn "ngắt dòng"
+    // (SizedBox rộng vô hạn) giữa các category để mô phỏng lại ranh giới khối như chế độ thường,
+    // nhưng ReorderableWrap không có khái niệm "phần tử không kéo được" — chèn thêm phần tử vào
+    // children sẽ làm lệch oldIndex/newIndex mà onReorder() nhận (index tính trên chính danh sách
+    // children), hỏng luôn logic kéo-thả — rủi ro cao hơn lợi ích thẩm mỹ nên đã bỏ. categoryByKey
+    // vẫn giữ lại (rẻ, có thể dùng cho hướng khắc phục khác sau này không đụng chỉ số children).
+    return ReorderableWrap(
+      spacing: 16,
+      runSpacing: 16,
+      // [GIỮ CUỘN TRANG] Mặc định gói (true) = phải giữ (long-press) mới bắt đầu kéo — một
+      // chạm-kéo NGẮN vẫn cuộn trang bình thường (đúng hành vi iOS Jiggle thật: icon rung nhưng
+      // trang vẫn cuộn được). AbsorbPointer đã chặn hết tap/swipe vào thẻ gốc nên giữ lâu ở đây
+      // an toàn tuyệt đối, không lo "lỡ tay bật/tắt" — không cần ép kéo tức thì.
+      needsLongPressDraggable: true,
+      onReorder: (oldIndex, newIndex) {
+        setState(() {
+          final movedKey = orderedKeys[oldIndex];
+          final newKeys = List<String>.from(orderedKeys)
+            ..removeAt(oldIndex)
+            ..insert(newIndex, movedKey);
+          _editOrderDraft = [for (final k in newKeys) (key: k, mac: macByKey[k]!)];
+        });
       },
+      children: [for (final k in orderedKeys) widgetByKey[k]!],
     );
   }
 
@@ -658,7 +1125,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           content: Text('✅ Đã thêm thiết bị $mac vào nhà thành công!'),
           backgroundColor: const Color(0xFF00A651),
         ));
-        _handleRefresh(); // kéo danh sách mới -> thẻ thiết bị hiện ra ngay
+        // [FIX GIẬT LAG SAU "THÊM THIẾT BỊ"] Trước đây gọi _handleRefresh() — LUÔN set
+        // isSilent:false (spinner toàn màn hình xóa sạch UI hiện có rồi vẽ lại từ đầu) + delay
+        // 500ms cho hiệu ứng pull-to-refresh. Ở đây KHÔNG phải người dùng chủ động kéo-làm-mới —
+        // chỉ cần danh sách thiết bị cập nhật ÊM, không xóa UI hiện có trước. isSilent:true vẫn
+        // gọi ĐÚNG pipeline sync thật (DashboardSyncService().fetch()), chỉ khác ở chỗ KHÔNG bật
+        // cờ loading toàn màn hình — dữ liệu mới về thì UI tự cập nhật êm, không "chớp" trắng.
+        _initializeHome(isSilent: true);
         break;
       case AddDeviceStatus.ownershipConflict:
         // [LUỒNG CHUYỂN GIAO] KHÔNG hiện SnackBar chung chung nữa — bung đúng Dialog chuyên biệt
@@ -1769,25 +2242,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Padding(
-                padding: const EdgeInsets.all(24.0),
+                // [FIX OVERFLOW] Giảm padding ngang 24 -> 16: nhường thêm không gian cho header
+                // trên màn hẹp — vertical giữ nguyên 24 (không phải nguồn gây tràn).
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Expanded(child: Text(t.text('notifications_full_title'), style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (notifProvider.unreadCount > 0)
-                          TextButton.icon(
-                            onPressed: () => notifProvider.markAllRead(),
-                            icon: Icon(Icons.done_all_rounded, size: 18, color: tkGreen),
-                            label: Text(t.text('mark_all_read'), style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.w600)),
+                    // [FIX OVERFLOW] Bọc Flexible + ellipsis đề phòng chuỗi dịch dài (locale khác)
+                    // — trước đây ĐÃ Expanded nhưng thiếu maxLines, giữ nguyên tinh thần cũ.
+                    Flexible(
+                      child: Text(
+                        t.text('notifications_full_title'),
+                        style: TextStyle(color: textMain, fontSize: 24, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    // [FIX OVERFLOW — THỦ PHẠM CHÍNH] Trước đây cụm "Đánh dấu tất cả đã đọc" +
+                    // "Đẩy (Push)" + Switch nằm chung 1 Row(mainAxisSize.min) KHÔNG co giãn được
+                    // — màn hẹp không đủ chỗ là tràn ngay (sọc vàng-đen). Nay bọc Expanded cho
+                    // nút Đánh dấu (chiếm hết chỗ trống, tự co lại) — tự build TextButton +
+                    // Row(mainAxisSize.min) + Flexible(Text ellipsis) THAY VÌ TextButton.icon:
+                    // constructor .icon KHÔNG tự bọc Flexible cho label bên trong, bản thân nó
+                    // vẫn có thể tràn nội bộ khi bị ép quá chặt — tự build đảm bảo an toàn tuyệt
+                    // đối ở mọi kích thước màn hình, đúng phương án dự phòng người dùng đề xuất.
+                    if (notifProvider.unreadCount > 0)
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => notifProvider.markAllRead(),
+                          style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), alignment: Alignment.centerLeft),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.done_all_rounded, size: 18, color: tkGreen),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  t.text('mark_all_read'),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ],
                           ),
-                        const SizedBox(width: 8),
-                        Text(t.text('push_short'), style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
-                        Switch(value: _isPushEnabled, activeThumbColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
-                      ],
-                    )
+                        ),
+                      ),
+                    const SizedBox(width: 4),
+                    // [FIX OVERFLOW] Cụm "Đẩy (Push)" + Switch bọc FittedBox — không bao giờ tràn
+                    // dù bị ép chặt tới đâu (tự thu nhỏ thay vì tràn cứng ra ngoài).
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(t.text('push_short'), style: TextStyle(color: textSub, fontSize: 14, fontWeight: FontWeight.w600)),
+                          Switch(value: _isPushEnabled, activeThumbColor: tkGreen, onChanged: (val) => setState(() => _isPushEnabled = val)),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1905,6 +2418,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final Color bgLight = isDark ? const Color(0xFF0B1120) : const Color(0xFFE8EEF2);
     final Color surfaceLight = isDark ? const Color(0xFF1E293B) : Colors.white;
+    // [ĐÍNH CHÍNH] Bản trước ép LUÔN chữ trắng khi Kính bật (kể cả Sáng+Kính) — SAI theo đúng
+    // ảnh chụp thật người dùng gửi lại: Sáng+Kính phải giữ chữ TỐI (mặt kính ở đây được phủ
+    // TRẮNG đục 60-70%, không phải tối), chỉ Tối+Kính mới cần chữ trắng. Quay về thuần isDark ở
+    // cấp biến dùng chung này (AppBar/tiêu đề/bottom-nav — không nằm trên mặt kính riêng, sống
+    // trực tiếp trên nền trang đã tự tính đúng sáng/tối); tương phản cho các mặt kính CỤ THỂ
+    // (Drawer/Sidebar) tự xử lý riêng ngay tại nơi dùng — xem _buildMenuItem bên dưới.
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
 
@@ -1927,7 +2446,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   // thêm thiết bị giữa lúc đang kéo-thả làm lệch draft thứ tự).
                   _isEditingOrder
                       ? TextButton.icon(
-                          onPressed: _savingOrder ? null : _toggleEditOrder,
+                          // [FIX GIAI ĐOẠN 102 — TRUY VẾT NÚT LƯU] In NGAY dòng đầu tiên bên
+                          // trong onPressed (KHÔNG phải bên trong _saveDeviceOrder() nữa) — nếu
+                          // dòng này còn không hiện trong log khi bấm, chứng tỏ sự kiện chạm
+                          // không tới được đây (bị Widget khác đè/che khuất), không phải lỗi
+                          // logic bên trong hàm lưu.
+                          onPressed: _savingOrder ? null : () {
+                            if (kDebugMode) print('DEBUG: Nút Lưu đã được nhấn! (Mobile)');
+                            _toggleEditOrder();
+                          },
                           icon: _savingOrder
                               ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
                               : Icon(Icons.check_circle_rounded, color: tkGreen, size: 20),
@@ -1944,9 +2471,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       onPressed: () async {
                         // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                         // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                        // [FIX GIẬT LAG] KHÔNG gọi thêm _handleRefresh() ở đây nữa — _linkScannedDevice()
+                        // đã tự làm mới (êm, không spinner) khi thành công. Gọi thêm lần 2 ở đây từng
+                        // khiến toàn Dashboard chớp trắng LIÊN TIẾP HAI LẦN mỗi lần thêm thiết bị.
                         final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
                         await _linkScannedDevice(result);
-                        _handleRefresh();
                       },
                     ),
                 ],
@@ -2002,7 +2531,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: _isSelectionMode ? _buildSelectionActionBar(isDark) : null,
 
-      bottomNavigationBar: isMobile ? _buildBottomNav(isGlass ? Colors.transparent : surfaceLight, textSub) : null,
+      bottomNavigationBar: isMobile ? _buildBottomNav(surfaceLight, textSub, isDark, isGlass) : null,
     );
   }
 
@@ -2071,7 +2600,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Divider(height: 1, indent: 16, endIndent: 16, color: isDark ? Colors.white10 : Colors.grey.withValues(alpha: 0.2)),
             ListTile(leading: Icon(Icons.info_outline, color: textMain), title: Text(t.text('software_version_label'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Text('3.0.1 (Stable)', style: TextStyle(color: textSub))),
           ]),
-          buildSettingGroup([ListTile(leading: const Icon(Icons.logout, color: Colors.redAccent), title: Text(t.text('logout_device'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)), onTap: () => _performLogout(context))]),
+          // [FIX LAYOUT] Trước đây bọc trong buildSettingGroup (AppContainer full-width +
+          // ListTile căn trái) nên nhìn như MỘT mục menu bình thường thay vì một nút hành động
+          // độc lập. Nay tách khỏi buildSettingGroup, bọc Center + OutlinedButton.icon
+          // (mainAxisSize.min mặc định của Button -> ôm sát nội dung) — dạng viên thuốc, nền/
+          // viền đỏ mờ TỰ THÂN không phụ thuộc isDark/isGlass nên tự động đúng trên MỌI theme,
+          // không cần rẽ nhánh riêng cho Tối/Sáng/Kính.
+          const SizedBox(height: 8),
+          Center(
+            child: OutlinedButton.icon(
+              onPressed: () => _performLogout(context),
+              icon: const Icon(Icons.logout, color: Colors.redAccent, size: 20),
+              label: Text(t.text('logout_device'), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(
+                backgroundColor: Colors.red.withValues(alpha: 0.1),
+                side: const BorderSide(color: Colors.redAccent, width: 1),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+              ),
+            ),
+          ),
           const SizedBox(height: 40),
         ],
       ),
@@ -2157,6 +2705,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: AppContainer(
         width: 260,
         color: surface,
+        // [ĐÍNH CHÍNH — Frost theo ĐÚNG theme] Frost mặc định (kGlassFrostFill = trắng 5%) quá
+        // trong suốt — nền thật sự là bất kỳ thứ gì bị blur phía sau, không kiểm soát được độ
+        // tối/sáng. Sáng+Kính: phủ TRẮNG đục 65% (giữa khoảng 0.6-0.7 người dùng yêu cầu) làm
+        // bệ sáng vững chắc cho chữ ĐEN — đây chính là lỗi thật (trước đây lỡ phủ đen, khiến
+        // chữ tối "chìm" trên nền tối như ảnh chụp gốc). Tối+Kính: giữ phủ đen 40% (không đổi,
+        // không thuộc phạm vi đính chính lần này) làm bệ tối cho chữ trắng.
+        glassTint: !isGlass ? null : (isDark ? Colors.black.withValues(alpha: 0.4) : Colors.white.withValues(alpha: 0.65)),
         borderRadius: BorderRadius.zero,
         padding: EdgeInsets.zero,
         child: Column(
@@ -2202,19 +2757,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildMenuItem(int index, IconData icon, String title, Color txtMain, Color txtSub, {bool isFromDrawer = false}) {
     bool isSelected = _selectedIndex == index;
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // [ĐÍNH CHÍNH — Sáng+Kính] txtMain/txtSub truyền vào giờ thuần isDark (đã quay lại ở cấp
+    // build() phía trên) nên KHÔNG còn tự đúng cho riêng mặt kính Sáng của Drawer/Sidebar — mặt
+    // kính này được phủ TRẮNG đục (glassTint, xem _buildMobileDrawer) nên chữ phải TỐI hẳn
+    // (black87/black54) mới đủ nét, không phải màu navy nhạt txtMain gốc.
+    final bool lightGlass = isGlass && !isDark;
+    final Color unselectedText = lightGlass ? Colors.black87 : txtMain;
+    final Color unselectedIcon = lightGlass ? Colors.black54 : txtSub;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent, borderRadius: BorderRadius.circular(16), border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent)),
+      decoration: BoxDecoration(
+        // [ĐÍNH CHÍNH — Mục đang chọn trên Sáng+Kính] Nền tkGreen ĐẶC (không phải tint 15% cũ) +
+        // đổ bóng mờ xanh nhẹ để "nổi bật tuyệt đối" đúng yêu cầu — Tối+Kính/tắt Kính giữ
+        // nguyên kiểu tint mỏng cũ, không thuộc phạm vi đính chính lần này.
+        color: isSelected ? (lightGlass ? tkGreen : tkGreen.withValues(alpha: 0.15)) : Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: lightGlass ? 1.0 : 0.3) : Colors.transparent),
+        boxShadow: (isSelected && lightGlass) ? [BoxShadow(color: tkGreen.withValues(alpha: 0.35), blurRadius: 10, offset: const Offset(0, 3))] : null,
+      ),
 
       // SỬA LỖI CẢNH BÁO LIST TILE BẰNG THẺ MATERIAL NÀY
       child: Material(
         color: Colors.transparent,
         child: ListTile(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          leading: Icon(icon, color: isSelected ? tkGreen : txtSub, size: 22, shadows: sh),
-          title: Text(title, style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
+          leading: Icon(icon, color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedIcon, size: 22, shadows: sh),
+          title: Text(title, style: TextStyle(color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedText, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
           onTap: () => _onMenuTapped(index, isFromDrawer: isFromDrawer),
         ),
       ),
@@ -2229,23 +2800,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildAdminMenuItem(Color txtMain, Color txtSub, {bool isFromDrawer = false}) {
     final bool isSelected = _selectedIndex == kAdminIndex;
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // [ĐÍNH CHÍNH — Sáng+Kính] xem giải thích đầy đủ ở _buildMenuItem phía trên.
+    final bool lightGlass = isGlass && !isDark;
+    final Color unselectedText = lightGlass ? Colors.black87 : txtMain;
+    final Color unselectedIcon = lightGlass ? Colors.black54 : txtSub;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     final t = AppTranslations.of(context);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent,
+        color: isSelected ? (lightGlass ? tkGreen : tkGreen.withValues(alpha: 0.15)) : Colors.transparent,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent),
+        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: lightGlass ? 1.0 : 0.3) : Colors.transparent),
+        boxShadow: (isSelected && lightGlass) ? [BoxShadow(color: tkGreen.withValues(alpha: 0.35), blurRadius: 10, offset: const Offset(0, 3))] : null,
       ),
       child: Material(
         color: Colors.transparent,
         child: ListTile(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          leading: Icon(Icons.admin_panel_settings, color: isSelected ? tkGreen : txtSub, size: 22, shadows: sh),
+          leading: Icon(Icons.admin_panel_settings, color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedIcon, size: 22, shadows: sh),
           title: Text(t.text('system_admin'),
-              style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
+              style: TextStyle(color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedText, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
           onTap: () {
             if (isFromDrawer) Navigator.of(context).pop(); // đóng Drawer trượt (Mobile) trước khi đổi tab
             setState(() => _selectedIndex = kAdminIndex);
@@ -2263,23 +2840,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDeviceAdminMenuItem(Color txtMain, Color txtSub, {bool isFromDrawer = false}) {
     final bool isSelected = _selectedIndex == kDeviceAdminIndex;
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // [ĐÍNH CHÍNH — Sáng+Kính] xem giải thích đầy đủ ở _buildMenuItem phía trên.
+    final bool lightGlass = isGlass && !isDark;
+    final Color unselectedText = lightGlass ? Colors.black87 : txtMain;
+    final Color unselectedIcon = lightGlass ? Colors.black54 : txtSub;
     final List<Shadow>? sh = isGlass ? kGlassTextShadow : null;
     final t = AppTranslations.of(context);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: isSelected ? tkGreen.withValues(alpha: 0.15) : Colors.transparent,
+        color: isSelected ? (lightGlass ? tkGreen : tkGreen.withValues(alpha: 0.15)) : Colors.transparent,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: 0.3) : Colors.transparent),
+        border: Border.all(color: isSelected ? tkGreen.withValues(alpha: lightGlass ? 1.0 : 0.3) : Colors.transparent),
+        boxShadow: (isSelected && lightGlass) ? [BoxShadow(color: tkGreen.withValues(alpha: 0.35), blurRadius: 10, offset: const Offset(0, 3))] : null,
       ),
       child: Material(
         color: Colors.transparent,
         child: ListTile(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          leading: Icon(Icons.dns_rounded, color: isSelected ? tkGreen : txtSub, size: 22, shadows: sh),
+          leading: Icon(Icons.dns_rounded, color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedIcon, size: 22, shadows: sh),
           title: Text(t.text('device_admin_title'),
-              style: TextStyle(color: isSelected ? tkGreen : txtMain, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
+              style: TextStyle(color: isSelected ? (lightGlass ? Colors.white : tkGreenNeon) : unselectedText, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w600, shadows: sh)),
           onTap: () {
             if (isFromDrawer) Navigator.of(context).pop();
             setState(() => _selectedIndex = kDeviceAdminIndex);
@@ -2289,10 +2872,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildBottomNav(Color surface, Color txtSub) {
+  Widget _buildBottomNav(Color surface, Color txtSub, bool isDark, bool isGlass) {
     final t = AppTranslations.of(context);
-    return BottomNavigationBar(
-      backgroundColor: surface, selectedItemColor: tkGreen, unselectedItemColor: txtSub, type: BottomNavigationBarType.fixed,
+    // [GIAI ĐOẠN 76 — KÍNH 3D BOTTOM NAV] Trước đây bật Kính chỉ đổi backgroundColor sang
+    // Colors.transparent — KHÔNG hề có BackdropFilter/blur nào, nên thanh chỉ là 1 dải trong
+    // suốt phẳng đè lên nền trang + vẫn giữ elevation mặc định (8, đổ bóng Material nặng nề) ->
+    // đúng cảm giác "tối, đục, nặng nề" không khớp mặt kính của các thẻ phía trên. Bản này: tắt
+    // hẳn elevation/backgroundColor mặc định, tự dựng lớp kính riêng (ClipRRect+BackdropFilter+
+    // Container phủ màu+viền trên) CHỈ khi Kính bật; tắt Kính giữ nguyên thanh đặc màu cũ.
+    final Color unselectedColor = isGlass
+        ? (isDark ? Colors.white60 : Colors.grey[600]!)
+        : txtSub;
+    final bar = BottomNavigationBar(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      selectedItemColor: tkGreen,
+      unselectedItemColor: unselectedColor,
+      type: BottomNavigationBarType.fixed,
       // [FIX CRASH] BottomNav chỉ có 5 item (0-4); các tab nhúng ngoài dải (5 Quản lý Nhà,
       // 6 Phân quyền, 7 Quản trị) sẽ vượt currentIndex -> assert. Kẹp về 0 để an toàn.
       currentIndex: _selectedIndex < 5 ? _selectedIndex : 0, onTap: (index) => _onMenuTapped(index),
@@ -2304,6 +2900,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
         BottomNavigationBarItem(icon: const Icon(Icons.notifications_active_rounded), label: t.text('notifications')),
         BottomNavigationBarItem(icon: const Icon(Icons.settings_rounded), label: t.text('settings')),
       ],
+    );
+
+    if (!isGlass) {
+      // Tắt Kính -> giữ nguyên hành vi cũ: thanh đặc màu surface, không đụng gì thêm.
+      return Material(color: surface, elevation: 8, child: bar);
+    }
+
+    // [KÍNH 3D] Sáng+Kính: phủ trắng đục 55% + viền trên trắng 80% (đúng yêu cầu). Tối+Kính:
+    // phủ đen mờ tương ứng — theo ĐÚNG nguyên tắc đã chốt ở Drawer (Sáng dùng tông sáng, Tối
+    // dùng tông tối), không lặp lại lỗi "luôn phủ 1 màu bất kể theme" của lần trước.
+    return ClipRRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20.0, sigmaY: 20.0),
+        child: Container(
+          decoration: BoxDecoration(
+            color: isDark ? Colors.black.withValues(alpha: 0.35) : Colors.white.withValues(alpha: 0.55),
+            border: Border(
+              top: BorderSide(
+                color: isDark ? Colors.white.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.8),
+                width: 1.0,
+              ),
+            ),
+          ),
+          child: bar,
+        ),
+      ),
     );
   }
 
@@ -2377,7 +2999,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 // KHÔNG điều hướng màn hình nào (xem comment đầy đủ tại _toggleEditOrder).
                                 _isEditingOrder
                                     ? TextButton.icon(
-                                        onPressed: _savingOrder ? null : _toggleEditOrder,
+                                        // [FIX GIAI ĐOẠN 102 — TRUY VẾT NÚT LƯU] Cùng lý do bản Mobile.
+                                        onPressed: _savingOrder ? null : () {
+                                          if (kDebugMode) print('DEBUG: Nút Lưu đã được nhấn! (Desktop)');
+                                          _toggleEditOrder();
+                                        },
                                         icon: _savingOrder
                                             ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
                                             : Icon(Icons.check_circle_rounded, color: tkGreen, size: 20),
@@ -2396,9 +3022,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     onPressed: () async {
                                       // [FIX] Bắt lấy mã MAC dialog trả về rồi GỌI API LINK THẬT
                                       // (kèm SnackBar báo thành công/lỗi chi tiết) — trước đây kết quả bị vứt bỏ
+                                      // [FIX GIẬT LAG] KHÔNG gọi thêm _handleRefresh() ở đây — _linkScannedDevice()
+                                      // đã tự làm mới êm khi thành công (xem comment ở đó); gọi thêm lần 2 từng
+                                      // khiến Dashboard chớp trắng liên tiếp hai lần mỗi lần thêm thiết bị.
                                       final result = await showAppDialog(context: context, contentPadding: const EdgeInsets.all(8), child: AddDeviceDialog(ownedMacs: _ownedMacs, homeId: _provisioningTargetHomeId));
                                       await _linkScannedDevice(result);
-                                      _handleRefresh();
                                     },
                                   ),
                                 ],
@@ -2517,14 +3145,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // CẬP NHẬT THÊM HÀM NÀY ĐỂ NHẬN CHIỀU RỘNG TỪ BÊN TRÊN
+  // [FIX GIAI ĐOẠN 89] AppContainer.width=cardWidth CHỈ ép khung NGOÀI CÙNG — khi Kính bật, nội
+  // dung đi qua _GlassSurface dựng bằng Stack (Padding đặt trong Stack, xem app_ui_wrappers.dart)
+  // và Stack mặc định cấp constraint LỎNG (loose) cho con không-Positioned, nên Column dù đã
+  // crossAxisAlignment.center vẫn tự co khít theo chữ (Column không tự giãn theo constraint
+  // lỏng) -> "center" hóa vô nghĩa vì hộp của chính nó đã bằng đúng bề rộng nội dung. Bọc thêm
+  // SizedBox(width: double.infinity) ép Column LUÔN chiếm trọn bề ngang thật sự được cấp thì
+  // center mới có "chỗ" để phát huy tác dụng — đúng nguyên nhân người dùng đã chỉ ra.
   Widget _buildMiniStatusMobile(IconData icon, String title, String value, Color color, Color txtMain, Color txtSub, double cardWidth) {
     return AppContainer(
-      width: cardWidth, 
+      width: cardWidth,
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center, 
-        mainAxisAlignment: MainAxisAlignment.center, 
-        children: [
+      child: SizedBox(
+        width: double.infinity,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
           Icon(icon, color: color, size: 26), 
           const SizedBox(height: 10), 
           
@@ -2537,16 +3174,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           
-          const SizedBox(height: 6), 
+          const SizedBox(height: 6),
           FittedBox(
-            fit: BoxFit.scaleDown, 
+            fit: BoxFit.scaleDown,
             child: Text(
-              value, 
+              value,
               style: TextStyle(color: txtMain, fontSize: 16, fontWeight: FontWeight.bold),
             ),
           )
-        ]
-      )
+          ],
+        ),
+      ),
     );
   }
 
@@ -2678,9 +3316,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildMiniStatusDesktop(Icons.water_drop, t.text('humidity'), '${_weatherData['humidity'] ?? '--'}%', Colors.blue, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
-          _buildMiniStatusDesktop(Icons.bolt, t.text('power_load'), '2.1 kW', tkGreen, txtMain, txtSub), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
-          _buildMiniStatusDesktop(Icons.security, t.text('security'), t.text('on_state'), Colors.redAccent, txtMain, txtSub),
+          // [FIX CĂN LỀ] Bọc Expanded để mỗi thẻ chiếm ĐÚNG 1/3 bề ngang thực tế còn lại (trừ 2
+          // vạch chia) — trước đây 3 Column con chỉ co khít theo nội dung (shrink-wrap) nên
+          // CrossAxisAlignment.center bên trong _buildMiniStatusDesktop không có "chỗ" để căn
+          // giữa, nhìn như bám lề trái dù thuộc tính center vẫn luôn đúng.
+          Expanded(child: _buildMiniStatusDesktop(Icons.water_drop, t.text('humidity'), '${_weatherData['humidity'] ?? '--'}%', Colors.blue, txtMain, txtSub)), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
+          Expanded(child: _buildMiniStatusDesktop(Icons.bolt, t.text('power_load'), '2.1 kW', tkGreen, txtMain, txtSub)), Container(width: 1, height: 40, color: isDark ? Colors.white10 : Colors.grey.shade300),
+          Expanded(child: _buildMiniStatusDesktop(Icons.security, t.text('security'), t.text('on_state'), Colors.redAccent, txtMain, txtSub)),
         ],
       ),
     );
@@ -2764,8 +3406,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // [FIX CĂN LỀ] Icon/Tiêu đề/Giá trị giờ nằm thẳng hàng CHÍNH GIỮA thẻ (không còn bám lề trái):
+  // SizedBox(width: double.infinity) đảm bảo Column trải hết bề ngang thật của phần Expanded cha
+  // đã cấp; crossAxisAlignment.center + Row con cũng center + textAlign.center trên cả 2 Text
+  // đề phòng chữ dài rớt dòng vẫn giữ giữa.
   Widget _buildMiniStatusDesktop(IconData icon, String label, String val, Color color, Color txtMain, Color txtSub) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Row(children: [Icon(icon, size: 16, color: color), const SizedBox(width: 6), Text(label, style: TextStyle(color: txtSub, fontSize: 13))]), const SizedBox(height: 8), Text(val, style: TextStyle(color: txtMain, fontSize: 18, fontWeight: FontWeight.bold))]);
+    return SizedBox(
+      width: double.infinity,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 6),
+              Text(label, textAlign: TextAlign.center, style: TextStyle(color: txtSub, fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(val, textAlign: TextAlign.center, style: TextStyle(color: txtMain, fontSize: 18, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
   }
 
 
@@ -2914,6 +3579,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     for (final mac in roomProv.devicesInRoom(roomId)) {
       deviceProv.toggleDevice(mac, 'all', !turnOn);
     }
+    // [FIX CÙNG HỌ BUG ĐẾM THIẾT BỊ] devicesInRoom() CHỈ trả thiết bị gán NGUYÊN KHỐI — bỏ sót
+    // kênh gán riêng qua đường tách relay mới (endpointsInRoom). Trước đây Công tắc tổng phòng
+    // lặng lẽ KHÔNG bật/tắt các kênh này dù hiển thị trong phòng — mỗi kênh chỉ toggle ĐÚNG
+    // endpoint của nó (không dùng 'all', vì chỉ 1 kênh của thiết bị thuộc phòng này).
+    for (final ep in roomProv.endpointsInRoom(roomId)) {
+      deviceProv.toggleDevice(ep.mac, ep.endpoint, !turnOn);
+    }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(turnOn ? 'Đã bật tất cả thiết bị trong phòng' : 'Đã tắt tất cả thiết bị trong phòng'), backgroundColor: tkGreen));
   }
 
@@ -2931,9 +3603,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // tra bằng context của State.
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     return Consumer<DeviceProvider>(
-      builder: (_, provider, _) => _isEditingOrder
-          ? _buildEditOrderGrid(provider, isDark, textMain, textSub)
-          : _buildDevicesGridBody(provider, isDark, textMain, textSub),
+      builder: (_, provider, _) => _buildDevicesGridBody(provider, isDark, textMain, textSub),
     );
   }
 
@@ -2941,8 +3611,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
     // [PHÒNG] Phòng đang chọn (null = Tất cả) — dùng để LỌC thiết bị + chèn Công tắc tổng.
+    // [GIAI ĐOẠN 75] Đang ở chế độ Sửa thứ tự -> LUÔN bỏ qua bộ lọc phòng (ép "Tất cả"), KHÔNG
+    // đụng cơ chế lọc bên dưới. Lý do: draft thứ tự (_editOrderDraft) áp dụng cho CẢ NHÀ, nếu chỉ
+    // gom + lưu đúng tập con đang lọc theo 1 phòng thì lúc Lưu sẽ ghi đè device_order:{homeID}
+    // chỉ với các MAC phòng đó — các phòng khác bị dồn hết xuống cuối oan uổng lần mở App sau.
     final roomProv = context.watch<RoomGroupProvider>();
-    final String? selRoom = roomProv.selectedRoomId;
+    final String? selRoom = _isEditingOrder ? null : roomProv.selectedRoomId;
 
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
     // [ĐỢT 21] Thẻ Nhà nằm trong ClipRRect+BackdropFilter riêng (như SmartSwitchCard) nên border/
@@ -3424,11 +4098,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     }
 
-    // Sắp thứ tự ổn định: theo MAC, nút tổng đứng trước, rồi đến từng kênh —
-    // lưới không nhảy vị trí lung tung mỗi khi có sóng trạng thái mới đổ về
+    // [FIX GIAI ĐOẠN 91] Trước đây khóa CHÍNH của sort là so sánh chuỗi MAC (a-z) — ghi đè HOÀN
+    // TOÀN thứ tự tùy chỉnh người dùng vừa kéo-thả lưu (device_order:{homeID}, đã phản ánh đúng
+    // trong thứ tự _currentHomeDevices do Backend applyDeviceOrder() sắp sẵn) mỗi lần trang tải
+    // lại — kéo-thả xong bấm Lưu, thẻ Công tắc "nhảy về" đúng thứ tự alphabet cũ, giống hệt
+    // triệu chứng "chưa lưu được" dù Backend đã lưu đúng. Nay dùng RANK THEO VỊ TRÍ THẬT trong
+    // _currentHomeDevices làm khóa chính (giữ đúng thứ tự liên-thiết-bị người dùng đã sắp), CHỈ
+    // dùng "nút tổng trước, kênh theo số" làm khóa PHỤ để ổn định thứ tự các kênh NỘI BỘ MỘT
+    // thiết bị đa kênh — đúng mục đích BAN ĐẦU của đoạn sort này (không đổi gì khác).
+    final Map<String, int> macOrderRank = {
+      for (int i = 0; i < _currentHomeDevices.length; i++)
+        (_currentHomeDevices[i]['mac_address'] ?? _currentHomeDevices[i]['mac'] ?? '').toString().replaceAll(':', '').toUpperCase(): i,
+    };
     allSwitches.sort((a, b) {
-      final c = (a['mac'] as String).compareTo(b['mac'] as String);
-      if (c != 0) return c;
+      final ra = macOrderRank[a['mac']] ?? 999999;
+      final rb = macOrderRank[b['mac']] ?? 999999;
+      if (ra != rb) return ra.compareTo(rb);
       int rank(Map<String, dynamic> it) => isMasterKey(it['endpoint']) ? -1 : (channelOf(it['endpoint']) ?? 999);
       return rank(a).compareTo(rank(b));
     });
@@ -3443,6 +4128,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final visiblePumps = allPumps.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
     final visibleDimmers = allDimmers.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
     final visibleGenericPrimary = allGenericPrimary.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
+
+    // [GIAI ĐOẠN 75] Ghi lại thứ tự thẻ NHÌN THẤY hiện tại (key+mac, KHÔNG dựng Widget — rẻ,
+    // an toàn chạy mỗi lượt build kể cả ngoài edit mode) — làm hạt giống cho _editOrderDraft khi
+    // người dùng bấm Cây bút bật chế độ Sửa (xem _toggleEditOrder).
+    _lastVisualCardOrder = [
+      for (final e in visibleFans) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+      for (final e in visibleSensors) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+      for (final e in visibleRollingDoors) (key: "${e['mac']}_${e['upEp']}", mac: e['mac'] as String),
+      for (final e in visiblePumps) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+      for (final e in visibleDimmers) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+      for (final e in visibleGenericPrimary) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+      for (final e in visibleSwitches) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+    ];
+
+    // [GIAI ĐOẠN 75] Chế độ Sửa -> nhánh CỘNG THÊM riêng (_buildInPlaceEditWrap), KHÔNG đụng
+    // khối Column bình thường bên dưới. Vẫn giữ dải cảnh báo mất kết nối + Công tắc tổng phòng ở
+    // trên để giao diện tổng thể không "giật cục" khi bật/tắt chế độ Sửa.
+    if (_isEditingOrder) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!provider.brokerOnline)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16.0),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.35)),
+                ),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orange)),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text('Đang kết nối lại máy chủ... Lệnh điều khiển sẽ hoạt động ngay khi kênh realtime hồi phục.', style: TextStyle(color: Colors.orange.shade800, fontSize: 12, fontWeight: FontWeight.w600))),
+                  ],
+                ),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12.0),
+            child: Row(children: [
+              Icon(Icons.open_with_rounded, color: tkGreen, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Giữ và kéo để sắp xếp lại vị trí thẻ thiết bị', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 12, fontWeight: FontWeight.w600))),
+            ]),
+          ),
+          _buildInPlaceEditWrap(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, visibleSwitches, provider, isDark),
+        ],
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3477,250 +4215,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
 
         // ====================================================================
-        // 1. KHỐI TRÊN: THẺ QUẠT LỚN (mỗi quạt đúng MỘT thẻ)
+        // [GIAI ĐOẠN 100 — MASONRY/TETRIS FILL] 1 Wrap phẳng duy nhất thay cho 4 khối tách biệt
+        // cũ (Quạt/Cảm biến/Digital Twin/Công tắc) — xem giải thích đầy đủ tại
+        // _buildAllDeviceCardEntries(). Đúng thứ tự đã lưu qua Giai đoạn 72 (device_order).
         // ====================================================================
-        if (visibleFans.isNotEmpty) Padding(
-          padding: const EdgeInsets.only(bottom: 24.0),
-          child: Wrap(
-            spacing: 16, runSpacing: 16,
-            children: visibleFans.map((e) {
-              final String hideKey = "${e['mac']}_${e['endpoint']}";
-              // status gói tốc độ + đảo gió + online: đổi bất kỳ chỉ số nào là key đổi,
-              // ép Flutter dựng lại thẻ -> vòng quay/màu sắc/trạng thái xám cập nhật tức thì
-              final String status = "${e['speed']}_${e['swing']}_${e['online']}";
-              // Endpoint dùng để LƯU TÊN: hộp quạt rời gom thẻ ("fan") vẫn phải trỏ về
-              // endpoint thật S_{MAC} mà Backend dùng trong Redis hash device_names
-              final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
-                  ? e['endpoint'] : 'S_${e['mac']}';
-              // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn (rename theo endpoint thật của quạt)
-              final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
-              return SmartFanCard(
-                key: ValueKey("${hideKey}_$status"),
-                mac: e['mac'],
-                endpoint: e['endpoint'],
-                initialSpeed: e['speed'] ?? 0,
-                initialSwing: e['swing'] == true,
-                backendName: e['name'],
-                isOffline: e['online'] != true,
-                isHidden: _hiddenDevices.contains(hideKey),
-                provider: provider,
-                rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
-                onRefresh: _handleRefresh,
-                // [FIX NÚT ẨN BỊ LIỆT] nối thẳng vào kho _hiddenDevices + lưu bền
-                onToggleHide: (hide) => setState(() {
-                  hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                  _persistHiddenDevices();
-                }),
-                // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn
-                onDelete: cb.delete,
-                onRename: cb.rename,
-                onAssignHome: cb.assignHome,
-                onAssignRoom: cb.assignRoom,
-                onDeviceTimer: cb.timer,
-                onDeviceHistory: cb.history,
-                onDeviceAutomation: cb.automation,
-                onDeviceShare: cb.share,
-              );
-            }).toList(),
-          ),
-        ),
-
-        // ====================================================================
-        // 1b. KHỐI CẢM BIẾN MÔI TRƯỜNG (DHT11...): Nhiệt độ °C + Độ ẩm %
-        // ====================================================================
-        if (visibleSensors.isNotEmpty) Padding(
-          padding: const EdgeInsets.only(bottom: 24.0),
-          child: Wrap(
-            spacing: 16, runSpacing: 16,
-            children: visibleSensors.map((e) {
-              final String hideKey = "${e['mac']}_${e['endpoint']}";
-              final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']); // [NGUỒN BƠM DUY NHẤT]
-              return SmartSensorCard(
-                // key chứa cả số đo + online: sóng MQTT đổi nhiệt/ẩm là thẻ vẽ lại ngay
-                key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
-                mac: e['mac'],
-                endpoint: e['endpoint'],
-                name: e['name'],
-                temperature: e['temp'],
-                humidity: e['hum'],
-                isOffline: e['online'] != true,
-                isHidden: _hiddenDevices.contains(hideKey),
-                provider: provider,
-                rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}),
-                onToggleHide: (hide) => setState(() {
-                  hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                  _persistHiddenDevices();
-                }),
-                // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn (dùng chung mọi loại thẻ)
-                onRename: cb.rename,
-                onDelete: cb.delete,
-                onAssignHome: cb.assignHome,
-                onAssignRoom: cb.assignRoom,
-                onDeviceTimer: cb.timer,
-                onDeviceHistory: cb.history,
-                onDeviceAutomation: cb.automation,
-                onDeviceShare: cb.share,
-              );
-            }).toList(),
-          ),
-        ),
-
-        // ====================================================================
-        // 1c. [DIGITAL TWIN — Đợt 23] CỬA CUỐN / BƠM / ĐÈN CHIẾT ÁP / LƯỚI AN TOÀN
-        // ====================================================================
-        if (visibleRollingDoors.isNotEmpty || visiblePumps.isNotEmpty || visibleDimmers.isNotEmpty || visibleGenericPrimary.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 24.0),
-            child: Wrap(
-              spacing: 16, runSpacing: 16,
-              children: [
-                ...visibleRollingDoors.map((e) {
-                  final String hideKey = "${e['mac']}_${e['upEp']}";
-                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['upEp']);
-                  return SmartRollingDoorCard(
-                    key: ValueKey("${hideKey}_${e['positionPct']}_${e['travelSec']}_${e['online']}"),
-                    mac: e['mac'],
-                    upEndpoint: e['upEp'], downEndpoint: e['downEp'], stopEndpoint: e['stopEp'],
-                    backendName: e['name'],
-                    isOffline: e['online'] != true,
-                    travelTimeSec: e['travelSec'] ?? 0,
-                    initialPositionPct: e['positionPct'] ?? 0,
-                    provider: provider,
-                    isHidden: _hiddenDevices.contains(hideKey),
-                    onToggleHide: (hide) => setState(() {
-                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                      _persistHiddenDevices();
-                    }),
-                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
-                    callbacks: cb,
-                  );
-                }),
-                ...visiblePumps.map((e) {
-                  final String hideKey = "${e['mac']}_${e['endpoint']}";
-                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
-                  return SmartPumpCard(
-                    key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
-                    mac: e['mac'],
-                    endpoint: e['endpoint'],
-                    isOn: e['state'] == 'ON',
-                    isOffline: e['online'] != true,
-                    backendName: e['name'],
-                    provider: provider,
-                    isHidden: _hiddenDevices.contains(hideKey),
-                    onToggleHide: (hide) => setState(() {
-                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                      _persistHiddenDevices();
-                    }),
-                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
-                    callbacks: cb,
-                  );
-                }),
-                ...visibleDimmers.map((e) {
-                  final String hideKey = "${e['mac']}_${e['endpoint']}";
-                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
-                  return SmartDimmerCard(
-                    key: ValueKey("${hideKey}_${e['state']}_${e['brightness']}_${e['online']}"),
-                    mac: e['mac'],
-                    endpoint: e['endpoint'],
-                    isOn: e['state'] == 'ON',
-                    brightness: e['brightness'] ?? 0,
-                    isOffline: e['online'] != true,
-                    backendName: e['name'],
-                    provider: provider,
-                    isHidden: _hiddenDevices.contains(hideKey),
-                    onToggleHide: (hide) => setState(() {
-                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                      _persistHiddenDevices();
-                    }),
-                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
-                    callbacks: cb,
-                  );
-                }),
-                ...visibleGenericPrimary.map((e) {
-                  final String hideKey = "${e['mac']}_${e['endpoint']}";
-                  final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
-                  return GenericDeviceCard(
-                    key: ValueKey("${hideKey}_${e['state']}_${e['online']}"),
-                    mac: e['mac'],
-                    endpoint: e['endpoint'],
-                    category: e['category'] ?? '',
-                    isOn: e['state'] == 'ON',
-                    isOffline: e['online'] != true,
-                    backendName: e['name'],
-                    provider: provider,
-                    isHidden: _hiddenDevices.contains(hideKey),
-                    onToggleHide: (hide) => setState(() {
-                      hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
-                      _persistHiddenDevices();
-                    }),
-                    onOpenSettings: () => showDeviceSettingsPopup(context, isDark: isDark, mac: e['mac'], displayName: e['name'], rawDeviceData: Map<String, dynamic>.from(e['rawDevice'] ?? {}), provider: provider, onRename: cb.rename),
-                    callbacks: cb,
-                  );
-                }),
-              ],
-            ),
-          ),
-
-        // ====================================================================
-        // 2. KHỐI DƯỚI: LƯỚI CÔNG TẮC (mỗi kênh một thẻ độc lập)
-        // ====================================================================
-        if (visibleSwitches.isNotEmpty) LayoutBuilder(
-          builder: (context, constraints) {
-            int crossAxisCount; double ratio;
-            if (constraints.maxWidth < 500) { crossAxisCount = 3; ratio = 1.0; }
-            else { crossAxisCount = (constraints.maxWidth / 120).floor(); if (crossAxisCount < 4) crossAxisCount = 4; ratio = 1.0; }
-
-            return GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: visibleSwitches.length,
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: ratio),
-              itemBuilder: (context, index) {
-                final item = visibleSwitches[index];
-                final String mac = item['mac'];
-                final String ep = item['endpoint'];
-                final String deviceKey = "${mac}_$ep";
-                final bool isDevOnline = item['online'] == true;
-                final String status = "${item['state']}_$isDevOnline";
-                final bool isOn = item['state'] == 'ON';
-                // [NGUỒN BƠM DUY NHẤT] bộ callback chuẩn — bơm đồng loạt vào thẻ
-                final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
-
-                return SmartSwitchCard(
-                  // Key chứa cả trạng thái + online: sóng MQTT đổi ON/OFF hay LWT báo
-                  // Ngoại tuyến là thẻ dựng lại ngay -> màu sắc không bao giờ trễ nhịp
-                  key: ValueKey("${mac}_${ep}_$status"),
-                  mac: mac,
-                  endpointKey: ep,
-                  backendName: item['name'],
-                  initialStatus: isOn,
-                  isOffline: !isDevOnline,
-                  isMaster: item['isMaster'] == true, // nút TỔNG (endpoint "all") — icon + nhãn riêng
-                  provider: provider,
-                  onRefresh: _handleRefresh,
-                  rawDeviceData: item['rawDevice'],
-                  isHidden: _hiddenDevices.contains(deviceKey),
-                  isSelectionMode: _isSelectionMode,
-                  isSelected: _selectedDevices.contains(deviceKey),
-                  hasHiddenDevices: _hiddenDevices.isNotEmpty,
-                  isShowingHidden: _showHiddenFilter,
-                  onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
-                  onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
-                  onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
-                  onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
-                  // [CHUẨN HÓA] bơm đồng loạt bộ callback chuẩn
-                  onDelete: cb.delete,
-                  onRename: cb.rename,
-                  onAssignHome: cb.assignHome,
-                  onAssignRoom: cb.assignRoom,
-                  onDeviceTimer: cb.timer,
-                  onDeviceHistory: cb.history,
-                  onDeviceAutomation: cb.automation,
-                  onDeviceShare: cb.share,
-                );
-              },
-            );
-          },
+        _buildUnifiedDeviceWrap(
+          _buildAllDeviceCardEntries(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, visibleSwitches, provider, isDark),
+          isDark,
         ),
 
         // ====================================================================

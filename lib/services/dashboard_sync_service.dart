@@ -62,10 +62,21 @@ class DashboardSyncService {
           return const DashboardSyncResult([], 'Chưa đăng nhập');
         }
 
+        // [FIX GIAI ĐOẠN 103 — CHỐNG CACHE CDN/PROXY] Gắn tham số "t" (timestamp) qua Uri.replace
+        // (không tự nối chuỗi "?t=...", tránh lặp lại đúng lỗi Uri đã sửa ở avatar) — ép mỗi lần
+        // gọi sync là MỘT URL DUY NHẤT, không trùng bất kỳ lần gọi trước đó nào, nên Cloudflare/
+        // CDN/proxy trung gian (nếu có) không thể trả bản cache cũ dù có cấu hình Cache-Control:
+        // max-age. Đặt TRONG vòng lặp retry (không phải ở _syncUrl tĩnh) để MỖI lần thử lại cũng
+        // là một URL mới, không lặp lại cache của chính lần thử trước đó.
+        final Uri requestUri = Uri.parse(_syncUrl).replace(queryParameters: {'t': '${DateTime.now().millisecondsSinceEpoch}'});
         final res = await _client
             .get(
-              Uri.parse(_syncUrl),
-              headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+              requestUri,
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
+              },
             )
             .timeout(_timeout);
 
