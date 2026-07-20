@@ -5566,24 +5566,49 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
     final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
     final t = AppTranslations.of(context);
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-      leading: Icon(Icons.power_rounded, color: textSub, size: 20),
-      title: Text(t.text('power_on_state_label'), style: TextStyle(color: textMain, fontSize: 14)),
-      subtitle: Text(t.text('relay_state_after_loss_label'), style: TextStyle(color: textSub, fontSize: 11)),
-      trailing: _saving
-          ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
-          : DropdownButton<int>(
-              value: _mode,
-              underline: const SizedBox.shrink(),
-              borderRadius: BorderRadius.circular(12),
-              dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
-              style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
-              items: _labels(t).entries
-                  .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
-                  .toList(),
-              onChanged: _change,
+    // [FIX GIAI ĐOẠN 106 — RÀ SOÁT PHÒNG NGỪA] Cùng họ lỗi với MotorTypeSection (ListTile +
+    // DropdownButton trailing không khai báo width có thể ép title/subtitle rớt dòng theo ký tự
+    // khi nhãn dài/dialog hẹp) — nhãn khối này hiện đang NGẮN nên chưa vỡ, nhưng đổi luôn cấu trúc
+    // Row+Expanded+Flexible để nhất quán và chống tái phát nếu nhãn dịch ngôn ngữ khác dài hơn.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.power_rounded, color: textSub, size: 20),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(t.text('power_on_state_label'), style: TextStyle(color: textMain, fontSize: 14)),
+                const SizedBox(height: 2),
+                Text(t.text('relay_state_after_loss_label'), style: TextStyle(color: textSub, fontSize: 11)),
+              ],
             ),
+          ),
+          const SizedBox(width: 8),
+          if (_saving)
+            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+          else
+            Flexible(
+              child: DropdownButton<int>(
+                isExpanded: true,
+                isDense: true,
+                value: _mode,
+                underline: const SizedBox.shrink(),
+                borderRadius: BorderRadius.circular(12),
+                dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
+                style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
+                selectedItemBuilder: (context) => _labels(t).entries.map((e) => Align(alignment: Alignment.centerRight, child: Text(e.value, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+                items: _labels(t).entries
+                    .map((e) => DropdownMenuItem<int>(value: e.key, child: Text(e.value)))
+                    .toList(),
+                onChanged: _change,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -5651,25 +5676,59 @@ class _MotorTypeSectionState extends State<MotorTypeSection> {
     final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
     final t = AppTranslations.of(context);
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-      leading: Icon(Icons.settings_input_component_rounded, color: textSub, size: 20),
-      title: Text(t.text('motor_type_label'), style: TextStyle(color: textMain, fontSize: 14)),
-      subtitle: Text(t.text('motor_type_sublabel'), style: TextStyle(color: textSub, fontSize: 11)),
-      trailing: _saving
-          ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
-          : DropdownButton<String>(
-              value: _motorType,
-              hint: Text(t.text('motor_type_unset_hint'), style: TextStyle(color: textSub, fontSize: 12)),
-              underline: const SizedBox.shrink(),
-              borderRadius: BorderRadius.circular(12),
-              dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
-              style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
-              items: _labels(t).entries
-                  .map((e) => DropdownMenuItem<String>(value: e.key, child: Text(e.value)))
-                  .toList(),
-              onChanged: _change,
+    // [FIX GIAI ĐOẠN 106 — VỠ CHỮ THẲNG ĐỨNG] ListTile TRƯỚC ĐÂY dùng title/subtitle/trailing —
+    // nhãn "AC 220V (Khóa chéo nghiêm ngặt)" dài hơn hẳn 2 lựa chọn còn lại khiến DropdownButton
+    // (trailing, không khai báo width, tự đòi đủ chỗ cho item DÀI NHẤT trong danh sách kể cả khi
+    // đang hiện item khác) đòi bề rộng lớn — RenderListTile chia chỗ còn lại cho cột title/
+    // subtitle CÓ THỂ về gần 0px trên dialog hẹp, ép Text bọc từng KÝ TỰ một dòng (đúng ảnh chụp
+    // "rớt dòng theo chiều dọc"). Nay THAY ListTile bằng Row tường minh: Expanded bọc cột tiêu đề
+    // (LUÔN được ưu tiên chỗ trống trước), Dropdown bọc Flexible (tự co lại + ellipsis nếu vẫn
+    // không đủ chỗ) thay vì đòi trọn vẹn bề rộng tuỳ ý như cũ.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.settings_input_component_rounded, color: textSub, size: 20),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(t.text('motor_type_label'), style: TextStyle(color: textMain, fontSize: 14)),
+                const SizedBox(height: 2),
+                Text(t.text('motor_type_sublabel'), style: TextStyle(color: textSub, fontSize: 11)),
+              ],
             ),
+          ),
+          const SizedBox(width: 8),
+          if (_saving)
+            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+          else
+            Flexible(
+              // [isExpanded:true BẮT BUỘC] Flexible/Expanded chỉ thật sự "ép co lại" được nếu
+              // chính DropdownButton đồng ý nhận constraint lỏng thay vì luôn đòi đủ chỗ cho item
+              // DÀI NHẤT — đây là điều kiện Flutter yêu cầu để dùng DropdownButton trong Row cùng
+              // Expanded/Flexible (xem docs isExpanded). selectedItemBuilder đảm bảo NÚT ĐÃ ĐÓNG
+              // (không phải menu thả xuống) cũng tự rút gọn "..." thay vì tràn ra ngoài.
+              child: DropdownButton<String>(
+                isExpanded: true,
+                isDense: true,
+                value: _motorType,
+                hint: Text(t.text('motor_type_unset_hint'), style: TextStyle(color: textSub, fontSize: 12), overflow: TextOverflow.ellipsis),
+                underline: const SizedBox.shrink(),
+                borderRadius: BorderRadius.circular(12),
+                dropdownColor: widget.isDark ? const Color(0xFF1E293B) : Colors.white,
+                style: TextStyle(color: tkGreen, fontSize: 13, fontWeight: FontWeight.bold),
+                selectedItemBuilder: (context) => _labels(t).entries.map((e) => Align(alignment: Alignment.centerRight, child: Text(e.value, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+                items: _labels(t).entries
+                    .map((e) => DropdownMenuItem<String>(value: e.key, child: Text(e.value)))
+                    .toList(),
+                onChanged: _change,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
