@@ -604,6 +604,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // đây và rủi ro hồi quy cao hơn nhiều nếu không kiểm thử trực quan được (máy này không chạy
   // được Flutter thật). Hàm này KHÔNG đụng _buildInPlaceEditWrap (edit mode) — TÁCH RIÊNG hoàn
   // toàn, cùng nguyên tắc "cộng thêm, không sửa tại chỗ" đã dùng xuyên suốt phiên này.
+  //
+  // [FIX GIAI ĐOẠN 104 — VỠ LƯỚI 3 CỘT] Trước đây HÀM NÀY còn nhận luôn visibleSwitches, dồn CẢ
+  // thẻ lớn 220px (Quạt/Cảm biến/Cửa cuốn/Bơm/Đèn/Generic — xem _TwinCardShell) LẪN thẻ Công tắc
+  // vuông 130px cố định vào MỘT Wrap liên tục duy nhất (_buildUnifiedDeviceWrap). Wrap chảy tuần
+  // tự theo ĐÚNG thứ tự phần tử — khi 1 thẻ 220px không đủ chỗ ở cuối hàng, nó tự xuống dòng mới,
+  // để lại khoảng trống "mồ côi" ngay hàng cũ (không phần tử nào lấp lại được vì Wrap không xét
+  // lại phần tử đã bỏ qua); nghiêm trọng hơn, thẻ Công tắc bị ép cứng 130px KHÔNG co giãn theo bề
+  // rộng màn hình thật — trên máy có bề ngang nội dung < 422px (130*3 + 16*2), 3 thẻ không bao giờ
+  // vừa một hàng, luôn lệch xuống 2 thẻ/hàng kèm khoảng trống lớn — ĐÚNG triệu chứng người dùng
+  // chụp màn hình báo lại. Nay TÁCH HẲN 2 nhóm: hàm này CHỈ còn dựng nhóm "thẻ lớn" (cùng 220px,
+  // Wrap đồng nhất kích thước không bao giờ mồ côi khoảng trống); thẻ Công tắc chuyển hẳn sang
+  // _buildSwitchCardEntries() + _buildSwitchGrid() dùng GridView.builder ép ĐÚNG 3 cột (co giãn
+  // theo constraints.maxWidth thật, không còn 130px cố định) — xem chỗ gọi ở _buildDevicesGridBody.
   List<({String key, String mac, Widget widget})> _buildAllDeviceCardEntries(
     List<Map<String, dynamic>> visibleFans,
     List<Map<String, dynamic>> visibleSensors,
@@ -611,7 +624,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     List<Map<String, dynamic>> visiblePumps,
     List<Map<String, dynamic>> visibleDimmers,
     List<Map<String, dynamic>> visibleGenericPrimary,
-    List<Map<String, dynamic>> visibleSwitches,
     DeviceProvider provider,
     bool isDark,
   ) {
@@ -766,58 +778,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       )));
     }
 
-    for (final item in visibleSwitches) {
-      final String mac = item['mac'];
-      final String ep = item['endpoint'];
-      final String deviceKey = "${mac}_$ep";
-      final bool isDevOnline = item['online'] == true;
-      final String status = "${item['state']}_$isDevOnline";
-      final bool isOn = item['state'] == 'ON';
-      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
-      // [BOUNDED SIZE] Giống hệt lý do đã áp cho _buildInPlaceEditWrap: SmartSwitchCard vốn chỉ
-      // sống trong GridView (kích thước ép bởi childAspectRatio) — Wrap cấp constraint KHÔNG giới
-      // hạn, phải tự bọc SizedBox vuông cố định. Dùng CHUNG 130x130 với edit mode để layout không
-      // "nhảy" khi bật/tắt chế độ Sửa (đúng fix triệt để cho triệu chứng Giai đoạn 90).
-      entries.add((key: deviceKey, mac: mac, widget: SizedBox(
-        width: 130,
-        height: 130,
-        child: SmartSwitchCard(
-          key: ValueKey("${mac}_${ep}_$status"),
-          mac: mac,
-          endpointKey: ep,
-          backendName: item['name'],
-          initialStatus: isOn,
-          isOffline: !isDevOnline,
-          isMaster: item['isMaster'] == true,
-          provider: provider,
-          onRefresh: _handleRefresh,
-          rawDeviceData: item['rawDevice'],
-          isHidden: _hiddenDevices.contains(deviceKey),
-          isSelectionMode: _isSelectionMode,
-          isSelected: _selectedDevices.contains(deviceKey),
-          hasHiddenDevices: _hiddenDevices.isNotEmpty,
-          isShowingHidden: _showHiddenFilter,
-          onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
-          onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
-          onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
-          onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
-          onDelete: cb.delete,
-          onRename: cb.rename,
-          onAssignHome: cb.assignHome,
-          onAssignRoom: cb.assignRoom,
-          onDeviceTimer: cb.timer,
-          onDeviceHistory: cb.history,
-          onDeviceAutomation: cb.automation,
-          onDeviceShare: cb.share,
-        ),
-      )));
-    }
-
     return entries;
   }
 
-  // Lưới BÌNH THƯỜNG (không sửa) — Wrap phẳng duy nhất chứa MỌI loại thẻ, chảy lấp khoảng trống
-  // theo ĐÚNG nguyên tắc runAlignment mặc định của Wrap (trái sang phải, hết hàng mới xuống dòng).
+  // Lưới BÌNH THƯỜNG (không sửa) — Wrap phẳng cho nhóm "thẻ lớn" (cùng 220px, xem giải thích ở
+  // _buildAllDeviceCardEntries) — chảy lấp khoảng trống theo runAlignment mặc định của Wrap.
   Widget _buildUnifiedDeviceWrap(List<({String key, String mac, Widget widget})> entries, bool isDark) {
     if (entries.isEmpty) {
       return _buildEmptyState(isDark, isDark ? Colors.white54 : const Color(0xFF64748B), "Khu vực này chưa kết nối với thiết bị/Hub nào.");
@@ -827,6 +792,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
       runSpacing: 16,
       children: [for (final en in entries) KeyedSubtree(key: ValueKey(en.key), child: en.widget)],
     );
+  }
+
+  // [GIAI ĐOẠN 104] Công thức DÙNG CHUNG cho lưới Công tắc — cả chế độ THƯỜNG (GridView bên dưới)
+  // lẫn chế độ SỬA (ReorderableWrap trong _buildInPlaceEditWrap, cần width tường minh cho từng
+  // ô) — luôn ép ĐÚNG 3 cột trên mobile (<500px) thay vì 130px cố định trước đây (không co giãn
+  // theo bề ngang màn hình thật, xem giải thích đầy đủ ở _buildAllDeviceCardEntries). Tính CHUNG
+  // một công thức để cỡ thẻ không "nhảy" giữa 2 chế độ (đúng nguyên tắc đã áp dụng từ Giai đoạn 90).
+  int _switchCrossAxisCount(double maxWidth) => maxWidth < 500 ? 3 : (maxWidth / 140).floor().clamp(3, 12);
+  double _switchCellWidth(double maxWidth) {
+    final int n = _switchCrossAxisCount(maxWidth);
+    return (maxWidth - (n - 1) * 16) / n;
+  }
+
+  // [GIAI ĐOẠN 104] Dựng entries CHỈ cho thẻ Công tắc (tách khỏi _buildAllDeviceCardEntries) —
+  // KHÔNG còn bọc SizedBox 130x130 cố định ở đây: GridView.builder ở _buildSwitchGrid() tự ép
+  // kích thước ô qua gridDelegate (luôn đúng 3 cột, co giãn theo bề ngang thật).
+  List<({String key, String mac, Widget widget})> _buildSwitchCardEntries(
+    List<Map<String, dynamic>> visibleSwitches,
+    DeviceProvider provider,
+    bool isDark,
+  ) {
+    final List<({String key, String mac, Widget widget})> entries = [];
+    for (final item in visibleSwitches) {
+      final String mac = item['mac'];
+      final String ep = item['endpoint'];
+      final String deviceKey = "${mac}_$ep";
+      final bool isDevOnline = item['online'] == true;
+      final String status = "${item['state']}_$isDevOnline";
+      final bool isOn = item['state'] == 'ON';
+      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
+      entries.add((key: deviceKey, mac: mac, widget: SmartSwitchCard(
+        key: ValueKey("${mac}_${ep}_$status"),
+        mac: mac,
+        endpointKey: ep,
+        backendName: item['name'],
+        initialStatus: isOn,
+        isOffline: !isDevOnline,
+        isMaster: item['isMaster'] == true,
+        provider: provider,
+        onRefresh: _handleRefresh,
+        rawDeviceData: item['rawDevice'],
+        isHidden: _hiddenDevices.contains(deviceKey),
+        isSelectionMode: _isSelectionMode,
+        isSelected: _selectedDevices.contains(deviceKey),
+        hasHiddenDevices: _hiddenDevices.isNotEmpty,
+        isShowingHidden: _showHiddenFilter,
+        onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
+        onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
+        onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
+        onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
+        onDelete: cb.delete,
+        onRename: cb.rename,
+        onAssignHome: cb.assignHome,
+        onAssignRoom: cb.assignRoom,
+        onDeviceTimer: cb.timer,
+        onDeviceHistory: cb.history,
+        onDeviceAutomation: cb.automation,
+        onDeviceShare: cb.share,
+      )));
+    }
+    return entries;
+  }
+
+  // [GIAI ĐOẠN 104] Lưới Công tắc chế độ THƯỜNG — GridView.builder ép ĐÚNG crossAxisCount (3 trên
+  // mobile) qua gridDelegate, KHÔNG còn phụ thuộc kích thước cố định của từng thẻ như Wrap trước
+  // đây -> không bao giờ lệch cột hay để lại khoảng trống mồ côi dù màn hình hẹp/rộng thế nào.
+  Widget _buildSwitchGrid(List<({String key, String mac, Widget widget})> entries, bool isDark) {
+    if (entries.isEmpty) return const SizedBox.shrink();
+    return LayoutBuilder(builder: (context, constraints) {
+      final int crossAxisCount = _switchCrossAxisCount(constraints.maxWidth);
+      return GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: entries.length,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.0),
+        itemBuilder: (context, index) => KeyedSubtree(key: ValueKey(entries[index].key), child: entries[index].widget),
+      );
+    });
   }
 
   // [GIAI ĐOẠN 75] Lưới edit-mode CỘNG THÊM — dựng lại ĐÚNG các Widget thẻ gốc (không phải icon
@@ -844,6 +887,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     DeviceProvider provider,
     bool isDark,
   ) {
+    // [GIAI ĐOẠN 104] Bọc LayoutBuilder NGOÀI CÙNG để lấy constraints.maxWidth THẬT — thẻ Công
+    // tắc trong chế độ Sửa dùng CHUNG công thức _switchCellWidth() với lưới chế độ thường
+    // (_buildSwitchGrid), thay cho 130px cố định trước đây (nguyên nhân lệch cột trên màn hình
+    // hẹp — xem giải thích đầy đủ ở _buildAllDeviceCardEntries).
+    return LayoutBuilder(builder: (context, constraints) {
+    final double switchCellWidth = _switchCellWidth(constraints.maxWidth);
     final Map<String, String> macByKey = {};
     final Map<String, Widget> widgetByKey = {};
     // [GIAI ĐOẠN 90] Nhãn category theo key — dùng để chèn "ngắt dòng" thị giác giữa các nhóm
@@ -861,14 +910,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
+    // [FIX GIAI ĐOẠN 105 — "THẺ MA" KẸT Ở OVERLAY KHI KÉO-THẢ] Toàn bộ 7 vòng lặp bên dưới TRƯỚC
+    // ĐÂY gắn Key cho thẻ gốc (SmartFanCard/SmartSensorCard/...) kèm DỮ LIỆU SỐNG (speed/swing/
+    // temp/hum/state/online...) — vd 'edit_${hideKey}_$status'. Đây là chỗ nguy hiểm THẬT SỰ:
+    // _buildInPlaceEditWrap chạy TRONG Consumer<DeviceProvider>, mỗi gói MQTT cập nhật tốc độ
+    // Quạt/độ ẩm Cảm biến... đều kích build() lại NGAY LẬP TỨC, kể cả khi người dùng đang GIỮ TAY
+    // kéo thẻ đó. Key đổi giá trị -> Flutter coi widget con là MỘT PHẦN TỬ HOÀN TOÀN MỚI (unmount
+    // + remount) NGAY GIỮA cử chỉ kéo — trong khi gói "reorderables" (ReorderableWrap) đã chụp lại
+    // tham chiếu RenderBox/kích thước của phần tử CŨ lúc bắt đầu kéo (_draggingFeedbackSize,
+    // _dragStartIndex...) để dựng khung overlay (drag feedback/ghost). Phần tử cũ bị hủy đột ngột
+    // giữa chừng khiến overlay đó KHÔNG còn gắn với bất kỳ Element sống nào để tự dọn dẹp khi thả
+    // tay — kẹt lại, rung mãi, dữ liệu không cập nhật (đúng triệu chứng người dùng chụp lại: thẻ
+    // Quạt dễ trúng nhất vì tốc độ/đảo gió đổi liên tục qua MQTT). Nay ĐỔI Key mọi thẻ trong chế
+    // độ Sửa về CHỈ hideKey (định danh thiết bị ỔN ĐỊNH, không đổi theo trạng thái) — khớp đúng
+    // key CHA (_JiggleTile) vốn đã ổn định sẵn. Card vẫn nhận dữ liệu MỚI qua props/didUpdateWidget
+    // bình thường — KHÔNG cần remount để cập nhật hiển thị; card gốc bị AbsorbPointer khóa chạm
+    // hoàn toàn trong chế độ Sửa nên không cần đồng bộ tức thời tuyệt đối trong lúc đang kéo.
+
     for (final e in visibleFans) {
       final String hideKey = "${e['mac']}_${e['endpoint']}";
-      final String status = "${e['speed']}_${e['swing']}_${e['online']}";
       final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
           ? e['endpoint'] : 'S_${e['mac']}';
       final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
       addEntry(hideKey, e['mac'] as String, 'fan', SmartFanCard(
-        key: ValueKey('edit_${hideKey}_$status'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         endpoint: e['endpoint'],
         initialSpeed: e['speed'] ?? 0,
@@ -895,7 +960,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String hideKey = "${e['mac']}_${e['endpoint']}";
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
       addEntry(hideKey, e['mac'] as String, 'sensor', SmartSensorCard(
-        key: ValueKey('edit_${hideKey}_${e['temp']}_${e['hum']}_${e['online']}'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         endpoint: e['endpoint'],
         name: e['name'],
@@ -921,7 +986,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String hideKey = "${e['mac']}_${e['upEp']}";
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['upEp']);
       addEntry(hideKey, e['mac'] as String, 'rollingDoor', SmartRollingDoorCard(
-        key: ValueKey('edit_${hideKey}_${e['positionPct']}_${e['travelSec']}_${e['online']}'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         upEndpoint: e['upEp'], downEndpoint: e['downEp'], stopEndpoint: e['stopEp'],
         backendName: e['name'],
@@ -940,7 +1005,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String hideKey = "${e['mac']}_${e['endpoint']}";
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
       addEntry(hideKey, e['mac'] as String, 'pump', SmartPumpCard(
-        key: ValueKey('edit_${hideKey}_${e['state']}_${e['online']}'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         endpoint: e['endpoint'],
         isOn: e['state'] == 'ON',
@@ -958,7 +1023,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String hideKey = "${e['mac']}_${e['endpoint']}";
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
       addEntry(hideKey, e['mac'] as String, 'dimmer', SmartDimmerCard(
-        key: ValueKey('edit_${hideKey}_${e['state']}_${e['brightness']}_${e['online']}'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         endpoint: e['endpoint'],
         isOn: e['state'] == 'ON',
@@ -977,7 +1042,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String hideKey = "${e['mac']}_${e['endpoint']}";
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
       addEntry(hideKey, e['mac'] as String, 'generic', GenericDeviceCard(
-        key: ValueKey('edit_${hideKey}_${e['state']}_${e['online']}'),
+        key: ValueKey('edit_$hideKey'),
         mac: e['mac'],
         endpoint: e['endpoint'],
         category: e['category'] ?? '',
@@ -997,18 +1062,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String ep = item['endpoint'];
       final String deviceKey = "${mac}_$ep";
       final bool isDevOnline = item['online'] == true;
-      final String status = "${item['state']}_$isDevOnline";
       final bool isOn = item['state'] == 'ON';
       final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
       // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
       // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
-      // vuông cố định NGAY tại điểm tích hợp edit-mode này (không đụng chính widget/chỗ dùng gốc)
-      // để tránh lỗi layout "incoming constraints are unbounded".
+      // vuông. [GIAI ĐOẠN 104] Cỡ ô nay dùng switchCellWidth (co giãn theo constraints.maxWidth
+      // thật, CHUNG công thức với _buildSwitchGrid chế độ thường) thay vì 130px cố định — đảm bảo
+      // LUÔN đúng 3 cột kể cả màn hình hẹp, và khớp cỡ 1:1 với chế độ thường (không "nhảy" cỡ).
       addEntry(deviceKey, mac, 'switch', SizedBox(
-        width: 130,
-        height: 130,
+        width: switchCellWidth,
+        height: switchCellWidth,
         child: SmartSwitchCard(
-          key: ValueKey('edit_${mac}_${ep}_$status'),
+          key: ValueKey('edit_${mac}_$ep'),
           mac: mac,
           endpointKey: ep,
           backendName: item['name'],
@@ -1052,38 +1117,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
       for (final k in widgetByKey.keys) if (!_editOrderDraft.any((d) => d.key == k)) k,
     ];
 
-    // [GIAI ĐOẠN 90 — VỀ "NHẢY VỊ TRÍ"] Thứ tự (sequence) các thẻ đã giữ ĐÚNG NGUYÊN VẸN ở
-    // orderedKeys — KHÔNG hề bị xáo trộn khi vào chế độ Sửa (đã lần theo _lastVisualCardOrder +
-    // _editOrderDraft, xác nhận không có bug sort/fetch nào). Cái người dùng thấy đổi là VỊ TRÍ
-    // (x,y) hiển thị: chế độ thường vẽ 7 khối Wrap TÁCH RIÊNG theo category (Quạt/Cảm biến/Cửa
-    // cuốn.../Công tắc, mỗi khối tự xuống dòng mới), còn ở đây TOÀN BỘ dồn vào MỘT Wrap liên tục
-    // (bắt buộc để cho phép kéo thẻ Cảm biến xen giữa thẻ Công tắc theo đúng yêu cầu Giai đoạn
-    // 75) — 1 Wrap liên tục với các thẻ kích thước khác nhau xếp khít khác hẳn 7 khối tách rời,
-    // nên dù dữ liệu giống hệt, tọa độ hiển thị vẫn đổi khi bật/tắt Sửa. ĐÃ THỬ chèn "ngắt dòng"
-    // (SizedBox rộng vô hạn) giữa các category để mô phỏng lại ranh giới khối như chế độ thường,
-    // nhưng ReorderableWrap không có khái niệm "phần tử không kéo được" — chèn thêm phần tử vào
-    // children sẽ làm lệch oldIndex/newIndex mà onReorder() nhận (index tính trên chính danh sách
-    // children), hỏng luôn logic kéo-thả — rủi ro cao hơn lợi ích thẩm mỹ nên đã bỏ. categoryByKey
-    // vẫn giữ lại (rẻ, có thể dùng cho hướng khắc phục khác sau này không đụng chỉ số children).
-    return ReorderableWrap(
-      spacing: 16,
-      runSpacing: 16,
-      // [GIỮ CUỘN TRANG] Mặc định gói (true) = phải giữ (long-press) mới bắt đầu kéo — một
-      // chạm-kéo NGẮN vẫn cuộn trang bình thường (đúng hành vi iOS Jiggle thật: icon rung nhưng
-      // trang vẫn cuộn được). AbsorbPointer đã chặn hết tap/swipe vào thẻ gốc nên giữ lâu ở đây
-      // an toàn tuyệt đối, không lo "lỡ tay bật/tắt" — không cần ép kéo tức thì.
-      needsLongPressDraggable: true,
-      onReorder: (oldIndex, newIndex) {
-        setState(() {
-          final movedKey = orderedKeys[oldIndex];
-          final newKeys = List<String>.from(orderedKeys)
+    // [FIX GIAI ĐOẠN 104 — "KÉO XONG LƯU, THỨ TỰ KHÔNG ĐỔI"] Bản CŨ dồn TOÀN BỘ thẻ (220px lẫn
+    // 130px) vào MỘT ReorderableWrap duy nhất — gói "reorderables" tính oldIndex/newIndex dựa
+    // trên VỊ TRÍ HÌNH HỌC thật trên màn hình, kích thước lệch nhau khiến chỉ số trả về không
+    // khớp ý kéo-thả thật của người dùng. TỆ HƠN: dù kéo xuyên nhóm (vd thẻ Công tắc chen giữa
+    // thẻ Quạt) có tính đúng đi nữa, _buildDevicesGridBody (chế độ thường) LUÔN vẽ theo 2 khối cố
+    // định — nhóm "thẻ lớn" TRƯỚC, nhóm "Công tắc" SAU (xem _buildAllDeviceCardEntries/
+    // _buildSwitchGrid) — nên MỌI cú kéo xuyên nhóm không bao giờ hiển thị lại đúng như đã kéo,
+    // trông như "lưu không có tác dụng" dù Server đã nhận đúng mảng gửi lên. Nay TÁCH THÀNH 2
+    // ReorderableWrap ĐỘC LẬP — mỗi cái đồng nhất kích thước bên trong (nhóm lớn kéo lẫn nhau,
+    // nhóm Công tắc kéo lẫn nhau) — khớp Y HỆT cách _buildDevicesGridBody hiển thị (2 khối cố
+    // định, khối lớn LUÔN trước khối Công tắc), nên "kéo xong thấy đúng vị trí mới" 100% khớp;
+    // gói reorderables cũng tính chỉ số chính xác hơn hẳn vì mọi phần tử trong 1 Wrap luôn cùng
+    // kích thước. _editOrderDraft cuối cùng LUÔN là [nhóm lớn theo thứ tự mới] + [nhóm Công tắc
+    // theo thứ tự mới] — khớp đúng thứ tự sẽ hiển thị ở chế độ thường.
+    final List<String> orderedBigKeys = orderedKeys.where((k) => categoryByKey[k] != 'switch').toList();
+    final List<String> orderedSwitchKeys = orderedKeys.where((k) => categoryByKey[k] == 'switch').toList();
+
+    void commitReorder(List<String> newBigKeys, List<String> newSwitchKeys) {
+      final newKeys = [...newBigKeys, ...newSwitchKeys];
+      setState(() {
+        _editOrderDraft = [for (final k in newKeys) (key: k, mac: macByKey[k]!)];
+      });
+    }
+
+    Widget buildReorderGroup(List<String> keys, {required bool isSwitchGroup}) {
+      if (keys.isEmpty) return const SizedBox.shrink();
+      return ReorderableWrap(
+        spacing: 16,
+        runSpacing: 16,
+        // [GIỮ CUỘN TRANG] Mặc định gói (true) = phải giữ (long-press) mới bắt đầu kéo — một
+        // chạm-kéo NGẮN vẫn cuộn trang bình thường (đúng hành vi iOS Jiggle thật: icon rung nhưng
+        // trang vẫn cuộn được). AbsorbPointer đã chặn hết tap/swipe vào thẻ gốc nên giữ lâu ở đây
+        // an toàn tuyệt đối, không lo "lỡ tay bật/tắt" — không cần ép kéo tức thì.
+        needsLongPressDraggable: true,
+        onReorder: (oldIndex, newIndex) {
+          final newSubKeys = List<String>.from(keys)
             ..removeAt(oldIndex)
-            ..insert(newIndex, movedKey);
-          _editOrderDraft = [for (final k in newKeys) (key: k, mac: macByKey[k]!)];
-        });
-      },
-      children: [for (final k in orderedKeys) widgetByKey[k]!],
+            ..insert(newIndex, keys[oldIndex]);
+          if (isSwitchGroup) {
+            commitReorder(orderedBigKeys, newSubKeys);
+          } else {
+            commitReorder(newSubKeys, orderedSwitchKeys);
+          }
+        },
+        children: [for (final k in keys) widgetByKey[k]!],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        buildReorderGroup(orderedBigKeys, isSwitchGroup: false),
+        if (orderedBigKeys.isNotEmpty && orderedSwitchKeys.isNotEmpty) const SizedBox(height: 16),
+        buildReorderGroup(orderedSwitchKeys, isSwitchGroup: true),
+      ],
     );
+    }); // đóng LayoutBuilder (constraints.maxWidth -> switchCellWidth)
   }
 
   // ==========================================================================
@@ -4215,14 +4305,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
 
         // ====================================================================
-        // [GIAI ĐOẠN 100 — MASONRY/TETRIS FILL] 1 Wrap phẳng duy nhất thay cho 4 khối tách biệt
-        // cũ (Quạt/Cảm biến/Digital Twin/Công tắc) — xem giải thích đầy đủ tại
-        // _buildAllDeviceCardEntries(). Đúng thứ tự đã lưu qua Giai đoạn 72 (device_order).
+        // [GIAI ĐOẠN 104 — 2 KHỐI RIÊNG, KHÔNG CÒN 1 WRAP TRỘN LẪN] Bản Giai đoạn 100 (1 Wrap
+        // phẳng gộp CẢ thẻ lớn 220px lẫn thẻ Công tắc 130px cố định) gây vỡ lưới 3 cột + khoảng
+        // trống mồ côi trên màn hình hẹp — xem giải thích đầy đủ tại _buildAllDeviceCardEntries().
+        // Nay TÁCH: nhóm "thẻ lớn" (Quạt/Cảm biến/Cửa cuốn/Bơm/Đèn/Generic) vẫn Wrap đồng nhất
+        // kích thước (an toàn, không mồ côi vì cùng 220px); nhóm Công tắc chuyển sang GridView ép
+        // ĐÚNG 3 cột co giãn theo bề ngang thật (_buildSwitchGrid). Đúng thứ tự đã lưu qua Giai
+        // đoạn 72 (device_order) — trong TỪNG nhóm.
         // ====================================================================
-        _buildUnifiedDeviceWrap(
-          _buildAllDeviceCardEntries(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, visibleSwitches, provider, isDark),
-          isDark,
-        ),
+        Builder(builder: (context) {
+          final bigEntries = _buildAllDeviceCardEntries(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, provider, isDark);
+          final switchEntries = _buildSwitchCardEntries(visibleSwitches, provider, isDark);
+          if (bigEntries.isEmpty && switchEntries.isEmpty) {
+            return _buildEmptyState(isDark, isDark ? Colors.white54 : const Color(0xFF64748B), "Khu vực này chưa kết nối với thiết bị/Hub nào.");
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (bigEntries.isNotEmpty) _buildUnifiedDeviceWrap(bigEntries, isDark),
+              if (bigEntries.isNotEmpty && switchEntries.isNotEmpty) const SizedBox(height: 16),
+              if (switchEntries.isNotEmpty) _buildSwitchGrid(switchEntries, isDark),
+            ],
+          );
+        }),
 
         // ====================================================================
         // [NHÓM] CÔNG TẮC ẢO — render bằng chính SmartSwitchCard (badge "NHÓM")
