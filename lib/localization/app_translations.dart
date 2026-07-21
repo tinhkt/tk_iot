@@ -141,6 +141,7 @@ class AppTranslations {
       'admin_section': 'QUẢN TRỊ',
       'system_section': 'HỆ THỐNG',
       'appearance_color': 'Giao diện màu sắc',
+      'notification_settings': 'Cài đặt thông báo',
       'software_version_label': 'Phiên bản phần mềm',
 
       // --- Đợt 3: Sidebar (Desktop + Mobile Drawer/BottomNav) ---
@@ -711,6 +712,7 @@ class AppTranslations {
       'admin_section': 'ADMIN',
       'system_section': 'SYSTEM',
       'appearance_color': 'Color Appearance',
+      'notification_settings': 'Notification Settings',
       'software_version_label': 'Software Version',
 
       // --- Round 3: Sidebar (Desktop + Mobile Drawer/BottomNav) ---

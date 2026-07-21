@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "107089443410",
+    "project_id": "smart-home-1743843741242",
+    "storage_bucket": "smart-home-1743843741242.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:107089443410:android:7b729dcab8904334e9fd8b",
+        "android_client_info": {
+          "package_name": "com.example.tk_iot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBmpVwkq-5vFf3hxkGneIjWF3LXjm5QR2U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -15,6 +15,12 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <!-- [ĐẨY THÔNG BÁO OS] Android 13+ (API 33+) bắt buộc quyền này để hiện BẤT KỲ notification
+         nào (kể cả local, không riêng FCM) — firebase_messaging tự xin quyền runtime qua
+         requestPermission() trong PushNotificationService.init(), khai báo ở đây chỉ đăng ký
+         quyền tồn tại trong manifest, KHÔNG tự động cấp. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="Tuấn Kiệt IoT"
         android:name="${applicationName}"
@@ -47,6 +53,14 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- [ĐẨY THÔNG BÁO OS] Channel mặc định cho notification OS tự hiển thị khi App
+             nền/kill (đọc thẳng từ payload FCM, KHÔNG qua PushNotificationService) — PHẢI khớp
+             _channelId trong push_notification_service.dart VÀ androidChannelID phía Backend
+             (internal/push/send.go) để không tạo ra 2 channel lệch cấu hình độ ưu tiên. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="tk_iot_important" />
     </application>
 
     <queries>

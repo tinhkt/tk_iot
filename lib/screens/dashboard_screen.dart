@@ -15,6 +15,15 @@ import '../localization/app_translations.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/dashboard_sync_service.dart';
+import '../services/push_notification_service.dart';
+import 'settings/notification_settings_screen.dart';
+import 'cameras/add_camera_dialog.dart';
+import 'cameras/camera_player_card.dart';
+import 'cameras/camera_enlarged_dialog.dart';
+import 'cameras/add_imou_camera_dialog.dart';
+import 'cameras/imou_camera_placeholder_card.dart';
+import '../models/imou_camera_model.dart';
+import '../models/camera_model.dart';
 import 'auth/login_screen.dart';
 import 'admin/role_management_view.dart';
 import 'admin/admin_system_screen.dart';
@@ -52,6 +61,8 @@ import 'package:lottie/lottie.dart';
 // thay bằng Wrap thuần (xem _buildAvatarStaggeredGrid) để tôn trọng tuyệt đối thứ tự mảng.
 import '../models/device_avatar_definition.dart';
 import '../models/device_avatars_repo.dart';
+import 'package:smooth_page_indicator/smooth_page_indicator.dart';
+import 'energy/full_energy_dashboard_screen.dart';
 
 class SpinningWidget extends StatefulWidget {
   final Widget child; final bool isSpinning; final int speedLevel;
@@ -74,7 +85,24 @@ class _SpinningWidgetState extends State<SpinningWidget> with SingleTickerProvid
 }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  // [ĐẨY THÔNG BÁO OS — DEEPLINK] Mang dữ liệu từ PushNotificationService khi user mở App
+  // bằng cách bấm vào 1 thông báo hệ thống (cả 2 trường hợp: App đang nền, và App đã bị
+  // kill hẳn — lúc đó DashboardScreen còn chưa hề tồn tại nên KHÔNG thể gọi thẳng các hàm
+  // deeplink private _openDeviceSettingsByMac/_showUpdateDialog từ bên ngoài, phải đi qua
+  // constructor rồi tự trigger trong _bootstrapSync() SAU KHI _currentHomeDevices đã nạp
+  // xong). null = mở App bình thường, không có gì để deeplink.
+  final String? initialDeeplinkMac;
+  final String? initialDeeplinkType;
+  final String? initialDeeplinkVersion;
+  final String? initialDeeplinkChangelog;
+
+  const DashboardScreen({
+    super.key,
+    this.initialDeeplinkMac,
+    this.initialDeeplinkType,
+    this.initialDeeplinkVersion,
+    this.initialDeeplinkChangelog,
+  });
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
@@ -90,8 +118,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final r = userRole.trim().toUpperCase();
     return r == 'SUPER_USER' || r == 'ADMIN';
   }
-  int _selectedIndex = 0, _cameraViewMode = 1; 
-  bool _isLoadingDevices = true; 
+  int _selectedIndex = 0, _cameraViewMode = 1;
+  bool _isLoadingDevices = true;
+  // [CAMERA IP — PHẦN 3] Danh sách camera của nhà đang mở, nạp qua ApiService().getCameras()
+  // trong _bootstrapSync() (cùng lúc với khởi tạo khác) — xem _loadCameras().
+  List<CameraModel> _cameras = [];
+  // [CAMERA P2P — IMOU] Danh sách camera Imou của nhà đang mở, nạp song song _cameras trong
+  // _loadCameras() — xem imou_camera_placeholder_card.dart (chưa có video sống, Pha 2).
+  List<ImouCameraModel> _imouCameras = [];
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...', 'main': ''};
   // [ĐỊA DANH GPS] Tên khu vực hiện tại, dịch ngược từ tọa độ GPS (geocoding) — hiển thị thay
@@ -132,6 +166,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // Chỉ đổi GIAO DIỆN hiển thị — KHÔNG đụng logic điều khiển/dữ liệu thiết bị thật.
   final Map<String, String> _deviceAvatarId = {};
 
+  // [GIAI ĐOẠN 125 — GỘP/TÁCH CÔNG TẮC ĐA KÊNH DO NGƯỜI DÙNG TỰ CHỌN] mac (KHÔNG phải hideKey —
+  // đây là lựa chọn CẤP THIẾT BỊ, áp dụng chung cho mọi kênh) -> true = hiển thị GỘP thành 1 khối
+  // mặt công tắc (PhysicalSwitchBlockCard qua popup, xem Giai đoạn 115-123); false/vắng mặt =
+  // BUNG LẺ từng kênh thành thẻ SmartSwitchCard rời (hành vi mặc định TỪ TRƯỚC Giai đoạn 115, xem
+  // yêu cầu tường minh — is_grouped vắng mặt = false). Đồng bộ máy khác qua avatar_map CÙNG kênh
+  // device_settings:{MAC} (key riêng "is_grouped", xem allowedDeviceSettingKeys phía Backend).
+  final Map<String, bool> _deviceGrouped = {};
+
   /// [LAN SCAN] Tập MAC đã sở hữu trong nhà đang mở (đã chuẩn hóa HOA + bỏ ":") —
   /// truyền vào AddDeviceDialog để ẩn nút "Thêm ngay" với thiết bị đã có.
   Set<String> get _ownedMacs => _currentHomeDevices
@@ -159,6 +201,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.initState();
     _loadHiddenDevices();
     _loadDeviceAvatars();
+    _loadDeviceGrouped();
     _fetchWeather();
     // [INITIAL STATE SYNC — THỨ TỰ CHUẨN KHI MỞ APP]
     //   Bước 1: REST GET /api/homes/{id}/devices -> hydrateFromRest() nạp trạng thái
@@ -187,6 +230,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     Provider.of<NotificationProvider>(context, listen: false).initMQTTListener(userEmail);
     _setupRealtimeSync();    // MQTT realtime chỉ kết nối sau khi ảnh tĩnh đã hiển thị đúng
+
+    // [ĐẨY THÔNG BÁO OS] Chỉ Android/iOS thật có FCM — Desktop/Web bỏ qua hẳn.
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      PushNotificationService.registerWithBackend();
+    }
+
+    // [PUSH — DEEPLINK KHỞI ĐỘNG LẠNH] App vừa mở do user bấm vào 1 thông báo hệ thống khi
+    // App đang bị kill hẳn — widget.initialDeeplinkMac mang theo từ constructor (xem
+    // PushNotificationService._handleTapData). PHẢI chạy SAU _initializeHome() phía trên vì
+    // _openDeviceSettingsByMac() tra cứu trong _currentHomeDevices vừa nạp xong.
+    final String? deeplinkMac = widget.initialDeeplinkMac;
+    if (deeplinkMac != null && deeplinkMac.isNotEmpty) {
+      if (widget.initialDeeplinkType == 'OTA_UPDATE') {
+        _showUpdateDialog(deeplinkMac, widget.initialDeeplinkVersion ?? '', widget.initialDeeplinkChangelog ?? '');
+      } else {
+        _openDeviceSettingsByMac(deeplinkMac);
+      }
+    }
+
+    // [CAMERA IP — PHẦN 3] currentHomeId đã có giá trị thật sau _initializeHome() phía trên.
+    _loadCameras();
+  }
+
+  /// [CAMERA IP — PHẦN 3] Nạp danh sách camera của nhà đang mở. Lỗi mạng/HTTP -> giữ nguyên
+  /// danh sách CŨ trên màn hình thay vì xóa trắng (getCameras trả null phân biệt với [] rỗng
+  /// thật — cùng quy ước getGridLayout đã có trong ApiService).
+  Future<void> _loadCameras() async {
+    if (currentHomeId.isEmpty) return;
+    final result = await ApiService().getCameras(currentHomeId);
+    if (mounted && result != null) setState(() => _cameras = result);
+    final imouResult = await ApiService().getImouCameras(currentHomeId);
+    if (mounted && imouResult != null) setState(() => _imouCameras = imouResult);
   }
 
   /// [CHUYỂN NHÀ] HomeProvider.activeHomeId đổi (HomeCard gọi setActiveHome() khi user bấm
@@ -196,8 +271,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final newId = _homeProviderRef?.activeHomeId;
     if (newId == null || newId == _lastKnownActiveHomeId || !mounted) return;
     _lastKnownActiveHomeId = newId;
-    setState(() => _selectedIndex = 0);
+    setState(() { _selectedIndex = 0; _cameras = []; _imouCameras = []; });
     _initializeHome();
+    _loadCameras();
   }
 
   /// Nạp lại danh sách nút bị ẩn từ Local Storage — trạng thái "Ẩn khỏi Bảng điều khiển"
@@ -231,6 +307,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// Ghi bảng gán Avatar xuống Local Storage ngay khi có thay đổi (chọn mới/trả về mặc định).
   void _persistDeviceAvatars() {
     SharedPreferences.getInstance().then((p) => p.setString('device_avatar_map', jsonEncode(_deviceAvatarId)));
+  }
+
+  /// [GIAI ĐOẠN 125] Nạp lại lựa chọn Gộp/Tách (mac -> bool) — cùng kỹ thuật JSON string với
+  /// _loadDeviceAvatars ở trên (SharedPreferences không hỗ trợ Map trực tiếp).
+  Future<void> _loadDeviceGrouped() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('device_grouped_map');
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final Map<String, dynamic> decoded = jsonDecode(raw);
+      if (mounted) setState(() => _deviceGrouped.addAll(decoded.map((k, v) => MapEntry(k, v == true))));
+    } catch (e) {
+      if (kDebugMode) print('⚠️ [GỘP/TÁCH] Lỗi đọc device_grouped_map đã lưu: $e — bỏ qua, mặc định bung lẻ.');
+    }
+  }
+
+  /// Ghi lựa chọn Gộp/Tách xuống Local Storage ngay khi có thay đổi.
+  void _persistDeviceGrouped() {
+    SharedPreferences.getInstance().then((p) => p.setString('device_grouped_map', jsonEncode(_deviceGrouped)));
+  }
+
+  /// [GIAI ĐOẠN 125] Đổi lựa chọn Gộp/Tách cho MỘT thiết bị đa kênh — cập nhật State NGAY (vẽ lại
+  /// lưới tức thì) + lưu cục bộ + đồng bộ Server qua kênh device_settings chung (giống avatar_map).
+  void _setDeviceGrouped(String mac, bool grouped) {
+    setState(() => _deviceGrouped[mac] = grouped);
+    _persistDeviceGrouped();
+    ApiService().setDeviceSetting(mac, 'is_grouped', grouped.toString());
   }
 
   // ==========================================================================
@@ -526,6 +629,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
              }
            }
 
+           // [GIAI ĐOẠN 125 — GỘP/TÁCH — ĐỌC] device['settings']['is_grouped'] ("true"/"false",
+           // vắng mặt = mặc định false/bung lẻ theo đúng yêu cầu). Cùng triết lý với avatar_map:
+           // CHỈ ghi đè khi field THẬT SỰ có mặt trong response — máy chưa từng đồng bộ (hoặc mất
+           // mạng) giữ nguyên lựa chọn cục bộ đã nạp từ SharedPreferences, không bị reset về false.
+           final dynamic rawIsGrouped = (device['settings'] as Map?)?['is_grouped'];
+           if (devMacNorm.isNotEmpty && rawIsGrouped != null) {
+             _deviceGrouped[devMacNorm] = rawIsGrouped.toString() == 'true';
+           }
+
            // [FIX ĐẾM SAI] Bỏ Hub & Cảm biến khỏi phép đếm bật/tắt (vẫn hydrate state ở trên).
            final String dType = '${device['fw_type'] ?? ''} ${device['category'] ?? ''} ${device['type'] ?? ''}'.toUpperCase();
            if (dType.contains('HUB') || dType.contains('SENSOR')) {
@@ -598,6 +710,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // ghi luôn xuống SharedPreferences để lần mở App kế tiếp (kể cả OFFLINE, chưa kịp fetch)
         // vẫn thấy đúng avatar mới nhất đã đồng bộ, không phải đợi round-trip mạng lần nữa.
         _persistDeviceAvatars();
+        // [GIAI ĐOẠN 125] Cùng lý do — _deviceGrouped vừa được vá lại ở vòng lặp trên.
+        _persistDeviceGrouped();
 
         if (mounted) {
           setState(() {
@@ -1050,6 +1164,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           title: t.text('select_multiple_devices'),
           onTap: () => setState(() => _isSelectionMode = true),
         ),
+        // [GIAI ĐOẠN 125 — GỘP/TÁCH] Chiều ngược lại của mục trong SmartSwitchCard:
+        // thẻ này đang Ở DẠNG GỘP (mở được _openFaceplateDeviceMenu nghĩa là channels.length > 1
+        // và _deviceGrouped[mac] == true) -> cho phép tách trở lại thành N thẻ rời.
+        DeviceMenuItem(
+          icon: Icons.call_split_rounded,
+          title: 'Tách thành từng nút riêng',
+          onTap: () => _setDeviceGrouped(mac, false),
+        ),
       ],
     );
   }
@@ -1063,6 +1185,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // nút trong popup KHÔNG đổi màu vì [cells] trước đây là ẢNH TĨNH build 1 lần lúc mở — nay bọc
   // Consumer<DeviceProvider> NGAY TRONG popup, tự dựng lại cells SỐNG từ liveProvider mỗi khi có
   // gói MQTT mới cho MAC này (xem _buildFaceplateCellsLive).
+  // [FIX GIAI ĐOẠN 127 — CHECKMARK CHỌN NHIỀU KHÔNG CẬP NHẬT] Root cause: Dialog (showAppDialog)
+  // đẩy [child] vào một ROUTE/OVERLAY RIÊNG, TÁCH HẲN khỏi cây widget chính của DashboardScreen —
+  // setState() gọi trên _DashboardScreenState (bên trong _buildFaceplateCellsLive khi bấm chọn)
+  // CHỈ rebuild cây MÀN HÌNH CHÍNH (đúng lý do "Đã chọn N" ở FAB cập nhật ĐÚNG), KHÔNG rebuild
+  // được route Dialog đang nổi bên trên — Consumer<DeviceProvider> trong popup CHỈ tự rebuild khi
+  // DeviceProvider.notifyListeners() (gói MQTT mới), một nguồn dữ liệu HOÀN TOÀN KHÁC với
+  // _selectedDevices/_isSelectionMode. Bọc thêm StatefulBuilder NGAY TRONG Dialog, lấy StateSetter
+  // riêng (setStateDialog) — gọi nó NGAY SAU setState() ngoài mỗi khi chọn/bỏ chọn để ép ĐÚNG cây
+  // con của Dialog vẽ lại tức thì, độc lập với vòng đời DeviceProvider.
   void _showFaceplateExpanded({
     required String mac,
     required String groupKey,
@@ -1071,26 +1202,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required Map<String, dynamic>? masterItem,
     required bool isHidden,
   }) {
+    // [FIX GIAI ĐOẠN 129 — YÊU CẦU #3.1 — THU NHỎ POPUP] maxWidth của showAppDialog() ĐÃ LÀ ĐÚNG
+    // cơ chế bọc ConstrainedBox(maxWidth) quanh nội dung Dialog (xem app_ui_wrappers.dart) — thêm
+    // MỘT ConstrainedBox(maxWidth:360) LỒNG THÊM bên trong [child] như đề xuất literal sẽ chỉ tạo
+    // 2 lớp ConstrainedBox trùng chức năng (vô hại nhưng thừa) — đơn giản hơn: đổi thẳng giá trị
+    // tham số maxWidth có sẵn từ 400 xuống 360, đạt ĐÚNG hiệu quả mong muốn mà không lồng thêm lớp.
     showAppDialog(
       context: context,
-      maxWidth: 400,
+      maxWidth: 360,
+      // [FIX GIAI ĐOẠN 128 — PADDING DIALOG QUÁ LỚN] Mặc định showAppDialog() là EdgeInsets.all(24)
+      // (dành cho popup xác nhận/form THÔNG THƯỜNG, chữ ít) — với 1 GridView nhiều ô như popup
+      // này, 24px mỗi cạnh (48px tổng theo bề ngang) ăn vào đúng phần nên dành cho các ô, khiến
+      // Dialog trông "phình" quá mức cần thiết dù maxWidth đã khoá 400. Giảm còn 16.
+      contentPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
-        child: Consumer<DeviceProvider>(
-          builder: (context, liveProvider, _) {
-            final DeviceModel? live = liveProvider.devices[mac];
-            final bool anyOnline = live?.online ?? channels.any((c) => c['online'] == true);
-            final bool anyOn = channels.any((c) => live?.isOn(c['endpoint'] as String) ?? false);
-            return PhysicalSwitchBlockCard(
-              deviceName: deviceName,
-              cells: _buildFaceplateCellsLive(mac, channels, liveProvider),
-              isOffline: !anyOnline,
-              isHidden: isHidden,
-              isSelectionMode: _isSelectionMode,
-              onOpenDeviceMenu: () => _openFaceplateDeviceMenu(mac, groupKey, deviceName, channels),
-              onToggleAll: masterItem != null ? () => liveProvider.toggleDevice(mac, 'all', anyOn) : null,
-            );
-          },
+        // [FIX GIAI ĐOẠN 129 — YÊU CẦU #2 — OVERFLOW ĐÁY 1.6px] PhysicalSwitchBlockCard bên dưới
+        // dùng Column(mainAxisSize.min) + GridView(shrinkWrap:true) — tổng chiều cao THẬT (header +
+        // Divider + lưới N kênh) đôi khi lệch vài phần thập phân pixel so với ConstrainedBox(maxHeight)
+        // ở trên (làm tròn childAspectRatio 1.0 của Giai đoạn 128 × số hàng lẻ) — trước đây KHÔNG có
+        // đường thoát nào cho phần dư đó ngoài ném RenderFlex overflow. Bọc SingleChildScrollView ở
+        // ĐÚNG ranh giới này: cấp height UNBOUNDED cho nội dung bên trong (Column tự cao theo đúng
+        // nhu cầu, không còn bị ép cắt) trong khi viewport NGOÀI vẫn bị khoá bởi ConstrainedBox —
+        // phần dư (nếu có) biến thành cuộn được thay vì tràn vỡ khung hình.
+        child: SingleChildScrollView(
+          child: StatefulBuilder(
+            builder: (context, setStateDialog) => Consumer<DeviceProvider>(
+              builder: (context, liveProvider, _) {
+                final DeviceModel? live = liveProvider.devices[mac];
+                final bool anyOnline = live?.online ?? channels.any((c) => c['online'] == true);
+                final bool anyOn = channels.any((c) => live?.isOn(c['endpoint'] as String) ?? false);
+                return PhysicalSwitchBlockCard(
+                  deviceName: deviceName,
+                  cells: _buildFaceplateCellsLive(mac, channels, liveProvider, setStateDialog),
+                  isOffline: !anyOnline,
+                  isHidden: isHidden,
+                  isSelectionMode: _isSelectionMode,
+                  onOpenDeviceMenu: () => _openFaceplateDeviceMenu(mac, groupKey, deviceName, channels),
+                  onToggleAll: masterItem != null ? () => liveProvider.toggleDevice(mac, 'all', anyOn) : null,
+                );
+              },
+            ),
+          ),
         ),
       ),
     );
@@ -1101,7 +1254,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// popup) — gọi TỪ BÊN TRONG `Consumer<DeviceProvider>.builder` nên chạy lại MỖI LẦN provider
   /// notify, đảm bảo popup luôn phản ánh đúng trạng thái sống. [channels] chỉ còn dùng cho phần
   /// KHÔNG đổi theo thời gian thực (danh sách endpoint tồn tại + tên mặc định).
-  List<Widget> _buildFaceplateCellsLive(String mac, List<Map<String, dynamic>> channels, DeviceProvider liveProvider) {
+  /// [GIAI ĐOẠN 127] [setStateDialog] = StateSetter riêng của StatefulBuilder bọc Dialog (xem
+  /// _showFaceplateExpanded) — gọi ngay sau khi đổi _selectedDevices/_isSelectionMode để ép Dialog
+  /// (route riêng, KHÔNG tự rebuild theo setState() của _DashboardScreenState) vẽ lại tức thì.
+  List<Widget> _buildFaceplateCellsLive(String mac, List<Map<String, dynamic>> channels, DeviceProvider liveProvider, StateSetter setStateDialog) {
     final DeviceModel? live = liveProvider.devices[mac];
     final List<Widget> cells = [];
     for (final rawItem in channels) {
@@ -1136,6 +1292,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _selectedDevices.contains(hideKey) ? _selectedDevices.remove(hideKey) : _selectedDevices.add(hideKey);
                 if (_selectedDevices.isEmpty) _isSelectionMode = false;
               });
+              // [GIAI ĐOẠN 127] setState() ở trên CHỈ rebuild màn hình chính (đúng lý do "Đã chọn
+              // N" cập nhật đúng) — Dialog là route riêng, PHẢI tự ép vẽ lại qua setStateDialog để
+              // checkmark nảy lên ngay lập tức thay vì đợi gói MQTT kế tiếp kích Consumer rebuild.
+              setStateDialog(() {});
             } else {
               liveProvider.toggleDevice(mac, ep, isOn);
             }
@@ -1499,9 +1659,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final channels = channelsByMac[mac]!;
 
       if (channels.length == 1) {
-        entries.add(_buildSingleSwitchEntry(channels.first, provider));
-      } else {
+        // 1 kênh duy nhất -> KHÔNG có khái niệm Gộp/Tách (chỉ có ý nghĩa khi >=2 kênh).
+        entries.add(_buildSingleSwitchEntry(channels.first, provider, isPartOfMultiChannel: false));
+      } else if (_deviceGrouped[mac] ?? false) {
+        // [GIAI ĐOẠN 125] Người dùng CHỌN Gộp cho MAC này -> khối mặt công tắc như cũ.
         entries.add(_buildFaceplateEntry(mac, channels, masterByMac[mac], provider));
+      } else {
+        // [GIAI ĐOẠN 125 — MẶC ĐỊNH] Chưa từng chọn hoặc đã chọn Tách -> flat-map thành N thẻ đơn
+        // rời rạc (ĐÚNG hành vi mặc định từ trước Giai đoạn 115) — mỗi thẻ tự biết mình thuộc 1
+        // MAC đa kênh (isPartOfMultiChannel: true) để hiện lối vào "Gộp thành 1 thẻ" trong menu.
+        // [GIAI ĐOẠN 126 — TRẢ LẠI CÔNG TẮC TỔNG] masterByMac[mac] LUÔN tồn tại cho mọi MAC đa
+        // kênh (được dựng sẵn ở _buildDevicesGridBody, endpoint 'all', xem [MASTER SWITCH]) —
+        // trước đây nhánh bung-lẻ này KHÔNG emit nó (chỉ dùng cho nhánh Gộp qua
+        // _buildFaceplateEntry), khiến công tắc Tổng biến mất khi Tách. Emit nó làm THẺ ĐẦU TIÊN
+        // qua ĐÚNG _buildSingleSwitchEntry — SmartSwitchCard đã tự vẽ icon riêng (settings_power_
+        // rounded) khi isMaster=true (xem widget ở dưới), không cần thẻ/icon mới.
+        final master = masterByMac[mac];
+        if (master != null) {
+          entries.add(_buildSingleSwitchEntry(master, provider, isPartOfMultiChannel: true));
+        }
+        for (final ch in channels) {
+          entries.add(_buildSingleSwitchEntry(ch, provider, isPartOfMultiChannel: true));
+        }
       }
     }
     return entries;
@@ -1509,15 +1688,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// [GIAI ĐOẠN 115] Thiết bị Công tắc CHỈ 1 kênh — trích Y NGUYÊN logic entry gốc (trước khi có
   /// khối mặt công tắc), KHÔNG đổi 1 dòng hành vi/hình dáng cho đa số thiết bị (1-gang) đang có.
+  /// [GIAI ĐOẠN 125] Nay TÁI DÙNG luôn cho từng kênh của thiết bị đa kênh đang ở chế độ BUNG LẺ
+  /// (isPartOfMultiChannel: true) — thêm lối vào "Gộp thành 1 thẻ" trong menu qua onToggleGrouping.
   ({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight}) _buildSingleSwitchEntry(
     Map<String, dynamic> item,
-    DeviceProvider provider,
-  ) {
+    DeviceProvider provider, {
+    required bool isPartOfMultiChannel,
+  }) {
     final String mac = item['mac'];
     final String ep = item['endpoint'];
     final String deviceKey = "${mac}_$ep";
     final avatarEntry = _tryBuildAvatarEntry(deviceKey, 'switch', item, provider);
     if (avatarEntry != null) {
+      // [GIỚI HẠN ĐÃ BIẾT] Thẻ Avatar tự có UI/menu RIÊNG (_openAvatarDeviceMenu, không đi qua
+      // SmartSwitchCard._showDeviceOptions) — KHÔNG có điểm chèn onToggleGrouping. Nếu kênh này
+      // đang gán Avatar riêng, người dùng cần Gộp lại qua 1 kênh KHÁC cùng MAC chưa gán Avatar
+      // (hoặc qua chính khối đã Gộp nếu trước đó từng Gộp) — chấp nhận được, trường hợp hiếm.
       return (key: deviceKey, mac: mac, widget: avatarEntry.widget, gridSpanX: avatarEntry.gridSpanX, gridSpanY: avatarEntry.gridSpanY, autoHeight: false);
     }
     final bool isDevOnline = item['online'] == true;
@@ -1537,6 +1723,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       rawDeviceData: item['rawDevice'],
       isHidden: _hiddenDevices.contains(deviceKey),
       isSelectionMode: _isSelectionMode,
+      // [GIAI ĐOẠN 125] Chỉ hiện lối vào "Gộp thành 1 thẻ" khi kênh này THẬT SỰ thuộc 1 MAC đa
+      // kênh (>=2 kênh) — thiết bị 1-gang thật sự không có gì để gộp, null tự ẩn mục menu.
+      onToggleGrouping: isPartOfMultiChannel ? () => _setDeviceGrouped(mac, true) : null,
       isSelected: _selectedDevices.contains(deviceKey),
       hasHiddenDevices: _hiddenDevices.isNotEmpty,
       isShowingHidden: _showHiddenFilter,
@@ -1971,6 +2160,55 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (item['isMaster'] == true) { editMasterByMac[mac] = item; continue; }
       editChannelsByMac.putIfAbsent(mac, () => []).add(item);
     }
+    // [GIAI ĐOẠN 125 — GỘP/TÁCH, CHẾ ĐỘ SỬA] Tách phần dựng 1 thẻ SmartSwitchCard đơn ra hàm dùng
+    // chung — vừa phục vụ nhánh 1-gang thật (channels.length == 1) vừa phục vụ nhánh BUNG LẺ (>=2
+    // kênh nhưng _deviceGrouped[mac] != true) bên dưới, tránh lặp y hệt 40 dòng.
+    void addSingleSwitchEntry(Map<String, dynamic> single, String mac) {
+      final String ep = single['endpoint'] as String;
+      final String deviceKey = "${mac}_$ep";
+      final bool isDevOnline = single['online'] == true;
+      final bool isOn = single['state'] == 'ON';
+      final cb = _stdCallbacks(mac, deviceKey, single['name'], endpoint: ep);
+      // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
+      // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
+      // vuông. [GIAI ĐOẠN 104] Cỡ ô nay dùng switchCellWidth (co giãn theo constraints.maxWidth
+      // thật, CHUNG công thức với lưới chế độ thường) thay vì 130px cố định — đảm bảo LUÔN đúng
+      // số cột kể cả màn hình hẹp, và khớp cỡ 1:1 với chế độ thường (không "nhảy" cỡ).
+      addEntry(deviceKey, mac, 'switch', SizedBox(
+        width: switchCellWidth,
+        height: switchCellWidth,
+        child: SmartSwitchCard(
+          key: ValueKey('edit_${mac}_$ep'),
+          mac: mac,
+          endpointKey: ep,
+          backendName: single['name'],
+          initialStatus: isOn,
+          isOffline: !isDevOnline,
+          isMaster: single['isMaster'] == true,
+          provider: provider,
+          onRefresh: _handleRefresh,
+          rawDeviceData: single['rawDevice'],
+          isHidden: _hiddenDevices.contains(deviceKey),
+          isSelectionMode: false,
+          isSelected: false,
+          hasHiddenDevices: false,
+          isShowingHidden: false,
+          onToggleShowHidden: () {},
+          onEnterSelectionMode: () {},
+          onToggleSelect: () {},
+          onToggleHide: (_) {},
+          onDelete: cb.delete,
+          onRename: cb.rename,
+          onAssignHome: cb.assignHome,
+          onAssignRoom: cb.assignRoom,
+          onDeviceTimer: cb.timer,
+          onDeviceHistory: cb.history,
+          onDeviceAutomation: cb.automation,
+          onDeviceShare: cb.share,
+        ),
+      ));
+    }
+
     final Set<String> editEmittedMacs = {};
     for (final item in visibleSwitches) {
       if (item['isMaster'] == true) continue;
@@ -1979,51 +2217,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final channels = editChannelsByMac[mac]!;
 
       if (channels.length == 1) {
-        final single = channels.first;
-        final String ep = single['endpoint'] as String;
-        final String deviceKey = "${mac}_$ep";
-        final bool isDevOnline = single['online'] == true;
-        final bool isOn = single['state'] == 'ON';
-        final cb = _stdCallbacks(mac, deviceKey, single['name'], endpoint: ep);
-        // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
-        // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
-        // vuông. [GIAI ĐOẠN 104] Cỡ ô nay dùng switchCellWidth (co giãn theo constraints.maxWidth
-        // thật, CHUNG công thức với lưới chế độ thường) thay vì 130px cố định — đảm bảo LUÔN đúng
-        // số cột kể cả màn hình hẹp, và khớp cỡ 1:1 với chế độ thường (không "nhảy" cỡ).
-        addEntry(deviceKey, mac, 'switch', SizedBox(
-          width: switchCellWidth,
-          height: switchCellWidth,
-          child: SmartSwitchCard(
-            key: ValueKey('edit_${mac}_$ep'),
-            mac: mac,
-            endpointKey: ep,
-            backendName: single['name'],
-            initialStatus: isOn,
-            isOffline: !isDevOnline,
-            isMaster: single['isMaster'] == true,
-            provider: provider,
-            onRefresh: _handleRefresh,
-            rawDeviceData: single['rawDevice'],
-            isHidden: _hiddenDevices.contains(deviceKey),
-            isSelectionMode: false,
-            isSelected: false,
-            hasHiddenDevices: false,
-            isShowingHidden: false,
-            onToggleShowHidden: () {},
-            onEnterSelectionMode: () {},
-            onToggleSelect: () {},
-            onToggleHide: (_) {},
-            onDelete: cb.delete,
-            onRename: cb.rename,
-            onAssignHome: cb.assignHome,
-            onAssignRoom: cb.assignRoom,
-            onDeviceTimer: cb.timer,
-            onDeviceHistory: cb.history,
-            onDeviceAutomation: cb.automation,
-            onDeviceShare: cb.share,
-          ),
-        ));
-      } else {
+        addSingleSwitchEntry(channels.first, mac);
+      } else if (_deviceGrouped[mac] ?? false) {
         // [KHỐI MẶT CÔNG TẮC — CHẾ ĐỘ SỬA] Callback bên trong đều NO-OP: addEntry() bọc
         // AbsorbPointer ngoài cùng đã chặn hết tương tác (chỉ còn dùng để cầm-kéo), giống hệt
         // nguyên tắc mọi thẻ khác trong chế độ Sửa (xem addEntry ở trên).
@@ -2055,6 +2250,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onExpand: () {},
           ),
         ));
+      } else {
+        // [GIAI ĐOẠN 125 — GỘP/TÁCH, CHẾ ĐỘ SỬA] _deviceGrouped[mac] == false (mặc định) -> khớp
+        // ĐÚNG nhánh "bung lẻ" của _buildSwitchCardEntries (chế độ thường): vẽ N thẻ SmartSwitchCard
+        // rời thay vì 1 khối _FaceplateCompactCard — giữ nguyên tắc "không nhảy hình dạng giữa 2
+        // chế độ" cho đúng lựa chọn Gộp/Tách người dùng đã chọn, không phải luôn luôn gộp như cũ.
+        // [GIAI ĐOẠN 126] Khớp đúng thẻ Tổng vừa trả lại ở _buildSwitchCardEntries — chế độ Sửa
+        // KHÔNG được lệch hình dạng với chế độ thường.
+        final master = editMasterByMac[mac];
+        if (master != null) addSingleSwitchEntry(master, mac);
+        for (final single in channels) {
+          addSingleSwitchEntry(single, mac);
+        }
       }
     }
 
@@ -3623,6 +3830,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('general_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.palette_outlined, color: textMain), title: Text(t.text('appearance_color'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showThemeDialog())]),
+          // [ĐẨY THÔNG BÁO OS] Mở màn Cài đặt loại thông báo muốn nhận đẩy — xem
+          // lib/screens/settings/notification_settings_screen.dart.
+          buildSettingGroup([ListTile(leading: Icon(Icons.notifications_active_outlined, color: textMain), title: Text(t.text('notification_settings'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const NotificationSettingsScreen())))]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('security_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text(t.text('change_password'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
           // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)
@@ -4370,42 +4580,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // [GIAI ĐOẠN 131] Trước đây thẻ này 1 trang tĩnh duy nhất — nay giao lại cho _EnergySliderCard
+  // (StatefulWidget riêng, TỰ giữ PageController — tách khỏi _DashboardScreenState vốn đã rất
+  // lớn, tránh phải nhớ thêm 1 field/dispose() giữa hàng trăm field khác của State khổng lồ này).
   Widget _buildEnergyWidget(bool isDark, Color textMain, Color textSub) {
-    final t = AppTranslations.of(context);
-    // [GIỮ NGUYÊN BIẾN ĐỘNG] '14.5'/'kWh'/'2,104 W'/'124 kWh' là số liệu điện năng (mock chờ
-    // tích hợp thật) — CHỈ nhãn (Điện năng/Hôm nay/Đang tiêu thụ/Tháng này) được dịch.
-    return AppContainer(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(children: [Icon(Icons.bolt_rounded, color: tkGreen, size: 22), const SizedBox(width: 8), Text(t.text('energy'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
-              IconButton(icon: Icon(Icons.open_in_new_rounded, color: textSub, size: 20), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () {})
-            ],
-          ),
-          const SizedBox(height: 16),
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(t.text('today'), style: TextStyle(color: textSub, fontSize: 13)), const SizedBox(height: 4),
-              Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [Text('14.5', style: TextStyle(color: textMain, fontSize: 40, fontWeight: FontWeight.w900)), const SizedBox(width: 4), Text('kWh', style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold))]),
-              const SizedBox(height: 16), Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1), const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  Expanded(child: Column(children: [Text(t.text('consuming'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('2,104 W', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
-                  Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.black12, margin: const EdgeInsets.symmetric(horizontal: 8)),
-                  Expanded(child: Column(children: [Text(t.text('this_month'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), FittedBox(fit: BoxFit.scaleDown, child: Text('124 kWh', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)))])),
-                ],
-              )
-            ],
-          )
-        ],
-      ),
-    );
+    return const _EnergySliderCard();
   }
 
   Widget _buildCameraWidget(bool isDark, Color textMain, Color textSub) {
@@ -4434,18 +4613,140 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton(icon: Icon(Icons.open_in_new_rounded, color: textSub, size: 20), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () {})
+                  // [CAMERA IP — PHẦN 2 + IMOU P2P] Nút "+" giờ cho chọn 2 loại camera — RTSP
+                  // (LAN, media_kit) hoặc Imou P2P (Internet, xem add_imou_camera_dialog.dart).
+                  // Thêm xong nối luôn vào list tương ứng (optimistic, khỏi gọi lại API).
+                  PopupMenuButton<int>(
+                    icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.blueAccent, size: 20),
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Thêm Camera',
+                    itemBuilder: (ctx) => const [
+                      PopupMenuItem(value: 0, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_rounded, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('Camera RTSP (LAN)')])),
+                      PopupMenuItem(value: 1, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.cloud_queue_rounded, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('Camera Imou (Internet)')])),
+                    ],
+                    onSelected: (v) async {
+                      if (v == 0) {
+                        final added = await showAddCameraDialog(context, homeId: currentHomeId);
+                        if (added != null && mounted) setState(() => _cameras = [..._cameras, added]);
+                      } else {
+                        final added = await showAddImouCameraDialog(context, homeId: currentHomeId);
+                        if (added != null && mounted) setState(() => _imouCameras = [..._imouCameras, added]);
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  // [CAMERA IP — PHẦN 3] "Mở rộng" -> Fullscreen LUỒNG CHÍNH của camera đang hiện
+                  // ở ô đầu tiên (chế độ 1 ô) hoặc camera đầu danh sách (chế độ lưới 4 ô).
+                  IconButton(
+                    icon: Icon(Icons.open_in_new_rounded, color: _cameras.isEmpty ? textSub.withValues(alpha: 0.4) : textSub, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: _cameras.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: _cameras.first))),
+                  )
                 ],
               )
             ],
           ),
           const SizedBox(height: 16),
-          _cameraViewMode == 1 
-            ? AspectRatio(aspectRatio: 16 / 9, child: Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_off_rounded, color: textSub, size: 32), const SizedBox(height: 8), Text(t.text('offline'), style: TextStyle(color: textSub, fontSize: 12))]))))
-            : GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3), itemCount: 4, itemBuilder: (context, index) { return Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(8)), child: Center(child: Icon(Icons.videocam_off_rounded, color: textSub))); })
+          if (_cameras.isEmpty)
+            AspectRatio(aspectRatio: 16 / 9, child: Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_off_rounded, color: textSub, size: 32), const SizedBox(height: 8), Text('Chưa có camera nào — bấm nút + để thêm', style: TextStyle(color: textSub, fontSize: 12))]))))
+          else if (_cameraViewMode == 1)
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: CameraPreviewCard(
+                camera: _cameras.first,
+                onMaximize: () => _openCameraEnlarged(_cameras.first),
+                onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: _cameras.first))),
+              ),
+            )
+          else
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3),
+              // [GIỚI HẠN ĐÃ BIẾT] Tối đa 4 ô hiển thị dù có nhiều camera hơn — đúng đúng ý nghĩa
+              // "lưới 4 ô" ban đầu, KHÔNG phân trang/cuộn thêm camera thứ 5+ ở chế độ này.
+              itemCount: _cameras.length > 4 ? 4 : _cameras.length,
+              itemBuilder: (context, index) {
+                final cam = _cameras[index];
+                return CameraPreviewCard(
+                  camera: cam,
+                  onMaximize: () => _openCameraEnlarged(cam),
+                  onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: cam))),
+                );
+              },
+            ),
+          // [CAMERA P2P — IMOU, PHA 1] Danh sách RIÊNG, hiển thị dưới khối RTSP — chưa có video
+          // sống (Pha 2), chỉ thẻ tên+badge+nút Xóa (imou_camera_placeholder_card.dart).
+          if (_imouCameras.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Row(children: [
+              Icon(Icons.cloud_queue_rounded, size: 14, color: textSub),
+              const SizedBox(width: 6),
+              Text('Camera Imou (P2P)', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
+            ]),
+            const SizedBox(height: 8),
+            ...[for (final cam in _imouCameras) ...[
+              ImouCameraPlaceholderCard(camera: cam, onDelete: () => _deleteImouCamera(cam)),
+              const SizedBox(height: 6),
+            ]],
+          ],
         ],
       ),
     );
+  }
+
+  // [CAMERA P2P — IMOU — XÓA CAMERA] Xác nhận rồi gọi deleteImouCamera(); chỉ gỡ khỏi
+  // [_imouCameras] khi Server xác nhận xóa thành công (không optimistic-xóa trước).
+  Future<void> _deleteImouCamera(ImouCameraModel camera) async {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : Colors.black54;
+
+    final bool? confirmed = await showAppDialog<bool>(
+      context: context,
+      maxWidth: 400,
+      child: Builder(builder: (ctx) {
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Xóa camera "${camera.name}"?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Camera sẽ được gỡ khỏi tài khoản Imou và không còn hiện trong danh sách.', style: TextStyle(color: textSub)),
+            const SizedBox(height: 24),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+          ],
+        );
+      }),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final bool ok = await ApiService().deleteImouCamera(currentHomeId, camera.id);
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _imouCameras = _imouCameras.where((c) => c.id != camera.id).toList());
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Xóa camera thất bại — kiểm tra kết nối và thử lại')));
+    }
+  }
+
+  // [CAMERA IP — XÓA CAMERA] Mở Dialog Phóng to; nếu người dùng xóa camera từ trong đó
+  // (showCameraEnlargedDialog trả về true khi Server đã xác nhận xóa), tự gỡ khỏi [_cameras]
+  // ngay — cùng kiểu optimistic-update đã dùng cho lúc thêm camera (nút "+" ở trên).
+  Future<void> _openCameraEnlarged(CameraModel camera) async {
+    final bool deleted = await showCameraEnlargedDialog(context, homeId: currentHomeId, camera: camera);
+    if (deleted && mounted) {
+      setState(() => _cameras = _cameras.where((c) => c.id != camera.id).toList());
+    }
   }
 
   // [FIX CĂN LỀ] Icon/Tiêu đề/Giá trị giờ nằm thẳng hàng CHÍNH GIỮA thẻ (không còn bám lề trái):
@@ -5709,6 +6010,236 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
 }
 
 // ============================================================================
+// ⚡ GIAI ĐOẠN 131 — THẺ ĐIỆN NĂNG DẠNG VUỐT (PAGEVIEW SLIDER)
+// ============================================================================
+/// Header (dòng "Điện năng" + nút Mở rộng) CỐ ĐỊNH — chỉ phần Content bên dưới vuốt được qua 3
+/// trang: (1) Tổng quan tiêu thụ — GIỮ NGUYÊN 100% nội dung/số liệu mock cũ (không đổi 1 dòng),
+/// (2) Tổng quan Điện mặt trời (PV/Ắc quy), (3) Top thiết bị tiêu thụ. Nút Mở rộng điều hướng
+/// sang [FullEnergyDashboardScreen] (màn hình chi tiết 3 Tab, Giai đoạn 131).
+class _EnergySliderCard extends StatefulWidget {
+  const _EnergySliderCard();
+
+  @override
+  State<_EnergySliderCard> createState() => _EnergySliderCardState();
+}
+
+class _EnergySliderCardState extends State<_EnergySliderCard> {
+  final PageController _pageController = PageController();
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    const Color tkGreen = Color(0xFF00A651);
+    final t = AppTranslations.of(context);
+
+    return AppContainer(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // [CẤU TRÚC TĨNH — HEADER] Row cố định, KHÔNG nằm trong PageView — luôn hiện bất kể
+          // đang vuốt ở trang nào.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(children: [Icon(Icons.bolt_rounded, color: tkGreen, size: 22), const SizedBox(width: 8), Text(t.text('energy'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
+              // [PHẦN 2 — ĐIỀU HƯỚNG] Trước đây onPressed rỗng — nay mở FullEnergyDashboardScreen.
+              IconButton(
+                icon: Icon(Icons.open_in_new_rounded, color: textSub, size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const FullEnergyDashboardScreen())),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // [FIX GIAI ĐOẠN 132 — OVERFLOW 8px] KHÔNG bọc PageView bằng Expanded như đề xuất ban
+          // đầu: Card này (AppContainer) luôn sống bên trong 1 Column đặt trực tiếp trong
+          // SingleChildScrollView ở CẢ 2 nơi gọi (_buildDesktopContent dòng ~4248,
+          // _buildMobileContent dòng ~4322) — SingleChildScrollView cấp height UNBOUNDED cho
+          // Column con của nó. Khi Kính bật, đường đi còn xuyên qua `_GlassSurface` (đặt `child`
+          // vào 1 `Stack` không set width/height, xem app_ui_wrappers.dart) — Stack không set
+          // kích thước dưới constraint unbounded tiếp tục truyền unbounded xuống. Bọc Expanded ở
+          // đây sẽ ném ĐÚNG lớp lỗi RenderFlex "non-zero flex nhưng constraint unbounded" (CRASH
+          // cứng, không phải chỉ overflow) — cùng họ lỗi đã xác nhận ở Cửa Gara (Giai đoạn 121) và
+          // đã kiểm chứng an toàn ở BarrierGateAvatar (Giai đoạn 129, nơi AvatarShell LUÔN ép
+          // height cụ thể nên khác hẳn trường hợp này). SizedBox chiều cao CỐ ĐỊNH mới là lựa chọn
+          // ĐÚNG — root cause overflow 8px thật sự nằm ở NỘI DUNG BÊN TRONG (Trang 1 hơi cao hơn
+          // 148px cấp cho nó), khắc phục bằng cách 2 dưới đây (giảm spacing + FittedBox) + gộp
+          // Page Indicator ĐÈ LÊN (Stack+Positioned, không còn SizedBox+Center RIÊNG bên ngoài
+          // PageView nữa) — vừa đúng phương án "Stack" user đề xuất làm lựa chọn thay thế, vừa lấy
+          // lại ~24px khoảng trống Column từng dành cho indicator, cho card gọn hẳn xuống dưới.
+          SizedBox(
+            height: 132,
+            child: Stack(
+              children: [
+                PageView(
+                  controller: _pageController,
+                  children: [
+                    _buildConsumptionPage(isDark, textMain, textSub, tkGreen, t),
+                    _buildSolarPage(isDark, textMain, textSub, tkGreen),
+                    _buildTopDevicesPage(isDark, textMain, textSub, tkGreen),
+                  ],
+                ),
+                // [PAGE INDICATOR — ĐÈ LỠ LƠ LỬNG] Positioned đáy, KHÔNG chiếm thêm chiều cao vật
+                // lý của Column cha — mỗi trang tự chừa khoảng trống đáy tương ứng (xem
+                // _buildConsumptionPage/_buildSolarPage/_buildTopDevicesPage) để không đè lên chữ.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 2,
+                  child: Center(
+                    child: SmoothPageIndicator(
+                      controller: _pageController,
+                      count: 3,
+                      effect: ExpandingDotsEffect(
+                        dotHeight: 5,
+                        dotWidth: 5,
+                        spacing: 5,
+                        activeDotColor: tkGreen,
+                        dotColor: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.15),
+                      ),
+                      onDotClicked: (i) => _pageController.animateToPage(i, duration: const Duration(milliseconds: 300), curve: Curves.easeOut),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- Trang 1: Tổng quan tiêu thụ — nội dung/số liệu GIỮ NGUYÊN, bọc "viên đạn bạc" FittedBox
+  // TOÀN TRANG (Giai đoạn 133, xem giải thích kỹ thuật đầy đủ ở build() phía trên) ---
+  Widget _buildConsumptionPage(bool isDark, Color textMain, Color textSub, Color tkGreen, AppTranslations t) {
+    // [GIỮ NGUYÊN BIẾN ĐỘNG] '14.5'/'kWh'/'2,104 W'/'124 kWh' là số liệu điện năng (mock chờ
+    // tích hợp thật) — CHỈ nhãn (Hôm nay/Đang tiêu thụ/Tháng này) được dịch.
+    return _buildScaledPageContent(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(t.text('today'), style: TextStyle(color: textSub, fontSize: 13)), const SizedBox(height: 2),
+          Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [Text('14.5', style: TextStyle(color: textMain, fontSize: 40, fontWeight: FontWeight.w900)), const SizedBox(width: 4), Text('kWh', style: TextStyle(color: tkGreen, fontSize: 16, fontWeight: FontWeight.bold))]),
+          const SizedBox(height: 6), Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1), const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(child: Column(children: [Text(t.text('consuming'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), Text('2,104 W', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))])),
+              Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.black12, margin: const EdgeInsets.symmetric(horizontal: 8)),
+              Expanded(child: Column(children: [Text(t.text('this_month'), style: TextStyle(color: textSub, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis), const SizedBox(height: 4), Text('124 kWh', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))])),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // [GIAI ĐOẠN 133 — "VIÊN ĐẠN BẠC" FITTEDBOX, DÙNG CHUNG CHO CẢ 3 TRANG] FittedBox cấp
+  // UNCONSTRAINED (0..∞) cho [content] ở CẢ 2 TRỤC, không chỉ chiều cao — nếu để [content] (Column
+  // chứa Divider/Row có Expanded) trực tiếp nhận constraint đó, Divider (tự expand theo chiều
+  // rộng) VÀ mọi Row bên trong có Expanded sẽ ném "BoxConstraints forces an infinite width" —
+  // MỘT LỚP CRASH KHÁC, không phải overflow, thậm chí còn dễ vỡ hơn lỗi ban đầu. Chốt chặn:
+  // SizedBox(width: 260) ĐẶT TRƯỚC KHI vào Column — tái lập lại 1 chiều rộng THAM CHIẾU hữu hạn
+  // (260, xấp xỉ bề ngang nội dung thật của thẻ) cho TOÀN BỘ cây con NGAY LẬP TỨC, khiến Divider/
+  // Expanded phía trong an toàn tuyệt đối — FittedBox bên ngoài vẫn tự do co giãn cả khối 260 đó
+  // (rộng lẫn cao) vừa khít không gian THẬT do PageView cấp, đúng tinh thần "viên đạn bạc".
+  Widget _buildScaledPageContent(Widget content) {
+    return Padding(
+      // [CHỪA CHỖ CHO PAGE INDICATOR ĐÈ LÊN] indicator Positioned đáy (xem build()) — phần chừa
+      // này nằm TRONG vùng được FittedBox co giãn cùng, tự thu nhỏ đồng bộ với chữ khi chật.
+      padding: const EdgeInsets.only(bottom: 12),
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.center,
+        child: SizedBox(width: 260, child: content),
+      ),
+    );
+  }
+
+  // --- Trang 2: Tổng quan Điện mặt trời (PV Generation + Trạng thái Ắc quy) ---
+  // [MOCK — CHỜ TÍCH HỢP THẬT] Cùng tình trạng với Trang 1 trước Giai đoạn 131: chưa có cảm biến
+  // PV/BMS ắc quy nào bắn số liệu thật lên Server — số liệu ở đây CỐ ĐỊNH, chỉ minh hoạ bố cục.
+  Widget _buildSolarPage(bool isDark, Color textMain, Color textSub, Color tkGreen) {
+    const Color solarYellow = Color(0xFFFFC107);
+    const Color batteryBlue = Color(0xFF2196F3);
+    return _buildScaledPageContent(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(
+                child: Column(children: [
+                  Icon(Icons.solar_power_rounded, color: solarYellow, size: 22),
+                  const SizedBox(height: 4),
+                  Text('3.2 kW', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text('PV đang sinh', style: TextStyle(color: textSub, fontSize: 10)),
+                ]),
+              ),
+              Container(width: 1, height: 44, color: isDark ? Colors.white10 : Colors.black12),
+              Expanded(
+                child: Column(children: [
+                  Icon(Icons.battery_charging_full_rounded, color: batteryBlue, size: 22),
+                  const SizedBox(height: 4),
+                  Text('68%', style: TextStyle(color: textMain, fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text('Ắc quy (đang sạc)', style: TextStyle(color: textSub, fontSize: 10)),
+                ]),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6), Divider(color: isDark ? Colors.white10 : Colors.black12, height: 1), const SizedBox(height: 6),
+          Text('Sản lượng hôm nay: 9.6 kWh', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  // --- Trang 3: Top thiết bị tiêu thụ ---
+  Widget _buildTopDevicesPage(bool isDark, Color textMain, Color textSub, Color tkGreen) {
+    // [MOCK — CHỜ TÍCH HỢP THẬT] Xem energy_sample_data.dart cho bản đầy đủ dùng ở
+    // FullEnergyDashboardScreen — ở đây chỉ trích Top-3 gọn cho vừa 1 trang thẻ thu nhỏ.
+    const List<({String name, String kwh})> top = [
+      (name: 'Điều hòa Phòng khách', kwh: '5.0 kWh'),
+      (name: 'Công tơ tổng', kwh: '3.2 kWh'),
+      (name: 'Bình nóng lạnh', kwh: '1.6 kWh'),
+    ];
+    return _buildScaledPageContent(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (final d in top)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                children: [
+                  Icon(Icons.bolt_rounded, size: 14, color: tkGreen),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(d.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textMain, fontSize: 12.5, fontWeight: FontWeight.w600))),
+                  Text(d.kwh, style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
 // 💡 CÔNG TẮC ĐÈN CHIA 3 CỘT (MOBILE) VÀ NỀN SOLID GREEN KHI BẬT
 // ============================================================================
 class SmartSwitchCard extends StatefulWidget {
@@ -5747,6 +6278,11 @@ class SmartSwitchCard extends StatefulWidget {
   // [NHÓM] Bấm nút tổng của nhóm ảo -> điều khiển TẤT CẢ thành viên (turnOn = trạng thái
   // muốn chuyển tới). non-null CHỈ khi isGroup; nhóm KHÔNG bắn lệnh vào MAC ảo "GROUP_xxx".
   final void Function(bool turnOn)? onGroupToggle;
+  // [GIAI ĐOẠN 125 — GỘP/TÁCH CÔNG TẮC ĐA KÊNH] null = thẻ này KHÔNG thuộc 1 MAC đa kênh nào (1-
+  // gang thật, hoặc là 1 kênh của MAC đa kênh nhưng đang hiện dạng gán Avatar riêng — không đi
+  // qua đường này) -> KHÔNG hiện mục menu. Khác null = thẻ đang BUNG LẺ (1 trong N kênh cùng MAC)
+  // -> hiện mục "Gộp thành 1 thẻ" trong menu nhấn giữ, gọi callback này để chuyển sang chế độ Gộp.
+  final VoidCallback? onToggleGrouping;
 
   const SmartSwitchCard({
     super.key,
@@ -5767,6 +6303,7 @@ class SmartSwitchCard extends StatefulWidget {
     this.isGroup = false,
     this.onEditGroup,
     this.onGroupToggle,
+    this.onToggleGrouping,
   });
 
   @override
@@ -5863,6 +6400,13 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
             color: Colors.orange,
             onTap: () { if (widget.onToggleShowHidden != null) widget.onToggleShowHidden!(); },
           ),
+        // [GIAI ĐOẠN 125 — GỘP/TÁCH] Chỉ hiện khi thẻ này thuộc 1 MAC đa kênh đang BUNG LẺ.
+        if (widget.onToggleGrouping != null)
+          DeviceMenuItem(
+            icon: Icons.view_module_rounded,
+            title: 'Gộp thành 1 thẻ',
+            onTap: widget.onToggleGrouping!,
+          ),
       ],
     );
   }
@@ -5955,23 +6499,23 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 // Chuyển nhà/Xóa CẢ THIẾT BỊ) — khớp đúng cách người dùng nghĩ về 1 mặt công tắc vật lý: đổi tên
 // từng nút thì làm ngay tại nút, còn "cài đặt thiết bị"/"xóa" là việc của CẢ CÁI mặt công tắc.
 
-/// Một Ô BẤM bên trong khối — KHÔNG tự có shell/viền/blur riêng (khối cha PhysicalSwitchBlockCard
-/// cấp NỀN KÍNH DÙNG CHUNG + đường viền phân cách giữa các ô, xem buildGrid()) — chỉ là
-/// icon+nhãn+InkWell. Stateless: mọi prop đọc trực tiếp mỗi lần build lại (không cần local state
-/// mirror như SmartSwitchCard — khối cha đã rebuild toàn bộ mỗi khi DeviceProvider đổi).
+/// Một Ô BẤM bên trong khối — KHÔNG tự có shell/blur riêng (khối cha PhysicalSwitchBlockCard
+/// cấp NỀN KÍNH DÙNG CHUNG, xem buildGrid()) — chỉ là icon+nhãn+InkWell. Stateless: mọi prop đọc
+/// trực tiếp mỗi lần build lại (không cần local state mirror như SmartSwitchCard — khối cha đã
+/// rebuild toàn bộ mỗi khi DeviceProvider đổi).
 ///
 /// [FIX GIAI ĐOẠN 116 — CHỌN NHIỀU TRẢ VỀ ĐÚNG TỪNG NÚT] Trước đây "Chọn nhiều" gộp theo CẢ
 /// KHỐI (mac trần) — SAI, vì _selectedMacs()/_bulkCreateGroup (Nhóm ảo/Cầu thang) vốn hoạt động
 /// độc lập theo TỪNG hideKey (mac_endpoint) từ trước giờ, không hề đổi. Nay mỗi nút tự có
 /// isSelectionMode/isSelected/checkbox RIÊNG — đúng data model gốc, chỉ hình dáng (layout) đổi.
 ///
-/// [GIAI ĐOẠN 117 — PHÍM 3D NỔI (NEUMORPHIC)] Đập bỏ nền phẳng+Divider — mỗi nút giờ là MỘT khối
-/// riêng biệt: bo góc + đổ 2 lớp bóng (sáng góc trên-trái, tối góc dưới-phải) tạo cảm giác lồi lên
-/// khỏi mặt kính. TẮT = nền kính/tối trung tính, icon+chữ nhạt. BẬT = phủ gradient màu thương
-/// hiệu (tkGreen — DÙNG ĐÚNG màu tkGreen xuyên suốt toàn app thay vì bịa xanh dương mới, giữ nhất
-/// quán thị giác với mọi thẻ khác), icon+chữ trắng tinh, đổ thêm bóng màu (glow) cho cảm giác
-/// "sáng đèn". Icon 38px (trong khoảng 36-42 theo yêu cầu) — cân đối với khối nổi lớn hơn hẳn
-/// bản phẳng cũ.
+/// [GIAI ĐOẠN 128 — ĐỒNG BỘ DESIGN SYSTEM VỚI THẺ ĐƠN] Đập bỏ HẲN 2 phong cách riêng của Giai
+/// đoạn 117 (Neumorphic 3D nổi) và 119 (Neon Glow viền-mà-không-đổ-nền) — cả 2 khiến thẻ kênh
+/// TRONG popup trông "khác hệ" hoàn toàn so với SmartSwitchCard NGOÀI Dashboard. Nay sao chép Y
+/// HỆT công thức màu/viền/bo góc của SmartSwitchCard (xem build() của _SmartSwitchCardState):
+/// BẬT = nền ĐẶC tkGreen (Solid Background, không phải viền glow), TẮT = nền trung tính theo
+/// Theme, Ngoại tuyến = xám — popup phải là "bản sao thu nhỏ" của thẻ ngoài, không phải một ngôn
+/// ngữ thị giác riêng của chính nó.
 class _SwitchGangButton extends StatelessWidget {
   final String name;
   final bool isOn;
@@ -5993,108 +6537,77 @@ class _SwitchGangButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    // tkGreen: CHỈ còn dùng cho huy hiệu tick-chọn (isSelectionMode, cuối build()) — đồng bộ màu
-    // "đã chọn" với mọi UI chọn nhiều khác trong app; KHÔNG dùng cho trạng thái BẬT/TẮT nữa (đã
-    // đổi sang Colors.greenAccent theo phong cách Neon Glow, xem bên dưới).
     const Color tkGreen = Color(0xFF00A651);
     final bool lit = isOn && !isOffline;
 
-    // [GIAI ĐOẠN 119 — NEON GLOW, BỎ ĐỔ FULL MÀU NỀN] Theo yêu cầu tường minh: nền KHÔNG BAO GIỜ
-    // đổ xanh nữa (kể cả lúc BẬT) — chỉ đổi VIỀN + BÓNG TỎA (glow) sang Colors.greenAccent. TẮT
-    // giữ nguyên tông xám/tối trung tính + bóng nổi neumorphic (Giai đoạn 117, KHÔNG đụng).
-    final Color ringColor = isOffline ? Colors.grey.withValues(alpha: 0.5) : (lit ? Colors.greenAccent : Colors.grey);
-    final Color textColor = isOffline ? Colors.grey : (lit ? Colors.greenAccent : (isDark ? Colors.white70 : Colors.black87));
+    // [GIAI ĐOẠN 128] Copy Y HỆT bgColor/textColor/powerIconColor/border của SmartSwitchCard —
+    // chỉ đổi tên biến "isOnline" (thẻ đơn) thành "lit" (khớp tên đã dùng sẵn ở đây), cùng công
+    // thức tuyệt đối, không tự sáng tạo thêm bảng màu riêng.
+    final Color bgColor = isOffline
+        ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200)
+        : (lit ? tkGreen : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)));
+    final Color textColor = isOffline ? Colors.grey : (lit ? Colors.white : (isDark ? Colors.white : Colors.black87));
+    final Color powerIconColor = isOffline ? Colors.grey.withValues(alpha: 0.4) : (lit ? Colors.white : (isDark ? Colors.white24 : Colors.grey.shade400));
+    final Color typeIconColor = isOffline ? Colors.grey : (lit ? Colors.white : tkGreen);
+    final Border border = Border.all(
+      color: isSelected ? tkGreen : (isOffline ? Colors.grey.withValues(alpha: 0.3) : (lit ? tkGreen : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white))),
+      width: isSelected ? 3.0 : 1.5,
+    );
 
-    // Nền LUÔN trung tính (tối/xám kính) — không còn nhánh màu riêng cho lit nữa.
-    final Color bgColor = isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF243248) : Colors.white);
-    final Border? border = lit ? Border.all(color: Colors.greenAccent, width: 1.5) : null;
-    final List<BoxShadow> boxShadow = lit
-        ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.3), blurRadius: 12, spreadRadius: 2)]
-        // TẮT: giữ nguyên 2 lớp bóng nổi neumorphic (Giai đoạn 117) — yêu cầu lần này chỉ đổi
-        // style lúc BẬT, không đụng cảm giác "phím nổi" lúc tắt.
-        : [
-            BoxShadow(color: isDark ? Colors.black.withValues(alpha: 0.5) : Colors.black.withValues(alpha: 0.12), blurRadius: 8, offset: const Offset(3, 4)),
-            BoxShadow(color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white, blurRadius: 6, offset: const Offset(-3, -3)),
-          ];
-
-    // [FIX GIAI ĐOẠN 116 — LAYOUT KHÔNG CÒN CẦN CHIỀU CAO BOUNDED] mainAxisSize.min (thay vì mặc
-    // định .max) — nút tự cao theo đúng nội dung (icon+chữ), không đòi hỏi cha phải cấp chiều cao
-    // xác định — VẪN GIỮ ở bản 3D này (nguyên nhân crash gốc chưa đổi, xem PhysicalSwitchBlockCard).
+    // [YÊU CẦU #4 — BO GÓC KHỚP THẺ NGOÀI] 16, giống hệt SmartSwitchCard (trước đây 14).
+    // [YÊU CẦU #3 — KHÔNG CÒN margin quanh từng ô] Khoảng cách giữa các ô nay do
+    // mainAxisSpacing/crossAxisSpacing của GridView đảm nhiệm (xem buildGrid() ở
+    // PhysicalSwitchBlockCard) — Container margin riêng trước đây (Giai đoạn 117) sẽ CỘNG DỒN
+    // với spacing của Grid, gây khoảng trống thừa "phình" đúng như user phản ánh.
     return Container(
-      margin: const EdgeInsets.all(5), // [YÊU CẦU #1] 4-8px — tạo rãnh gạch giữa các phím
-      // [YÊU CẦU #1 — user yêu cầu lại] KHÔNG thêm alignment: Alignment.center ở ĐÂY — Container
-      // này KHÔNG phải cha trực tiếp của Column (còn 3 lớp Material->InkWell->Padding->Stack ở
-      // giữa, xem Giai đoạn 118), thêm alignment vào đây bọc Material trong Align -> đổi từ
-      // constraint CHẶT sang LỎNG -> vùng chạm/ripple co lại chỉ vừa icon+chữ, để một rìa "chết"
-      // quanh phím không bấm được — regression đã giải thích ở Giai đoạn 118, giữ nguyên quyết
-      // định đó. Căn giữa THẬT đã đúng 100% qua Stack(alignment: Alignment.center) bên dưới.
-      decoration: BoxDecoration(
-        color: bgColor,
-        border: border,
-        borderRadius: BorderRadius.circular(14), // [YÊU CẦU #1] 12-16px
-        boxShadow: boxShadow,
-      ),
+      decoration: BoxDecoration(color: bgColor, border: border, borderRadius: BorderRadius.circular(16)),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias, // ripple giới hạn ĐÚNG trong khối bo góc này, không lem ra ngoài
         child: InkWell(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(16),
           onTap: isOffline && !isSelectionMode ? null : onTap,
           onLongPress: isSelectionMode ? null : onLongPress,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-            // [FIX GIAI ĐOẠN 118 — NGUYÊN NHÂN THẬT CỦA "DÍNH MÉP TRÁI-TRÊN"] Column bên dưới ĐÃ
-            // có đủ mainAxisSize.min + mainAxisAlignment/crossAxisAlignment.center từ Giai đoạn
-            // 117 — tự thân nó xếp Icon+Text đúng giữa BÊN TRONG chính nó. NHƯNG Stack (thêm vào
-            // để vẽ huy hiệu tick chọn khi Chọn nhiều) mặc định `alignment: AlignmentDirectional.
-            // topStart` — Column co lại vừa khít nội dung (mainAxisSize.min) rồi bị STACK dán vào
-            // góc trên-trái của toàn bộ vùng còn lại, bất kể bản thân Column có tự căn giữa nội bộ
-            // hay không. Đây là gốc rễ thật — KHÔNG phải do Container 3D ngoài cùng thiếu
-            // `alignment` (thêm alignment vào ĐÓ sẽ bọc Material trong Align -> cấp constraint
-            // LỎNG thay vì CHẶT -> vùng chạm/ripple co lại chỉ vừa icon+chữ, để lại rìa "chết"
-            // không bấm được quanh phím — một regression khác, nên KHÔNG làm theo đúng y chang).
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                // [YÊU CẦU #2] Căn giữa tuyệt đối — cả 2 trục.
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    // [YÊU CẦU #3 — VÒNG TRÒN BAO ICON] Icon giờ nằm TRONG một vòng tròn viền
-                    // riêng — viền/màu icon đổi theo lit (xanh neon khi BẬT, xám khi TẮT/mất kết
-                    // nối), ĐỘC LẬP với viền+bóng glow của cả khối (2 lớp viền tách biệt: khối
-                    // ngoài + vòng tròn trong, cùng tông màu để đồng bộ thị giác).
-                    Container(
-                      padding: const EdgeInsets.all(8.0),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: ringColor, width: 1.5),
-                      ),
-                      child: Icon(isOffline ? Icons.cloud_off_rounded : Icons.power_settings_new_rounded, size: 28.0, color: ringColor),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(name, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w800)),
-                  ],
-                ),
-                if (isSelectionMode)
-                  Positioned(
-                    top: -2,
-                    right: -2,
-                    child: Container(
-                      padding: const EdgeInsets.all(1),
-                      decoration: BoxDecoration(color: isDark ? const Color(0xFF243248) : Colors.white, shape: BoxShape.circle),
-                      child: Icon(
-                        isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                        size: 16,
-                        color: isSelected ? tkGreen : (isDark ? Colors.white38 : Colors.grey.shade400),
-                      ),
+          // [YÊU CẦU #4 — KHỚP LAYOUT ICON/TEXT VỚI THẺ NGOÀI] Cùng cấu trúc Stack với
+          // SmartSwitchCard: icon loại nhỏ góc trên-trái, icon Power CĂN GIỮA tuyệt đối, tên nằm
+          // DƯỚI CÙNG — không còn Column-lồng-trong-Padding riêng của bản Neumorphic cũ.
+          child: Stack(
+            children: [
+              Positioned(top: 8, left: 8, child: Icon(isOffline ? Icons.cloud_off_rounded : Icons.lightbulb_outline, size: 15, color: typeIconColor)),
+              if (isSelectionMode)
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    padding: const EdgeInsets.all(1),
+                    decoration: BoxDecoration(color: isDark ? const Color(0xFF243248) : Colors.white, shape: BoxShape.circle),
+                    child: Icon(
+                      isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                      size: 15,
+                      color: isSelected ? tkGreen : (isDark ? Colors.white38 : Colors.grey.shade400),
                     ),
                   ),
-              ],
-            ),
+                ),
+              // [FIX GIAI ĐOẠN 129 — YÊU CẦU #3.2] size:32 -> 47 + padding(bottom:14,top:10) — COPY
+              // Y HỆT giá trị thật của icon Power ở SmartSwitchCard ngoài Dashboard (dòng ~6066),
+              // không bịa số mới, để 2 icon tuyệt đối bằng nhau giữa thẻ trong Popup và thẻ ngoài.
+              Align(
+                alignment: Alignment.center,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 14.0, top: 10.0),
+                  child: Icon(Icons.power_settings_new_rounded, color: powerIconColor, size: 47),
+                ),
+              ),
+              // [FIX GIAI ĐOẠN 129] fontSize 10.5 -> 11 + height 1.15 -> 1.2 — khớp Y HỆT Text tên
+              // thiết bị của SmartSwitchCard (dòng ~6067: fontSize:11, height:1.2, maxLines:2).
+              Positioned(
+                bottom: 8,
+                left: 6,
+                right: 6,
+                child: Text(name, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.bold, height: 1.2)),
+              ),
+            ],
           ),
         ),
       ),
@@ -6166,12 +6679,16 @@ class PhysicalSwitchBlockCard extends StatelessWidget {
     // riêng cho từng số kênh (nguồn của toàn bộ rủi ro crash Giai đoạn 116/121) — LUÔN dùng ĐÚNG 1
     // GridView.builder(shrinkWrap:true) như yêu cầu tường minh: tự thu gọn chiều cao theo đúng số
     // kênh (2 kênh -> lưới thấp, 8 kênh -> lưới cao hơn), không tràn/không thừa khoảng trống.
+    // [FIX GIAI ĐOẠN 128/129 — VUÔNG + SPACING] childAspectRatio 1.3 (dẹt ngang) -> 1.0 (VUÔNG
+    // chuẩn, khớp tỉ lệ SmartSwitchCard ngoài Dashboard). mainAxisSpacing/crossAxisSpacing 10 -> 16
+    // (Giai đoạn 129, yêu cầu #3.1 — Popup thu hẹp còn maxWidth 360 nên mỗi ô cũng NHỎ LẠI theo, cần
+    // spacing rộng hơn để không dính khít phản tác dụng với Yêu cầu #3.2 phóng to icon Power).
     Widget buildGrid() {
       if (n == 0) return const SizedBox();
       return GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.3, mainAxisSpacing: 4, crossAxisSpacing: 4),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.0, mainAxisSpacing: 16, crossAxisSpacing: 16),
         itemCount: n,
         itemBuilder: (_, i) => cells[i],
       );
@@ -6236,7 +6753,7 @@ class PhysicalSwitchBlockCard extends StatelessWidget {
                       ),
                   ]),
                   Divider(height: 1, thickness: 1, color: dividerColor),
-                  Padding(padding: const EdgeInsets.all(8), child: buildGrid()),
+                  Padding(padding: const EdgeInsets.all(12), child: buildGrid()),
                 ],
               ),
             ),
@@ -6780,9 +7297,14 @@ Future<void> showDeviceSettingsPopup(
   // thẳng vào child: của showAppDialog.
   // [FIX — Chữ vỡ layout] maxWidth: 440 khớp ĐÚNG ConstrainedBox nội bộ của
   // DeviceSettingsPopup — trước đây bị showAppDialog mặc định 420 bóp nhẹ xuống dưới ý đồ gốc.
+  // [FIX GIAI ĐOẠN 124 — TĂNG ĐỘ ĐỤC KÍNH SÁNG] kGlassFrostFill mặc định (showAppDialog không
+  // truyền glassTint) chỉ 5% trắng — quá trong suốt trên nền Sáng+Kính, đúng nguyên nhân "chữ đen
+  // tiệp vào nền" user báo. Gọi TỪ chuỗi tap-handler (mở popup) -> context.read, không watch.
+  final bool isGlassNow = context.read<ThemeProvider>().isGlassThemeEnabled;
   return showAppDialog(
     context: context,
     maxWidth: 440,
+    glassTint: (isGlassNow && !isDark) ? Colors.white.withValues(alpha: 0.82) : null,
     child: DeviceSettingsPopup(
       isDark: isDark,
       mac: mac,
@@ -6821,7 +7343,17 @@ class DeviceSettingsPopup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX GIAI ĐOẠN 124 — TƯƠNG PHẢN SÁNG+KÍNH] 0xFF64748B (slate nhạt) quá mờ trên nền kính —
+    // đổi textSub (dòng phụ/chú thích) sang Colors.black54 theo yêu cầu tường minh. Tối GIỮ NGUYÊN.
+    final Color textSub = isDark ? Colors.white54 : Colors.black54;
+    // [FIX GIAI ĐOẠN 124] labelColor — riêng cho NHÃN (specRow label, icon đi kèm, tiêu đề mục)
+    // ĐẬM HƠN textSub 1 bậc — Sáng: black87 (yêu cầu tường minh); Tối GIỮ NGUYÊN như trước (các
+    // nhãn/icon này TRƯỚC ĐÂY dùng chung textSub cũ, ở Tối là white54 — không đổi gì cho Tối).
+    final Color labelColor = isDark ? Colors.white54 : Colors.black87;
+    // [FIX GIAI ĐOẠN 124 — TIÊU ĐỀ MỤC NỔI BẬT] "THÔNG SỐ KỸ THUẬT"/"Điều khiển Quạt" trước đây
+    // dùng chung textSub (mờ, lẫn nền) — Sáng đổi sang tkGreen đậm (màu chính app, yêu cầu tường
+    // minh "Primary Color tone đậm"); Tối GIỮ NGUYÊN textSub như trước.
+    final Color sectionHeaderColor = isDark ? textSub : tkGreen;
     // An toàn: build() của StatelessWidget này LÀ 1 pha build thật -> context.watch() nội bộ
     // của AppTranslations.of() hợp lệ; các closure bên dưới (kể cả trong ListenableBuilder)
     // dùng lại biến `t` này qua closure capture, không cần gọi lại .of(context) lần nữa.
@@ -6845,13 +7377,16 @@ class DeviceSettingsPopup extends StatelessWidget {
     // hiệu chỉnh "Thời gian hành trình" riêng của Cửa cuốn.
     final String deviceCategory = (rawDeviceData['category'] ?? metadata['category'] ?? '').toString().toLowerCase();
 
+    // [FIX GIAI ĐOẠN 124] Icon + Label dùng labelColor (ĐẬM hơn textSub) — yêu cầu tường minh
+    // "Icon phải đồng bộ màu với Label", cả 2 đều là nhãn tĩnh (khác Value — dữ liệu thật, giữ
+    // textMain đậm nhất + bold để phân cấp thị giác rõ ràng).
     Widget specRow(IconData icon, String label, String value) => Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          Icon(icon, size: 18, color: textSub),
+          Icon(icon, size: 18, color: labelColor),
           const SizedBox(width: 10),
-          Text(label, style: TextStyle(color: textSub, fontSize: 13)),
+          Text(label, style: TextStyle(color: labelColor, fontSize: 13)),
           const Spacer(),
           Flexible(child: Text(value, textAlign: TextAlign.right, style: TextStyle(color: textMain, fontSize: 13, fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis)),
         ],
@@ -6908,7 +7443,7 @@ class DeviceSettingsPopup extends StatelessWidget {
                       // ---------- CỤM ĐIỀU KHIỂN QUẠT (đồng bộ hệt thẻ ngoài lưới) ----------
                       if (fanEndpoint != null) ...[
                         const SizedBox(height: 20),
-                        Text(t.text('fan_control_header'), style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        Text(t.text('fan_control_header'), style: TextStyle(color: sectionHeaderColor, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         const SizedBox(height: 10),
                         Builder(builder: (context) {
                           final int speed = live?.speedOf(fanEndpoint!) ?? 0;
@@ -6958,7 +7493,7 @@ class DeviceSettingsPopup extends StatelessWidget {
 
                       // ---------- THÔNG SỐ KỸ THUẬT THẬT (không mock) ----------
                       const SizedBox(height: 20),
-                      Text(t.text('technical_specs_header'), style: TextStyle(color: textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      Text(t.text('technical_specs_header'), style: TextStyle(color: sectionHeaderColor, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                       const SizedBox(height: 6),
                       // [GIỮ NGUYÊN BIẾN ĐỘNG] mac/ip/rssi/ssid/fwType — giá trị thật từ thiết bị, chỉ nhãn dịch.
                       specRow(Icons.qr_code_2_rounded, t.text('mac_serial_label'), mac),
@@ -7101,7 +7636,11 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
   @override
   Widget build(BuildContext context) {
     final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX GIAI ĐOẠN 124] Sáng+Kính: 0xFF64748B quá mờ -> Colors.black54 (yêu cầu tường minh). Tối GIỮ NGUYÊN.
+    final Color textSub = widget.isDark ? Colors.white54 : Colors.black54;
+    // Icon "đồng bộ màu với Label" — Label hàng này dùng textMain (đã đủ đậm sẵn), Icon đi kèm
+    // cũng nâng lên cùng tông thay vì mờ hơn hẳn như trước.
+    final Color iconColor = textMain;
     final t = AppTranslations.of(context);
 
     // [FIX GIAI ĐOẠN 106 — RÀ SOÁT PHÒNG NGỪA] Cùng họ lỗi với MotorTypeSection (ListTile +
@@ -7112,7 +7651,7 @@ class _PowerBehaviorSectionState extends State<PowerBehaviorSection> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          Icon(Icons.power_rounded, color: textSub, size: 20),
+          Icon(Icons.power_rounded, color: iconColor, size: 20),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
@@ -7211,7 +7750,10 @@ class _MotorTypeSectionState extends State<MotorTypeSection> {
   @override
   Widget build(BuildContext context) {
     final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX GIAI ĐOẠN 124] Sáng+Kính: 0xFF64748B quá mờ -> Colors.black54 (yêu cầu tường minh). Tối GIỮ NGUYÊN.
+    final Color textSub = widget.isDark ? Colors.white54 : Colors.black54;
+    // Icon "đồng bộ màu với Label" — Label hàng này dùng textMain, Icon đi kèm nâng cùng tông.
+    final Color iconColor = textMain;
     final t = AppTranslations.of(context);
 
     // [FIX GIAI ĐOẠN 106 — VỠ CHỮ THẲNG ĐỨNG] ListTile TRƯỚC ĐÂY dùng title/subtitle/trailing —
@@ -7226,7 +7768,7 @@ class _MotorTypeSectionState extends State<MotorTypeSection> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          Icon(Icons.settings_input_component_rounded, color: textSub, size: 20),
+          Icon(Icons.settings_input_component_rounded, color: iconColor, size: 20),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
@@ -7324,12 +7866,16 @@ class _TravelTimeSectionState extends State<TravelTimeSection> {
   @override
   Widget build(BuildContext context) {
     final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX GIAI ĐOẠN 124] Sáng+Kính: 0xFF64748B quá mờ -> Colors.black54 (yêu cầu tường minh). Tối GIỮ NGUYÊN.
+    final Color textSub = widget.isDark ? Colors.white54 : Colors.black54;
+    // Icon "đồng bộ màu với Label" — leading + 2 nút +/- (hành động, cũng cần rõ ràng để bấm
+    // trúng) đều nâng lên tông textMain thay vì mờ hơn hẳn như trước.
+    final Color iconColor = textMain;
     final t = AppTranslations.of(context);
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-      leading: Icon(Icons.timer_outlined, color: textSub, size: 20),
+      leading: Icon(Icons.timer_outlined, color: iconColor, size: 20),
       title: Text(t.text('travel_time_label'), style: TextStyle(color: textMain, fontSize: 14)),
       subtitle: Text(t.text('travel_time_desc'), style: TextStyle(color: textSub, fontSize: 11)),
       trailing: _saving
@@ -7337,12 +7883,12 @@ class _TravelTimeSectionState extends State<TravelTimeSection> {
           : Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(icon: Icon(Icons.remove_circle_outline_rounded, color: textSub, size: 20), onPressed: () => _change(-1), splashRadius: 18),
+                IconButton(icon: Icon(Icons.remove_circle_outline_rounded, color: iconColor, size: 20), onPressed: () => _change(-1), splashRadius: 18),
                 SizedBox(
                   width: 44,
                   child: Text('${_seconds}s', textAlign: TextAlign.center, style: TextStyle(color: tkGreen, fontSize: 14, fontWeight: FontWeight.bold)),
                 ),
-                IconButton(icon: Icon(Icons.add_circle_outline_rounded, color: textSub, size: 20), onPressed: () => _change(1), splashRadius: 18),
+                IconButton(icon: Icon(Icons.add_circle_outline_rounded, color: iconColor, size: 20), onPressed: () => _change(1), splashRadius: 18),
               ],
             ),
     );
@@ -7477,7 +8023,10 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
   @override
   Widget build(BuildContext context) {
     final Color textMain = widget.isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = widget.isDark ? Colors.white54 : const Color(0xFF64748B);
+    // [FIX GIAI ĐOẠN 124] Sáng+Kính: 0xFF64748B quá mờ -> Colors.black54 (yêu cầu tường minh). Tối GIỮ NGUYÊN.
+    final Color textSub = widget.isDark ? Colors.white54 : Colors.black54;
+    // Icon "đồng bộ màu với Label" — leading nâng lên tông textMain thay vì mờ hơn hẳn như trước.
+    final Color iconColor = textMain;
 
     // Nghe kho DPS realtime: thiết bị báo % nạp qua smarthub/{home}/{mac}/ota/progress
     return ListenableBuilder(
@@ -7519,7 +8068,7 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
         return Column(
           children: [
             ListTile(
-              leading: Icon(Icons.system_update_alt, color: textSub, size: 20),
+              leading: Icon(Icons.system_update_alt, color: iconColor, size: 20),
               title: Text('Firmware v${widget.currentVersion}', style: TextStyle(color: textMain, fontSize: 14)),
               subtitle: failed
                   ? Text(otaErrorText!, style: const TextStyle(color: Colors.redAccent, fontSize: 11))
@@ -7546,10 +8095,39 @@ class _DeviceFirmwareSectionState extends State<DeviceFirmwareSection> {
   }
 }
 
-// [FIX #1 — LƯỚI 3 CỘT] Nội dung popup "Thay đổi giao diện (Avatar)" — tách thành widget riêng
-// (thay vì Builder lồng sâu ngay trong _showAvatarPicker) để cấu trúc widget rõ ràng, dễ soát
-// lỗi cân bằng ngoặc hơn. [onSelect] nhận null = "về mặc định", hoặc avatarId đã chọn.
-class _AvatarPickerDialogBody extends StatelessWidget {
+// [GIAI ĐOẠN 126 — CATALOG BMS THEO NHÓM] Trước đây avatarLibrary hiển thị dạng 1 LƯỚI DÀI DUY
+// NHẤT (~50 mục sau khi bổ sung nhóm BMS chuyên nghiệp — Vào ra/Thang máy, Điện & Năng lượng,
+// Môi trường & An toàn...) — tìm 1 avatar cụ thể phải cuộn qua toàn bộ, không phân biệt được
+// "Công tắc" khác "Công nghiệp" khác "Tòa nhà". Nhóm theo field `category` SẴN CÓ trên
+// DeviceAvatarDefinition (trước đây chỉ khai báo, KHÔNG dùng để hiển thị) — gộp NHIỀU category id
+// kỹ thuật vào 1 NHÃN hiển thị khi chúng cùng một "mảng nghiệp vụ" theo đúng yêu cầu người dùng
+// (vd access_control + elevator cùng vào "Kiểm soát Vào ra & Thang máy").
+class _AvatarCategoryGroup {
+  final String label;
+  final IconData icon;
+  final List<String> categoryIds;
+  const _AvatarCategoryGroup({required this.label, required this.icon, required this.categoryIds});
+}
+
+const List<_AvatarCategoryGroup> _avatarCategoryGroups = [
+  _AvatarCategoryGroup(label: 'Công tắc & Ổ cắm', icon: Icons.toggle_on_outlined, categoryIds: ['switch']),
+  _AvatarCategoryGroup(label: 'Chiếu sáng', icon: Icons.lightbulb_outline, categoryIds: ['lighting']),
+  _AvatarCategoryGroup(label: 'Không khí & Nhiệt độ', icon: Icons.air_rounded, categoryIds: ['climate']),
+  _AvatarCategoryGroup(label: 'An ninh & Cửa', icon: Icons.security_rounded, categoryIds: ['security']),
+  _AvatarCategoryGroup(label: 'Kiểm soát Vào ra & Thang máy', icon: Icons.badge_outlined, categoryIds: ['access_control', 'elevator']),
+  _AvatarCategoryGroup(label: 'Điện & Năng lượng', icon: Icons.bolt_rounded, categoryIds: ['electrical_panel']),
+  _AvatarCategoryGroup(label: 'Môi trường & An toàn tòa nhà', icon: Icons.health_and_safety_outlined, categoryIds: ['hvac', 'building_sensor']),
+  _AvatarCategoryGroup(label: 'Công nghiệp', icon: Icons.precision_manufacturing_outlined, categoryIds: ['industrial_pump', 'industrial_fan', 'spot_welder']),
+  _AvatarCategoryGroup(label: 'Thiết bị gia dụng', icon: Icons.kitchen_outlined, categoryIds: ['appliance']),
+  _AvatarCategoryGroup(label: 'Thiết bị IT', icon: Icons.dns_outlined, categoryIds: ['it_equipment']),
+];
+
+// [FIX #1 — LƯỚI 3 CỘT, GIAI ĐOẠN 126 — THÊM BỘ LỌC NHÓM] Nội dung popup "Thay đổi giao diện
+// (Avatar)" — tách thành widget riêng (thay vì Builder lồng sâu ngay trong _showAvatarPicker) để
+// cấu trúc widget rõ ràng, dễ soát lỗi cân bằng ngoặc hơn. [onSelect] nhận null = "về mặc định",
+// hoặc avatarId đã chọn. Đổi sang StatefulWidget để giữ chip Nhóm đang chọn (_selectedGroup) —
+// null = "Tất cả" (hiển thị TOÀN BỘ theo từng Nhóm có tiêu đề, cùng "Mặc định" ở đầu).
+class _AvatarPickerDialogBody extends StatefulWidget {
   final String? currentId;
   final double maxHeight;
   final ValueChanged<String?> onSelect;
@@ -7557,26 +8135,20 @@ class _AvatarPickerDialogBody extends StatelessWidget {
   const _AvatarPickerDialogBody({required this.currentId, required this.maxHeight, required this.onSelect});
 
   @override
+  State<_AvatarPickerDialogBody> createState() => _AvatarPickerDialogBodyState();
+}
+
+class _AvatarPickerDialogBodyState extends State<_AvatarPickerDialogBody> {
+  _AvatarCategoryGroup? _selectedGroup; // null = "Tất cả"
+
+  @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    const Color tkGreen = Color(0xFF00A651);
 
-    // [FIX — MAX-EXTENT THAY VÌ SỐ CỘT CỨNG] crossAxisCount cố định (dù là 3) vẫn KÉO GIÃN từng
-    // ô để lấp đầy hết bề ngang Dialog — trên PC/Web (Dialog rộng tới 800px), 3 ô bị ép phình to
-    // biến dạng. SliverGridDelegateWithMaxCrossAxisExtent làm NGƯỢC LẠI: ấn định TRẦN rộng một ô
-    // (maxCrossAxisExtent), màn càng rộng thì tự "đẻ" thêm CỘT chứ không phình ô — ô luôn giữ
-    // đúng kích thước thiết kế bất kể Dialog rộng bao nhiêu.
-    final List<Widget> tiles = [
-      _AvatarPickerTile(
-        label: 'Mặc định',
-        selected: currentId == null,
-        isDark: isDark,
-        preview: Icon(Icons.widgets_outlined, size: 40, color: isDark ? Colors.white54 : Colors.black45),
-        onTap: () => onSelect(null),
-      ),
-      for (final def in avatarLibrary)
-        _AvatarPickerTile(
+    Widget buildTile(DeviceAvatarDefinition def) => _AvatarPickerTile(
           label: def.name,
-          selected: currentId == def.id,
+          selected: widget.currentId == def.id,
           isDark: isDark,
           preview: IgnorePointer(
             child: FittedBox(
@@ -7588,9 +8160,71 @@ class _AvatarPickerDialogBody extends StatelessWidget {
               ),
             ),
           ),
-          onTap: () => onSelect(def.id),
-        ),
-    ];
+          onTap: () => widget.onSelect(def.id),
+        );
+
+    // [FIX — MAX-EXTENT THAY VÌ SỐ CỘT CỨNG] crossAxisCount cố định (dù là 3) vẫn KÉO GIÃN từng
+    // ô để lấp đầy hết bề ngang Dialog — trên PC/Web (Dialog rộng tới 800px), 3 ô bị ép phình to
+    // biến dạng. SliverGridDelegateWithMaxCrossAxisExtent làm NGƯỢC LẠI: ấn định TRẦN rộng một ô
+    // (maxCrossAxisExtent), màn càng rộng thì tự "đẻ" thêm CỘT chứ không phình ô — ô luôn giữ
+    // đúng kích thước thiết kế bất kể Dialog rộng bao nhiêu.
+    Widget buildGrid(List<Widget> tiles) => GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 160,
+            // [FIX BOTTOM OVERFLOW] 0.85 chưa đủ cao chứa nổi vùng preview 96px + khoảng
+            // cách 6px + tối đa 2 dòng nhãn tên Avatar — hạ xuống 0.78 để có thêm không
+            // gian chiều dọc. Xem thêm _AvatarPickerTile: vùng preview giờ dùng Expanded
+            // (co giãn) thay vì SizedBox(height: 96) cố định — dù aspect ratio có tính
+            // thiếu ở màn hình lạ nào đó, Text vẫn LUÔN được đảm bảo đủ chỗ, không bao giờ
+            // còn tràn đáy nữa (hai lớp phòng thủ thay vì chỉ dựa vào một con số aspect ratio).
+            childAspectRatio: 0.78,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+          ),
+          itemCount: tiles.length,
+          itemBuilder: (context, i) => tiles[i],
+        );
+
+    Widget buildSectionHeader(_AvatarCategoryGroup g) => Padding(
+          padding: const EdgeInsets.only(bottom: 10, top: 4),
+          child: Row(
+            children: [
+              Icon(g.icon, size: 15, color: tkGreen),
+              const SizedBox(width: 6),
+              Text(g.label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isDark ? Colors.white70 : Colors.black87, letterSpacing: 0.3)),
+            ],
+          ),
+        );
+
+    final List<Widget> content;
+    if (_selectedGroup == null) {
+      // "Tất cả" -> mỗi Nhóm 1 tiêu đề + lưới riêng, cuộn liền mạch; "Mặc định" đứng đầu vì
+      // không thuộc Nhóm kỹ thuật nào.
+      content = [
+        buildGrid([
+          _AvatarPickerTile(
+            label: 'Mặc định',
+            selected: widget.currentId == null,
+            isDark: isDark,
+            preview: Icon(Icons.widgets_outlined, size: 40, color: isDark ? Colors.white54 : Colors.black45),
+            onTap: () => widget.onSelect(null),
+          ),
+        ]),
+        for (final g in _avatarCategoryGroups)
+          if (avatarLibrary.any((d) => g.categoryIds.contains(d.category))) ...[
+            const SizedBox(height: 18),
+            buildSectionHeader(g),
+            buildGrid([for (final d in avatarLibrary) if (g.categoryIds.contains(d.category)) buildTile(d)]),
+          ],
+      ];
+    } else {
+      final g = _selectedGroup!;
+      content = [
+        buildGrid([for (final d in avatarLibrary) if (g.categoryIds.contains(d.category)) buildTile(d)]),
+      ];
+    }
 
     return ConstrainedBox(
       // [FIX — CHẶN NỞ VÔ HẠN TRÊN PC] Chặn thêm một lớp ở ĐÚNG nội dung Dialog (không chỉ ở
@@ -7598,7 +8232,7 @@ class _AvatarPickerDialogBody extends StatelessWidget {
       // dựng lại widget này mà quên áp maxWidth ở lớp ngoài.
       constraints: const BoxConstraints(maxWidth: 800, maxHeight: double.infinity),
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
+        constraints: BoxConstraints(maxHeight: widget.maxHeight),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -7609,27 +8243,68 @@ class _AvatarPickerDialogBody extends StatelessWidget {
               'Chỉ đổi HÌNH DÁNG hiển thị — không đổi chức năng/dữ liệu thiết bị.',
               style: TextStyle(fontSize: 12, color: isDark ? Colors.white54 : Colors.black54),
             ),
+            const SizedBox(height: 10),
+            // [GIAI ĐOẠN 126] Chip lọc theo Nhóm — cuộn ngang, "Tất cả" luôn đứng đầu. Chọn 1 Nhóm
+            // thu gọn lưới về ĐÚNG Nhóm đó (không còn tiêu đề, đỡ trùng lặp thông tin với chip).
+            SizedBox(
+              height: 34,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _AvatarGroupChip(label: 'Tất cả', icon: Icons.apps_rounded, selected: _selectedGroup == null, isDark: isDark, onTap: () => setState(() => _selectedGroup = null)),
+                  for (final g in _avatarCategoryGroups)
+                    if (avatarLibrary.any((d) => g.categoryIds.contains(d.category)))
+                      _AvatarGroupChip(label: g.label, icon: g.icon, selected: _selectedGroup == g, isDark: isDark, onTap: () => setState(() => _selectedGroup = g)),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             Flexible(
-              child: GridView.builder(
-                shrinkWrap: true,
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 160,
-                  // [FIX BOTTOM OVERFLOW] 0.85 chưa đủ cao chứa nổi vùng preview 96px + khoảng
-                  // cách 6px + tối đa 2 dòng nhãn tên Avatar — hạ xuống 0.78 để có thêm không
-                  // gian chiều dọc. Xem thêm _AvatarPickerTile: vùng preview giờ dùng Expanded
-                  // (co giãn) thay vì SizedBox(height: 96) cố định — dù aspect ratio có tính
-                  // thiếu ở màn hình lạ nào đó, Text vẫn LUÔN được đảm bảo đủ chỗ, không bao giờ
-                  // còn tràn đáy nữa (hai lớp phòng thủ thay vì chỉ dựa vào một con số aspect ratio).
-                  childAspectRatio: 0.78,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                ),
-                itemCount: tiles.length,
-                itemBuilder: (context, i) => tiles[i],
+              child: SingleChildScrollView(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: content),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// [GIAI ĐOẠN 126] Chip lọc Nhóm avatar — cùng tinh thần thị giác với _AvatarPickerTile (viền
+// tkGreen khi được chọn), nhưng dạng nang thuốc ngang cho hàng cuộn phía trên lưới.
+class _AvatarGroupChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final bool isDark;
+  final VoidCallback onTap;
+
+  const _AvatarGroupChip({required this.label, required this.icon, required this.selected, required this.isDark, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    const Color tkGreen = Color(0xFF00A651);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            color: selected ? tkGreen.withValues(alpha: 0.15) : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.04)),
+            border: Border.all(color: selected ? tkGreen : Colors.transparent, width: 1.4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: selected ? tkGreen : (isDark ? Colors.white60 : Colors.black54)),
+              const SizedBox(width: 5),
+              Text(label, style: TextStyle(fontSize: 11.5, fontWeight: selected ? FontWeight.bold : FontWeight.w500, color: selected ? tkGreen : (isDark ? Colors.white70 : Colors.black87))),
+            ],
+          ),
         ),
       ),
     );

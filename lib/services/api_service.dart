@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:http/http.dart' as http;
 import '../models/device_state.dart';
+import '../models/camera_model.dart';
+import '../models/imou_camera_model.dart';
 import 'secure_storage_service.dart';
 
 /// [DIRECT MAC BINDING] Kết quả gõ kiểu của ApiService.addDevice — phân biệt RÕ RÀNG 4 tình
@@ -446,6 +448,159 @@ class ApiService {
       return raw.map((e) => e.toString()).toList();
     } catch (e) {
       if (kDebugMode) print('❌ Lỗi mạng khi getGridLayout: $e');
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // 📷 CAMERA IP (RTSP) — Backend chỉ lưu cấu hình + tự ghép rtsp_url, KHÔNG proxy video
+  // ============================================================================
+
+  /// GET /api/homes/{homeId}/cameras — trả null khi lỗi mạng/HTTP (khác [] rỗng = "đã fetch
+  /// thành công nhưng nhà chưa có camera nào"), cùng quy ước với getGridLayout ở trên.
+  Future<List<CameraModel>?> getCameras(String homeId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/cameras');
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [CAMERA] Lỗi tải danh sách (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final List<dynamic> raw = (decoded['data'] as List?) ?? const [];
+      return raw.map((e) => CameraModel.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getCameras: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/homes/{homeId}/cameras — thêm camera mới. Trả (camera, error): camera khác null
+  /// = thành công (kèm rtsp_url Backend đã ghép sẵn); error khác null = câu chữ THẬT server trả
+  /// về để hiện cho user, KHÔNG tự đoán.
+  Future<({CameraModel? camera, String? error})> addCamera({
+    required String homeId,
+    required String name,
+    required String ipAddress,
+    required int port,
+    String username = '',
+    String password = '',
+    String streamPath = '',
+    String subStreamPath = '',
+  }) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/cameras', {
+        'name': name,
+        'ip_address': ipAddress,
+        'port': port,
+        'username': username,
+        'password': password,
+        'stream_path': streamPath,
+        'sub_stream_path': subStreamPath,
+      });
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        return (camera: CameraModel.fromJson(decoded['data'] as Map<String, dynamic>), error: null);
+      }
+      return (camera: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi addCamera: $e');
+      return (camera: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
+
+  /// DELETE /api/homes/{homeId}/cameras/{cameraId} — xóa cấu hình camera khỏi nhà. Trả true chỉ
+  /// khi Server xác nhận đã xóa (HTTP 200) — false cho MỌI trường hợp khác (404/403/lỗi mạng),
+  /// cùng quy ước "không nuốt lỗi" đã áp cho setDeviceOrder/setGridLayout ở trên.
+  Future<bool> deleteCamera(String homeId, int cameraId) async {
+    try {
+      final response = await authorizedDelete('$baseUrl/homes/${Uri.encodeComponent(homeId)}/cameras/$cameraId');
+      if (kDebugMode) print('📡 [CAMERA] Xóa camera $cameraId — HTTP ${response.statusCode}: ${response.body}');
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi deleteCamera: $e');
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // 📷 CAMERA P2P (IMOU) — xem qua Internet, không cần cùng LAN với Server/App
+  // ============================================================================
+
+  /// GET /api/homes/{homeId}/imou-cameras — cùng quy ước null-khi-lỗi với getCameras().
+  Future<List<ImouCameraModel>?> getImouCameras(String homeId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras');
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [IMOU] Lỗi tải danh sách (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final List<dynamic> raw = (decoded['data'] as List?) ?? const [];
+      return raw.map((e) => ImouCameraModel.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouCameras: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/homes/{homeId}/imou-cameras — gắn camera Imou mới bằng Device Serial + mã xác
+  /// thực in trên nhãn camera thật. Cùng khuôn trả (camera, error) với addCamera().
+  Future<({ImouCameraModel? camera, String? error})> addImouCamera({
+    required String homeId,
+    required String name,
+    required String deviceSerial,
+    required String verifyCode,
+  }) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras', {
+        'name': name,
+        'device_serial': deviceSerial,
+        'verify_code': verifyCode,
+      });
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        return (camera: ImouCameraModel.fromJson(decoded['data'] as Map<String, dynamic>), error: null);
+      }
+      return (camera: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi addImouCamera: $e');
+      return (camera: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
+
+  /// DELETE /api/homes/{homeId}/imou-cameras/{cameraId} — gỡ camera khỏi Cloud Imou + Postgres.
+  Future<bool> deleteImouCamera(String homeId, int cameraId) async {
+    try {
+      final response = await authorizedDelete('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId');
+      if (kDebugMode) print('📡 [IMOU] Xóa camera $cameraId — HTTP ${response.statusCode}: ${response.body}');
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi deleteImouCamera: $e');
+      return false;
+    }
+  }
+
+  /// GET /api/homes/{homeId}/imou-cameras/{cameraId}/live-token — access_token NGẮN HẠN + psk
+  /// cho 1 phiên xem trực tiếp. Gọi lại MỖI LẦN mở xem (Maximize/Fullscreen), KHÔNG cache lâu dài
+  /// phía App — đúng bản chất token hết hạn theo Imou. Trả null khi lỗi/chưa cấu hình OpenAPI
+  /// (Pha 1 — xem internal/imou/token.go, ErrNotConfigured).
+  Future<({String accessToken, String psk, String deviceSerial, int channel})?> getImouLiveToken(String homeId, int cameraId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/live-token');
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [IMOU] Lỗi lấy live-token (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final Map<String, dynamic> data = decoded['data'] as Map<String, dynamic>;
+      return (
+        accessToken: (data['access_token'] ?? '').toString(),
+        psk: (data['psk'] ?? '').toString(),
+        deviceSerial: (data['device_serial'] ?? '').toString(),
+        channel: (data['channel'] as num?)?.toInt() ?? 0,
+      );
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouLiveToken: $e');
       return null;
     }
   }

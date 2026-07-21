@@ -3,7 +3,11 @@ import 'package:window_manager/window_manager.dart';
 import 'package:provider/provider.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:media_kit/media_kit.dart';
 
+import 'firebase_options.dart';
 import 'providers/device_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/language_provider.dart';
@@ -12,6 +16,7 @@ import 'providers/notification_provider.dart';
 import 'providers/room_group_provider.dart';
 import 'providers/automation_provider.dart';
 import 'providers/home_provider.dart';
+import 'services/push_notification_service.dart';
 
 // KHAI BÁO KHÓA ĐIỀU HƯỚNG TOÀN CỤC CHỐNG CRASH / TREO KHI HẾT HẠN TOKEN
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -48,6 +53,25 @@ void main() async {
 
   // Bắt buộc khi main() là async và thao tác với UI hệ thống
   WidgetsFlutterBinding.ensureInitialized();
+
+  // [CAMERA IP — PHẦN 3] Nạp thư viện native libmpv cho media_kit — BẮT BUỘC gọi đúng 1 lần
+  // TRƯỚC khi bất kỳ Player() nào được tạo, trên MỌI nền tảng có hỗ trợ (Android/iOS/Windows/
+  // macOS/Linux — khác Firebase ở trên, media_kit KHÔNG giới hạn riêng Android/iOS vì App còn
+  // chạy Desktop qua window_manager và camera cũng cần xem được ở đó).
+  if (!kIsWeb) {
+    MediaKit.ensureInitialized();
+  }
+
+  // [ĐẨY THÔNG BÁO OS — FIREBASE CLOUD MESSAGING] Chỉ khởi tạo trên Android/iOS thật — app
+  // này còn build cho Windows Desktop qua window_manager (xem khối bên dưới) và không có
+  // Firebase Web SDK cấu hình, gọi Firebase.initializeApp() trên nền tảng không hỗ trợ sẽ
+  // crash ngay lúc mở App. FirebaseMessaging.onBackgroundMessage PHẢI đăng ký TRƯỚC runApp()
+  // theo đúng yêu cầu của FlutterFire (isolate nền cần Firebase.initializeApp() độc lập).
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    await PushNotificationService.init();
+  }
 
   // --- THIẾT LẬP CỬA SỔ TRÀN VIỀN CHO DESKTOP ---
   // Chỉ chạy khối lệnh này nếu không phải là Web và đang chạy trên Windows/macOS/Linux

@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../../main.dart'; // Import để truy cập navigatorKey toàn cục
 import '../screens/auth/login_screen.dart'; // Import màn hình Đăng nhập
 import 'mqtt_credentials_service.dart';
+import 'push_notification_service.dart';
 import 'secure_storage_service.dart';
 
 class AuthService {
@@ -71,6 +72,9 @@ class AuthService {
   }
 
   Future<void> logout() async {
+    // [PUSH] Gỡ token FCM TRƯỚC khi xóa JWT — request unregister cần JWT còn hợp lệ để xác
+    // thực người gọi (userEmail đọc từ token phía Backend).
+    await PushNotificationService.unregisterFromBackend();
     await SecureStorageService.deleteToken();
     MqttCredentialsService.clear();
   }
@@ -510,6 +514,73 @@ class AuthService {
       return response.statusCode == 200;
     } catch (e) {
       if (kDebugMode) print("Lỗi xóa thông báo: $e");
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // 8. ĐẨY THÔNG BÁO OS (FIREBASE CLOUD MESSAGING)
+  // ============================================================================
+
+  // [PUSH] Đăng ký token FCM của máy này lên Backend — gọi sau login/token refresh.
+  Future<bool> registerPushToken(String token) async {
+    try {
+      final jwt = await getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/notifications/register-token'),
+        headers: {'Authorization': 'Bearer $jwt', 'Content-Type': 'application/json'},
+        body: jsonEncode({'token': token}),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi đăng ký push token: $e");
+      return false;
+    }
+  }
+
+  // [PUSH] Gỡ token FCM của máy này — gọi trước khi logout() xóa JWT.
+  Future<bool> unregisterPushToken(String token) async {
+    try {
+      final jwt = await getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/notifications/unregister-token'),
+        headers: {'Authorization': 'Bearer $jwt', 'Content-Type': 'application/json'},
+        body: jsonEncode({'token': token}),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi gỡ push token: $e");
+      return false;
+    }
+  }
+
+  // [PUSH] Lấy tuỳ chọn loại thông báo hiện tại — màn Cài đặt thông báo gọi lúc mở.
+  Future<Map<String, dynamic>?> getNotificationPreferences() async {
+    try {
+      final jwt = await getToken();
+      final response = await http.get(
+        Uri.parse('$baseUrl/notifications/preferences'),
+        headers: {'Authorization': 'Bearer $jwt'},
+      );
+      if (response.statusCode == 200) return jsonDecode(response.body);
+    } catch (e) {
+      if (kDebugMode) print("Lỗi lấy tuỳ chọn thông báo: $e");
+    }
+    return null;
+  }
+
+  // [PUSH] Ghi 1 tuỳ chọn loại thông báo — mỗi lần user gạt 1 công tắc trong Cài đặt.
+  Future<bool> setNotificationPreference(String category, bool enabled) async {
+    try {
+      final jwt = await getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/notifications/preferences'),
+        headers: {'Authorization': 'Bearer $jwt', 'Content-Type': 'application/json'},
+        body: jsonEncode({'category': category, 'enabled': enabled}),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print("Lỗi cập nhật tuỳ chọn thông báo: $e");
       return false;
     }
   }

@@ -2,11 +2,14 @@ import 'device_avatar_definition.dart';
 import '../widgets/avatars/switch_avatars.dart';
 import '../widgets/avatars/lighting_avatars.dart';
 import '../widgets/avatars/lighting_extra_avatars.dart';
+import '../widgets/avatars/lighting_bms_avatars.dart';
 import '../widgets/avatars/climate_avatars.dart';
 import '../widgets/avatars/climate_extra_avatars.dart';
 import '../widgets/avatars/security_avatars.dart';
 import '../widgets/avatars/access_control_avatars.dart';
+import '../widgets/avatars/access_control_extra_avatars.dart';
 import '../widgets/avatars/hvac_avatars.dart';
+import '../widgets/avatars/hvac_safety_avatars.dart';
 import '../widgets/avatars/elevator_avatars.dart';
 import '../widgets/avatars/building_sensor_avatars.dart';
 import '../widgets/avatars/industrial_pump_avatars.dart';
@@ -28,11 +31,14 @@ final List<DeviceAvatarDefinition> avatarLibrary = [
   ...switchAvatars,
   ...lightingAvatars,
   ...lightingExtraAvatars,
+  ...lightingBmsAvatars,
   ...climateAvatars,
   ...climateExtraAvatars,
   ...securityAvatars,
   ...accessControlAvatars,
+  ...accessControlExtraAvatars,
   ...hvacAvatars,
+  ...hvacSafetyAvatars,
   ...elevatorAvatars,
   ...buildingSensorAvatars,
   ...industrialPumpAvatars,
