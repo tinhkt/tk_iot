@@ -58,3 +58,9 @@ macos/Flutter/ephemeral/
 # Symbolication & Obfuscation
 app.*.symbols
 app.*.map.json
+
+# [BẢO MẬT] Firebase Admin SDK Service Account — khóa riêng tư THẬT (private_key), KHÁC hẳn
+# firebase_options.dart/google-services.json (client config, an toàn nhúng App). File này chỉ
+# dùng để upload thẳng lên Backend Go (FIREBASE_CREDENTIALS_FILE), TUYỆT ĐỐI không được commit —
+# lộ ra là ai cũng gửi FCM thay cả dự án được.
+*firebase-adminsdk*.json

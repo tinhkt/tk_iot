@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:bonsoir/bonsoir.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
 /// Một thiết bị TK_IOT tìm thấy qua quét UDP LAN.
@@ -28,10 +29,18 @@ class LanDiscoveryService {
   /// Cổng UDP mà firmware ESP lắng nghe — KHỚP DISCOVERY_UDP_PORT bên firmware.
   static const int discoveryPort = 8266;
 
+  // [FIX — QUÉT LAN KHÔNG RA TRÊN iOS] Service type "cú hích" Bonjour — PHẢI khớp CHÍNH XÁC
+  // chuỗi khai trong ios/Runner/Info.plist (NSBonjourServices). KHÔNG có thiết bị nào thật sự
+  // chạy Bonjour dưới tên này — chỉ dùng để ép iOS 14+ hiện hộp thoại quyền "Local Network"
+  // một cách ĐÁNG TIN CẬY (raw UDP broadcast của chính service này không tự kích hoạt được hộp
+  // thoại đó, xem giải thích đầy đủ trong Info.plist). Không ảnh hưởng Android/Desktop.
+  static const String _iosPermissionNudgeServiceType = '_tkiot-lan._udp';
+
   RawDatagramSocket? _socket;
   Timer? _retryTimer;
   Timer? _timeoutTimer;
   bool _scanning = false;
+  BonsoirDiscovery? _iosPermissionNudge;
 
   final Map<String, LanDevice> _found = {};
   final StreamController<List<LanDevice>> _controller = StreamController<List<LanDevice>>.broadcast();
@@ -51,6 +60,8 @@ class LanDiscoveryService {
     _found.clear();
     _scanning = true;
     _emit();               // phát danh sách rỗng + trạng thái đang quét cho UI
+
+    _startIosPermissionNudge(); // no-op trên Android/Desktop, xem giải thích ở khai báo field
 
     try {
       // Bind cổng bất kỳ (0) trên mọi IPv4 để vừa gửi vừa nhận trên cùng socket
@@ -100,6 +111,23 @@ class LanDiscoveryService {
     } catch (e) {
       if (kDebugMode) print('❌ [LAN SCAN] Không mở được UDP socket: $e');
       await stop(); // lỗi mở socket -> đóng gọn, phát trạng thái đã dừng
+    }
+  }
+
+  // [FIX — QUÉT LAN KHÔNG RA TRÊN iOS] Khởi động 1 lượt duyệt Bonjour vô hại CHỈ để ép hộp
+  // thoại quyền "Local Network" của iOS hiện ra đáng tin cậy — xem giải thích đầy đủ tại khai
+  // báo _iosPermissionNudgeServiceType. Bọc try-catch toàn bộ: lỗi ở đây (thiếu plugin trên nền
+  // tảng lạ, v.v.) TUYỆT ĐỐI không được làm gãy luồng quét UDP thật.
+  void _startIosPermissionNudge() {
+    if (!Platform.isIOS) return;
+    try {
+      final discovery = BonsoirDiscovery(type: _iosPermissionNudgeServiceType);
+      _iosPermissionNudge = discovery;
+      discovery.initialize().then((_) => discovery.start()).catchError((e) {
+        if (kDebugMode) print('⚠️ [LAN SCAN] Không khởi động được cú hích quyền Local Network (iOS): $e');
+      });
+    } catch (e) {
+      if (kDebugMode) print('⚠️ [LAN SCAN] Lỗi tạo BonsoirDiscovery (cú hích quyền iOS): $e');
     }
   }
 
@@ -154,6 +182,15 @@ class LanDiscoveryService {
     _timeoutTimer = null;
     _socket?.close();
     _socket = null;
+    if (_iosPermissionNudge != null) {
+      // stop() rồi mới dispose — Bonsoir yêu cầu đúng trình tự, bọc try-catch vì lượt trước có
+      // thể đã tự lỗi ở initialize()/start() (xem _startIosPermissionNudge) nên chưa chắc đã
+      // sẵn sàng để dừng.
+      try {
+        unawaited(_iosPermissionNudge!.stop());
+      } catch (_) {}
+      _iosPermissionNudge = null;
+    }
     if (_scanning) {
       _scanning = false;
       if (kDebugMode) {

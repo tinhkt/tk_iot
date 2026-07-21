@@ -10,6 +10,18 @@
 	<string>Micro chỉ dùng nếu bạn quay video khi chọn ảnh/video từ máy; tính năng quét mã QR không ghi âm.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Ứng dụng cần quyền truy cập mạng nội bộ để tìm kiếm và kết nối với các thiết bị nhà thông minh của bạn</string>
+	<!-- [FIX — QUÉT LAN KHÔNG RA TRÊN iOS] NSLocalNetworkUsageDescription một mình KHÔNG đủ để
+	     iOS 14+ thực sự hiện hộp thoại "Local Network" — theo tài liệu/cộng đồng dev Apple, hộp
+	     thoại này được kích hoạt ĐÁNG TIN CẬY bởi một lượt duyệt Bonjour (NWBrowser), KHÔNG phải
+	     bởi socket UDP broadcast thô (LanDiscoveryService dùng dart:io RawDatagramSocket, không
+	     phải Bonjour) — nếu hộp thoại chưa từng hiện, iOS âm thầm chặn gói broadcast mà không hề
+	     báo lỗi, đúng triệu chứng "PC quét ra, iPhone quét không ra gì". NSBonjourServices liệt
+	     kê service type PHẢI khớp CHÍNH XÁC chuỗi dùng trong lan_discovery_service.dart (Bonsoir
+	     "cú hích" chỉ để ép hộp thoại hiện ra, không cần thiết bị nào thật sự chạy Bonjour). -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_tkiot-lan._udp</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Ứng dụng cần vị trí hiện tại của bạn để hiển thị đúng thông tin thời tiết trên Dashboard. Vị trí chỉ dùng khi bạn đang mở ứng dụng, không theo dõi nền.</string>
 	<!-- [ĐẨY THÔNG BÁO OS] Cho phép App nhận push khi đang chạy NỀN (không riêng lúc mở) —

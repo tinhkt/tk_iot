@@ -851,6 +851,42 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
           ),
           const SizedBox(height: 12),
 
+          // [FIX — QUÉT LAN KHÔNG RA TRÊN iOS] Nếu iPhone đã lỡ bấm "Không cho phép" ở hộp thoại
+          // "Local Network" TRƯỚC KHI có bản vá này (Bonjour "cú hích" trong lan_discovery_service.dart),
+          // iOS sẽ KHÔNG BAO GIỜ tự hỏi lại — đường duy nhất còn lại là vào Cài đặt bật tay. Chỉ
+          // hiện gợi ý này khi quét xong mà KHÔNG thấy thiết bị nào, tránh làm phiền lượt quét bình thường.
+          if (Platform.isIOS && !_isScanning && empty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.wifi_find_rounded, color: Colors.orange, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Không thấy thiết bị nào?', style: TextStyle(color: textMain, fontSize: 12, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Nếu trước đó bạn đã bấm "Không cho phép" ở hộp thoại quyền "Mạng cục bộ" (Local Network), iPhone sẽ không hỏi lại — vào Cài đặt bật tay.',
+                          style: TextStyle(color: textSub, fontSize: 11),
+                        ),
+                        const SizedBox(height: 6),
+                        InkWell(
+                          onTap: openAppSettings,
+                          child: const Text('Mở Cài đặt App', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // Danh sách thiết bị: mỗi hàng tên + MAC + IP (+ loại), kèm nút "Thêm ngay"
           if (!empty)
             ConstrainedBox(
