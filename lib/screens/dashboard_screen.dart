@@ -260,6 +260,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
     SharedPreferences.getInstance().then((p) => p.setStringList('device_order_$homeId', orderedMacs));
   }
 
+  // ==========================================================================
+  // 🧩 [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Bố cục lưới — SONG SONG với
+  // device_order_$homeId ở trên, KHÔNG thay thế. Rỗng ([]) = người dùng CHƯA từng dùng tính năng
+  // "khoảng trống" -> mọi nơi đọc _gridLayoutSlots phải tự rơi về hành vi cũ (macOrderRank/Wrap
+  // tetris-fill sẵn có, xem _buildDevicesGridBody) — cùng triết lý "local-first, đồng bộ nền" đã
+  // áp dụng cho device_order (_loadLocalDeviceOrder/_persistLocalDeviceOrder ở trên).
+  // ==========================================================================
+  Future<List<String>> _loadLocalGridLayout(String homeId) async {
+    if (homeId.isEmpty) return [];
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList('grid_layout_$homeId') ?? [];
+  }
+
+  void _persistLocalGridLayout(String homeId, List<String> slots) {
+    if (homeId.isEmpty) return;
+    SharedPreferences.getInstance().then((p) => p.setStringList('grid_layout_$homeId', slots));
+  }
+
   /// Sắp [devices] TẠI CHỖ theo [orderedMacs] (rank theo vị trí xuất hiện; MAC lạ/chưa từng kéo
   /// rơi xuống cuối, giữ nguyên thứ tự tự nhiên giữa chúng) — dùng CHUNG cho mọi điểm nạp danh
   /// sách thiết bị để đảm bảo nhất quán 1 công thức sắp xếp duy nhất trong toàn bộ luồng.
@@ -481,6 +499,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
              );
            }
 
+           // [ĐỒNG BỘ AVATAR LÊN SERVER — ĐỌC] device['settings']['avatar_map'] là JSON phẳng
+           // {endpoint: avatarId} Backend trả về nguyên văn từ Redis hash device_settings:{MAC}
+           // (xem DeviceListItem.Settings ở dashboard_handler.go — ĐÃ có sẵn, không cần API mới).
+           // Chỉ hydrate khi field NÀY TỒN TẠI (khác null) — MAC chưa từng đồng bộ (avatar cũ chỉ
+           // gán cục bộ trước khi tính năng này ra đời) thì ĐỂ NGUYÊN _deviceAvatarId đã nạp từ
+           // SharedPreferences lúc initState, không ghi đè mất lựa chọn cũ của chính máy này.
+           final String devMacNorm = devMac.replaceAll(':', '').toUpperCase();
+           final dynamic rawAvatarMap = (device['settings'] as Map?)?['avatar_map'];
+           if (devMacNorm.isNotEmpty && rawAvatarMap is String) {
+             // Field tồn tại (kể cả rỗng/"{}" = đã gỡ hết) -> Server giờ là NGUỒN SỰ THẬT cho MAC
+             // này, XÓA SẠCH entry cũ của MAC trước khi nạp lại — đồng bộ đúng cả trường hợp GỠ
+             // avatar từ một máy/người dùng khác trong cùng nhà.
+             _deviceAvatarId.removeWhere((k, _) => k.startsWith('${devMacNorm}_'));
+             if (rawAvatarMap.isNotEmpty) {
+               try {
+                 final Map<String, dynamic> decoded = jsonDecode(rawAvatarMap);
+                 decoded.forEach((endpoint, avatarId) {
+                   if (avatarId is String && avatarId.isNotEmpty) {
+                     _deviceAvatarId['${devMacNorm}_$endpoint'] = avatarId;
+                   }
+                 });
+               } catch (e) {
+                 if (kDebugMode) print('⚠️ [AVATAR SYNC] Lỗi giải mã avatar_map của $devMacNorm: $e');
+               }
+             }
+           }
+
            // [FIX ĐẾM SAI] Bỏ Hub & Cảm biến khỏi phép đếm bật/tắt (vẫn hydrate state ở trên).
            final String dType = '${device['fw_type'] ?? ''} ${device['category'] ?? ''} ${device['type'] ?? ''}'.toUpperCase();
            if (dType.contains('HUB') || dType.contains('SENSOR')) {
@@ -534,6 +579,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // _loadLocalDeviceOrder).
         final List<String> localOrder = await _loadLocalDeviceOrder(homeId);
         _applyLocalDeviceOrder(devices, localOrder);
+
+        // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Nạp cục bộ TRƯỚC (đồng bộ, không chờ
+        // mạng) — cùng triết lý "local-first" đã áp cho device_order ở trên. Đồng bộ NỀN với
+        // Server ngay sau (KHÔNG await — 1 field tuỳ chọn không được phép chặn hiển thị dashboard
+        // chính), tự vá lại _gridLayoutSlots nếu Server có bản mới hơn (vd vừa đổi từ máy khác).
+        final List<String> localGridLayout = await _loadLocalGridLayout(homeId);
+        if (localGridLayout.isNotEmpty) _gridLayoutSlots = localGridLayout;
+        ApiService().getGridLayout(homeId).then((serverSlots) {
+          if (!mounted || serverSlots == null) return;
+          // Đã chuyển sang nhà khác trong lúc chờ mạng -> bỏ, tránh gán nhầm bố cục nhà khác.
+          if (_provisioningTargetHomeId != homeId) return;
+          _persistLocalGridLayout(homeId, serverSlots);
+          setState(() => _gridLayoutSlots = serverSlots);
+        });
+
+        // [ĐỒNG BỘ AVATAR LÊN SERVER] _deviceAvatarId vừa được vá lại (có thể) ở vòng lặp trên —
+        // ghi luôn xuống SharedPreferences để lần mở App kế tiếp (kể cả OFFLINE, chưa kịp fetch)
+        // vẫn thấy đúng avatar mới nhất đã đồng bộ, không phải đợi round-trip mạng lần nữa.
+        _persistDeviceAvatars();
 
         if (mounted) {
           setState(() {
@@ -591,6 +655,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // _buildDevicesGridBody chạy (kể cả ngoài edit mode, rẻ vì chỉ đọc field có sẵn) để làm hạt
   // giống khi bật chế độ Sửa, tránh phải dựng lại toàn bộ danh sách riêng.
   List<({String key, String mac})> _lastVisualCardOrder = [];
+  // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] gridSpanX của lần build gần nhất, theo key —
+  // cập nhật CÙNG LÚC với _lastVisualCardOrder (xem _buildDevicesGridBody). Chỉ _saveDeviceOrder()
+  // đọc, để biết cần chèn bao nhiêu "SKIP" sau mỗi thẻ lớn khi dựng mảng gửi setGridLayout() —
+  // _editOrderDraft tự thân KHÔNG mang theo gridSpanX (chỉ có key+mac).
+  Map<String, int> _lastEntrySpanByKey = {};
   // [FIX GIAI ĐOẠN 109 — KÉO-THẢ THEO TỪNG PHÒNG] null = đang Sửa thứ tự CẢ NHÀ (mở từ tab "Tất
   // cả", hành vi gốc không đổi). Non-null = đang Sửa CHỈ trong phạm vi 1 phòng (mở khi đang xem
   // tab phòng đó) — chụp lại NGAY LÚC bấm cây bút, không đọc lại roomProv.selectedRoomId về sau vì
@@ -601,6 +670,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // chiếm trong thứ tự CẢ NHÀ hiện có — không đụng vị trí tương đối của bất kỳ thiết bị phòng khác
   // nào (xem _saveDeviceOrder). Không cần thêm bảng/endpoint Backend nào mới.
   String? _editingScopedRoomId;
+
+  // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Token đặc biệt (KHÔNG phải MAC/hideKey thật
+  // — không thiết bị nào trùng được) đại diện "ô trống người dùng cố ý để lại" trong
+  // _editOrderDraft/_gridLayoutSlots. "SKIP" (khác EMPTY) chỉ sinh ra lúc LƯU (xem _saveDeviceOrder)
+  // để đánh dấu ô bị "nuốt" bởi span của thẻ lớn đứng trước — không bao giờ xuất hiện trong
+  // _editOrderDraft (người dùng không tự tạo/kéo được ô SKIP, nó là hệ quả tự động của span).
+  static const String _kEmptySlotMac = '__EMPTY__';
+  static const String _kSkipToken = 'SKIP';
+  static const String _kEmptyToken = 'EMPTY';
+
+  // Bố cục lưới đã tải (hideKey / "EMPTY" / "SKIP", ĐÚNG thứ tự đã lưu) — [] = người dùng CHƯA
+  // từng dùng tính năng khoảng trống, mọi nơi đọc biến này PHẢI tự rơi về hành vi cũ (macOrderRank).
+  List<String> _gridLayoutSlots = [];
 
   void _toggleEditOrder() {
     if (_isEditingOrder) {
@@ -626,7 +708,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final List<String> draftMacs = [];
     final Set<String> seenMacs = {};
     for (final entry in _editOrderDraft) {
-      if (entry.mac.isNotEmpty && seenMacs.add(entry.mac)) draftMacs.add(entry.mac);
+      // [GIAI ĐOẠN 113] "__EMPTY__" (ô trống) KHÔNG phải MAC thật — loại khỏi mảng device-order
+      // cũ (mảng đó chỉ hiểu MAC thật, xem _saveDeviceOrder/applyDeviceOrder phía Backend); ô
+      // trống chỉ sống trong gridTokensToSave bên dưới.
+      if (entry.mac.isNotEmpty && entry.mac != _kEmptySlotMac && seenMacs.add(entry.mac)) draftMacs.add(entry.mac);
     }
 
     // [FIX GIAI ĐOẠN 109 — KÉO-THẢ THEO TỪNG PHÒNG] _editingScopedRoomId != null nghĩa là vừa Sửa
@@ -671,6 +756,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (kDebugMode) print('⚠️ [SAVE ORDER] Bỏ qua gọi API: home_id rỗng hoặc danh sách rỗng — thoát chế độ Sửa không lưu gì.');
       setState(() { _isEditingOrder = false; _editingScopedRoomId = null; });
       return;
+    }
+
+    // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Ghi KÉP song song với device_order ở
+    // dưới (KHÔNG thay thế) — CHỈ khi Sửa CẢ NHÀ (_editingScopedRoomId == null): grid-layout là
+    // MỘT chuỗi token PHẲNG duy nhất cho cả nhà, không có công thức "ghép theo khe của 1 phòng"
+    // như device_order (xem khối _editingScopedRoomId ở trên) — ghép chuỗi token PARTIAL của 1
+    // phòng vào chuỗi ĐẦY ĐỦ sẽ làm lệch toàn bộ vị trí SKIP/EMPTY của các phòng khác, phức tạp
+    // hơn hẳn lợi ích mang lại nên KHÔNG làm (nút "Thêm khoảng trống" cũng đã tự ẩn khi Sửa theo
+    // phòng — xem _buildDevicesGridBody — nên usesGridLayout dưới đây luôn false trong trường
+    // hợp đó, không cần thêm gate riêng).
+    final bool usesGridLayout = _editingScopedRoomId == null && _editOrderDraft.any((e) => e.mac == _kEmptySlotMac);
+    List<String>? gridTokensToSave;
+    if (usesGridLayout) {
+      final List<String> tokens = [];
+      for (final entry in _editOrderDraft) {
+        if (entry.mac == _kEmptySlotMac) {
+          tokens.add(_kEmptyToken);
+          continue;
+        }
+        tokens.add(entry.key);
+        // "SKIP" theo ĐÚNG span của thẻ (Công tắc=1 -> 0 SKIP, Cửa Gara=2 -> 1 SKIP, Quạt/Nhiệt
+        // độ=3 -> 2 SKIP...) — span lấy từ _lastEntrySpanByKey (chụp ở lần build hiển thị gần
+        // nhất, xem _buildDevicesGridBody); mặc định 1 (không SKIP) nếu vì lý do gì đó chưa có.
+        final int span = _lastEntrySpanByKey[entry.key] ?? 1;
+        for (int i = 1; i < span; i++) { tokens.add(_kSkipToken); }
+      }
+      gridTokensToSave = tokens;
+    } else if (_gridLayoutSlots.isNotEmpty && _editingScopedRoomId == null) {
+      // Đã từng có bố cục ô lưới nhưng lượt Sửa này người dùng xoá HẾT ô trống -> "tắt" tính năng,
+      // dọn sạch để lần hiển thị sau tự rơi về macOrderRank (mảng rỗng = _applyGridLayout không
+      // còn được gọi, xem _buildDevicesGridBody).
+      gridTokensToSave = [];
+    }
+    if (gridTokensToSave != null) {
+      _gridLayoutSlots = gridTokensToSave;
+      _persistLocalGridLayout(homeId, gridTokensToSave);
+      if (kDebugMode) print('💾 [SAVE ORDER] Ô lưới (${gridTokensToSave.length} token): $gridTokensToSave');
+      // Fire-and-forget — tính năng TÙY CHỌN, lỗi mạng ở đây không được phép chặn/làm hỏng luồng
+      // Lưu thứ tự MAC chính bên dưới.
+      ApiService().setGridLayout(homeId, gridTokensToSave);
     }
 
     // [FIX ĐỨT GÃY LUỒNG DỮ LIỆU — BƯỚC 3 "LƯU"] Ghi CỤC BỘ NGAY LẬP TỨC, KHÔNG chờ kết quả gọi
@@ -839,6 +964,96 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // ==========================================================================
+  // 🧱 [GIAI ĐOẠN 115, MỞ RỘNG GIAI ĐOẠN 117] MENU 2 CẤP CHO KHỐI MẶT CÔNG TẮC VẬT LÝ
+  // ==========================================================================
+  /// Menu khi nhấn giữ MỘT NÚT (ô con/endpoint) trong khối — mọi việc THẬT SỰ thuộc về riêng
+  /// kênh đó: Sửa tên nút, Thay đổi giao diện avatar riêng kênh, Ẩn riêng kênh này (KHÔNG ảnh
+  /// hưởng các nút khác cùng khối — đúng data model hideKey per-endpoint, xem Giai đoạn 116),
+  /// và lối vào "Chọn nhiều" có TỰ CHỌN SẴN đúng kênh này (để user chọn thêm kênh/khối khác rồi
+  /// dùng thanh công cụ bên dưới tạo Nhóm ảo/Cầu thang — _bulkCreateGroup). KHÔNG có Xóa/Chuyển
+  /// phòng/Chuyển nhà ở đây — những việc đó thuộc về CẢ khối, xem _openFaceplateDeviceMenu (nhấn
+  /// giữ tiêu đề).
+  void _openGangMenu(String mac, String hideKey, String name, String endpoint) {
+    final cb = _stdCallbacks(mac, hideKey, name, endpoint: endpoint);
+    final t = AppTranslations.of(context, listen: false);
+    DeviceMenuHelper.showGenericDeviceMenu(
+      context: context,
+      mac: mac,
+      currentName: name,
+      subtitle: 'Endpoint: $endpoint',
+      headerIcon: Icons.power_settings_new_rounded,
+      onRename: cb.rename,
+      onChangeAvatar: cb.changeAvatar,
+      isHidden: _hiddenDevices.contains(hideKey),
+      onToggleHide: (hide) => setState(() {
+        hide ? _hiddenDevices.add(hideKey) : _hiddenDevices.remove(hideKey);
+        _persistHiddenDevices();
+      }),
+      extraItems: [
+        DeviceMenuItem(
+          icon: Icons.checklist_rtl_rounded,
+          title: t.text('select_multiple_devices'),
+          onTap: () => setState(() { _isSelectionMode = true; _selectedDevices.add(hideKey); }),
+        ),
+      ],
+    );
+  }
+
+  /// Menu ĐẦY ĐỦ cấp thiết bị khi nhấn giữ vùng TIÊU ĐỀ của khối (tên khối, phía trên các nút) —
+  /// Cài đặt/Hẹn giờ/Lịch sử/Ngữ cảnh/Chia sẻ/Ẩn CẢ KHỐI/Chuyển phòng/Chuyển nhà/Xóa CẢ THIẾT BỊ.
+  /// [KHÔNG có onRename/onChangeAvatar ở đây — CỐ Ý] Backend chỉ hỗ trợ đổi tên/avatar THEO TỪNG
+  /// ENDPOINT (RenameDeviceEndpointHandler yêu cầu endpoint khớp regex khác rỗng; avatar_map cũng
+  /// theo endpoint) — không có khái niệm "tên/avatar cấp thiết bị" tách biệt để gán ở đây, 2 việc
+  /// đó CHỈ làm được qua _openGangMenu (nhấn giữ đúng 1 nút). [endpoint đại diện] Hẹn giờ/Lịch sử/
+  /// Ngữ cảnh dùng endpoint của KÊNH ĐẦU TIÊN làm đại diện (không có khái niệm "cả khối" cho các
+  /// tính năng này ở Backend).
+  void _openFaceplateDeviceMenu(String mac, String groupKey, String deviceName, List<Map<String, dynamic>> channels) {
+    final String repEndpoint = channels.isNotEmpty ? channels.first['endpoint'] as String : '';
+    final cb = _stdCallbacks(mac, groupKey, deviceName, endpoint: repEndpoint);
+    // Gọi từ chuỗi tap-handler (onLongPress) -> listen: false, tránh "liệt nút".
+    final t = AppTranslations.of(context, listen: false);
+    DeviceMenuHelper.showGenericDeviceMenu(
+      context: context,
+      mac: mac,
+      currentName: deviceName,
+      subtitle: '${channels.length} nút bấm',
+      headerIcon: Icons.grid_view_rounded,
+      onDeviceTimer: cb.timer,
+      onDeviceHistory: cb.history,
+      onDeviceAutomation: cb.automation,
+      onDeviceShare: cb.share,
+      onAssignHome: cb.assignHome,
+      onAssignRoom: cb.assignRoom,
+      // [FIX GIAI ĐOẠN 116] "Ẩn cả khối" là hành động TIỆN ÍCH lặp qua TỪNG hideKey thật (không có
+      // khoá ẩn cấp khối nào tồn tại) — isHidden hiển thị true chỉ khi TẤT CẢ kênh đang ẩn (đúng
+      // logic allHidden đã tính ở _buildFaceplateEntry, tính lại tương đương ở đây vì hàm này độc
+      // lập với entries).
+      isHidden: channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}")),
+      onToggleHide: (hide) => setState(() {
+        for (final c in channels) {
+          final String ck = "${mac}_${c['endpoint']}";
+          hide ? _hiddenDevices.add(ck) : _hiddenDevices.remove(ck);
+        }
+        _persistHiddenDevices();
+      }),
+      onDelete: cb.delete,
+      // [FIX — LỐI VÀO "CHỌN NHIỀU" CHO NHÀ CHỈ TOÀN CÔNG TẮC ĐA KÊNH] SmartSwitchCard đơn (1-gang)
+      // có sẵn mục này trong extraItems riêng — khối mặt công tắc (>=2 gang) trước đây KHÔNG có,
+      // nếu một nhà chỉ toàn thiết bị đa kênh sẽ không còn cách nào bật chế độ Chọn nhiều.
+      // [FIX GIAI ĐOẠN 116] CHỈ bật chế độ Chọn nhiều — KHÔNG tự chọn sẵn gì (groupKey/mac trần
+      // không còn là 1 phần tử hợp lệ của _selectedDevices, tập này nay LUÔN là hideKey per-nút).
+      // Người dùng tự tick từng nút muốn chọn sau khi menu đóng.
+      extraItems: [
+        DeviceMenuItem(
+          icon: Icons.checklist_rtl_rounded,
+          title: t.text('select_multiple_devices'),
+          onTap: () => setState(() => _isSelectionMode = true),
+        ),
+      ],
+    );
+  }
+
   /// Nếu [hideKey] đã được gán Avatar còn hợp lệ -> trả về Widget Avatar (bọc long-press mở
   /// ĐÚNG menu dùng chung, có "Thay đổi giao diện") + kích thước lưới ĐÚNG blueprint. null nếu
   /// chưa gán/avatar đã gỡ khỏi thư viện -> nơi gọi tự dựng card mặc định (SmartXCard) như trước.
@@ -867,13 +1082,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// [ĐỒNG BỘ AVATAR LÊN SERVER] Gom mọi avatar ĐANG gán cho các kênh của [mac] (từ
+  /// _deviceAvatarId, khoá dạng "{mac}_{endpoint}") thành JSON phẳng {endpoint: avatarId} — khớp
+  /// đúng field `avatar_map` phía Backend (xem allowedDeviceSettingKeys trong device_handler.go).
+  Map<String, String> _avatarMapForMac(String mac) {
+    final Map<String, String> m = {};
+    final String prefix = '${mac}_';
+    _deviceAvatarId.forEach((k, v) {
+      if (k.startsWith(prefix)) m[k.substring(prefix.length)] = v;
+    });
+    return m;
+  }
+
   /// Popup "Thay đổi giao diện (Avatar)" — chọn từ TOÀN BỘ avatarLibrary, KHÔNG lọc theo category
   /// backend của thiết bị (đổi Avatar chỉ đổi GIAO DIỆN hiển thị, người dùng có thể chọn bất kỳ
   /// hình dáng nào họ thấy hợp — vd gán "Đèn RGB" cho một công tắc thường vẫn hợp lệ). Mỗi ô
   /// preview render bằng ĐÚNG buildWidget() của blueprint với dữ liệu MẪU cố định (không phải
   /// trạng thái thật) chỉ để xem trước hình dáng — callbacks preview là no-op (không điều khiển
   /// thiết bị thật khi đang chọn).
-  void _showAvatarPicker(String hideKey) {
+  void _showAvatarPicker(String hideKey, String mac) {
     final String? currentId = _deviceAvatarId[hideKey];
     final Size screenSize = MediaQuery.of(context).size;
     showAppDialog(
@@ -897,6 +1124,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }
             });
             _persistDeviceAvatars();
+            // [ĐỒNG BỘ AVATAR LÊN SERVER] Trước đây CHỈ lưu SharedPreferences cục bộ — đổi điện
+            // thoại/người nhà dùng máy khác không thấy avatar vừa gán. Bắn NGAY lên Backend qua
+            // kênh device_settings tổng quát đã có sẵn (setDeviceSetting, xem
+            // allowedDeviceSettingKeys.avatar_map ở Go) — fire-and-forget, không chặn UI/không
+            // rollback nếu lỗi mạng (đã có bản cục bộ ngay phía trên làm nguồn sự thật tối thiểu
+            // trên CHÍNH máy này, cùng triết lý với _saveDeviceOrder).
+            ApiService().setDeviceSetting(mac, 'avatar_map', jsonEncode(_avatarMapForMac(mac)));
             Navigator.pop(ctx);
           },
         ),
@@ -937,7 +1171,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final String renameEndpoint = (e['endpoint'] as String).startsWith('S_') || RegExp(r'^[Ff]\d+$').hasMatch(e['endpoint'])
           ? e['endpoint'] : 'S_${e['mac']}';
       final cb = _stdCallbacks(e['mac'], "${e['mac']}_$renameEndpoint", e['name'], endpoint: renameEndpoint);
-      entries.add((key: hideKey, mac: e['mac'] as String, gridSpanX: 2, gridSpanY: 1, autoHeight: true, widget: SmartFanCard(
+      // [FIX GIAI ĐOẠN 113] Quạt: span 3 theo quy hoạch cột mới (Công tắc=1, Cửa Gara=2, Quạt/
+      // Nhiệt độ=3) — trước đây dùng chung span 2 với mọi thẻ lớn khác.
+      entries.add((key: hideKey, mac: e['mac'] as String, gridSpanX: 3, gridSpanY: 1, autoHeight: true, widget: SmartFanCard(
         key: ValueKey("${hideKey}_$status"),
         mac: e['mac'],
         endpoint: e['endpoint'],
@@ -973,7 +1209,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
       final cb = _stdCallbacks(e['mac'], hideKey, e['name'], endpoint: e['endpoint']);
-      entries.add((key: hideKey, mac: e['mac'] as String, gridSpanX: 2, gridSpanY: 1, autoHeight: true, widget: SmartSensorCard(
+      // [FIX GIAI ĐOẠN 113] Cảm biến (Nhiệt độ): span 3 — cùng nhóm với Quạt theo yêu cầu.
+      entries.add((key: hideKey, mac: e['mac'] as String, gridSpanX: 3, gridSpanY: 1, autoHeight: true, widget: SmartSensorCard(
         key: ValueKey("${hideKey}_${e['temp']}_${e['hum']}_${e['online']}"),
         mac: e['mac'],
         endpoint: e['endpoint'],
@@ -1110,71 +1347,209 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return entries;
   }
 
-  // [GIAI ĐOẠN 104] Công thức DÙNG CHUNG cho lưới Công tắc — cả chế độ THƯỜNG (GridView bên dưới)
-  // lẫn chế độ SỬA (ReorderableWrap trong _buildInPlaceEditWrap, cần width tường minh cho từng
-  // ô) — luôn ép ĐÚNG 3 cột trên mobile (<500px) thay vì 130px cố định trước đây (không co giãn
-  // theo bề ngang màn hình thật, xem giải thích đầy đủ ở _buildAllDeviceCardEntries). Tính CHUNG
-  // một công thức để cỡ thẻ không "nhảy" giữa 2 chế độ (đúng nguyên tắc đã áp dụng từ Giai đoạn 90).
-  int _switchCrossAxisCount(double maxWidth) => maxWidth < 500 ? 3 : (maxWidth / 140).floor().clamp(3, 12);
+  // [FIX GIAI ĐOẠN 113 — TỶ LỆ CỘT THEO MỐC TƯỜNG MINH] Trước đây MỖI nơi (Công tắc/thẻ lớn) tự
+  // suy công thức riêng từ 1 target-px khác nhau (140px/130px, clamp khác nhau) — tuy đều đạt
+  // mục tiêu "3 cột trên Mobile" nhưng số cột Tablet/PC không khớp nhau tuyệt đối và không theo
+  // đúng mốc breakpoint người dùng yêu cầu tường minh. Nay dùng ĐÚNG MỘT hàm _gridColumns() cho
+  // TẤT CẢ (Công tắc lẫn thẻ lớn, chế độ thường lẫn chế độ Sửa — vẫn giữ nguyên tắc "không nhảy
+  // cỡ giữa 2 chế độ" từ Giai đoạn 90/104).
+  //
+  // [FIX GIAI ĐOẠN 114 — THẺ CÔNG TẮC PHÌNH TO TRÊN TABLET] Mốc cũ (>1000=10, >600=6) để trống
+  // một dải rộng 601-1000px chỉ có 6 cột — trên Tablet ngang/cửa sổ desktop thu nhỏ (~900-1200px)
+  // 6 cột vẫn cho thẻ Công tắc 1x1 khá to, không "gọn như Desktop". Thêm MỘT mốc trung gian
+  // 900px (8 cột) — dải 601-900 (Tablet dọc) giữ 6 cột như cũ. Mốc Mobile (<=600 -> 3 cột) GIỮ
+  // NGUYÊN TUYỆT ĐỐI theo yêu cầu, không đụng.
+  int _gridColumns(double maxWidth) {
+    if (maxWidth > 1200) return 10; // Desktop lớn — thẻ rất gọn
+    if (maxWidth > 900) return 8; // Tablet ngang / Desktop thu nhỏ — 4 Công tắc = nửa màn hình
+    if (maxWidth > 600) return 6; // Tablet dọc
+    return 3; // Mobile — KHÔNG ĐỔI
+  }
+
+  int _switchCrossAxisCount(double maxWidth) => _gridColumns(maxWidth);
   double _switchCellWidth(double maxWidth) {
     final int n = _switchCrossAxisCount(maxWidth);
     return (maxWidth - (n - 1) * 16) / n;
   }
 
-  // [BƯỚC 5] Dựng entries CHO thẻ Công tắc — cùng logic avatar-aware với
-  // _buildAllDeviceCardEntries (gán Avatar -> dùng UI+span blueprint; chưa gán -> card mặc định
-  // SmartSwitchCard span 1x1 + huy hiệu gán Avatar).
+  // [BƯỚC 5, ĐẠI TU GIAI ĐOẠN 115] Dựng entries CHO thiết bị Công tắc. [KIẾN TRÚC "SERVER MÙ" —
+  // xem khối comment đầy đủ tại PhysicalSwitchBlockCard] Backend/thứ tự KHÔNG đổi gì — quyết định
+  // duy nhất ở ĐÂY: thiết bị 1 kênh (đa số) đi ĐÚNG đường cũ (SmartSwitchCard đơn, xem
+  // _buildSingleSwitchEntry — tuyệt đối không đổi hình dáng), thiết bị >=2 kênh CÙNG MAC gộp
+  // thành MỘT entry duy nhất (khối mặt công tắc vật lý, xem _buildFaceplateEntry) — 1 entry = 1
+  // đơn vị kéo-thả/lưu thứ tự (ReorderableWrap thao tác theo entries -> tự động "kéo cả khối,
+  // không kéo rời từng nút" mà KHÔNG cần Draggable/DragTarget riêng nào).
   List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> _buildSwitchCardEntries(
     List<Map<String, dynamic>> visibleSwitches,
     DeviceProvider provider,
     bool isDark,
   ) {
     final List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> entries = [];
+
+    // Gom KÊNH THẬT theo MAC (loại nút "Tất cả" ảo — endpoint='all', KHÔNG phải nút vật lý trên
+    // mặt công tắc thật). visibleSwitches đã sắp sẵn: nút "Tất cả" (nếu có) LUÔN đứng TRƯỚC các
+    // kênh cùng MAC (allSwitches.sort() ở _buildDevicesGridBody, rank(a)=-1 cho nút tổng) — giữ
+    // nguyên thứ tự này khi gom vào channelsByMac.
+    final Map<String, List<Map<String, dynamic>>> channelsByMac = {};
+    final Map<String, Map<String, dynamic>> masterByMac = {};
     for (final item in visibleSwitches) {
-      final String mac = item['mac'];
-      final String ep = item['endpoint'];
-      final String deviceKey = "${mac}_$ep";
-      final avatarEntry = _tryBuildAvatarEntry(deviceKey, 'switch', item, provider);
-      if (avatarEntry != null) {
-        entries.add((key: deviceKey, mac: mac, widget: avatarEntry.widget, gridSpanX: avatarEntry.gridSpanX, gridSpanY: avatarEntry.gridSpanY, autoHeight: false));
-        continue;
+      final String mac = item['mac'] as String;
+      if (item['isMaster'] == true) { masterByMac[mac] = item; continue; }
+      channelsByMac.putIfAbsent(mac, () => []).add(item);
+    }
+
+    final Set<String> emittedMacs = {};
+    for (final item in visibleSwitches) {
+      if (item['isMaster'] == true) continue;
+      final String mac = item['mac'] as String;
+      if (!emittedMacs.add(mac)) continue; // MAC này đã emit entry rồi (kênh thứ 2+ của cùng MAC)
+      final channels = channelsByMac[mac]!;
+
+      if (channels.length == 1) {
+        entries.add(_buildSingleSwitchEntry(channels.first, provider));
+      } else {
+        entries.add(_buildFaceplateEntry(mac, channels, masterByMac[mac], provider));
       }
-      final bool isDevOnline = item['online'] == true;
-      final String status = "${item['state']}_$isDevOnline";
-      final bool isOn = item['state'] == 'ON';
-      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
-      entries.add((key: deviceKey, mac: mac, gridSpanX: 1, gridSpanY: 1, autoHeight: false, widget: SmartSwitchCard(
-        key: ValueKey("${mac}_${ep}_$status"),
-        mac: mac,
-        endpointKey: ep,
-        backendName: item['name'],
-        initialStatus: isOn,
-        isOffline: !isDevOnline,
-        isMaster: item['isMaster'] == true,
-        provider: provider,
-        onRefresh: _handleRefresh,
-        rawDeviceData: item['rawDevice'],
-        isHidden: _hiddenDevices.contains(deviceKey),
-        isSelectionMode: _isSelectionMode,
-        isSelected: _selectedDevices.contains(deviceKey),
-        hasHiddenDevices: _hiddenDevices.isNotEmpty,
-        isShowingHidden: _showHiddenFilter,
-        onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
-        onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
-        onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
-        onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
-        onDelete: cb.delete,
-        onRename: cb.rename,
-        onChangeAvatar: cb.changeAvatar,
-        onAssignHome: cb.assignHome,
-        onAssignRoom: cb.assignRoom,
-        onDeviceTimer: cb.timer,
-        onDeviceHistory: cb.history,
-        onDeviceAutomation: cb.automation,
-        onDeviceShare: cb.share,
-      )));
     }
     return entries;
+  }
+
+  /// [GIAI ĐOẠN 115] Thiết bị Công tắc CHỈ 1 kênh — trích Y NGUYÊN logic entry gốc (trước khi có
+  /// khối mặt công tắc), KHÔNG đổi 1 dòng hành vi/hình dáng cho đa số thiết bị (1-gang) đang có.
+  ({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight}) _buildSingleSwitchEntry(
+    Map<String, dynamic> item,
+    DeviceProvider provider,
+  ) {
+    final String mac = item['mac'];
+    final String ep = item['endpoint'];
+    final String deviceKey = "${mac}_$ep";
+    final avatarEntry = _tryBuildAvatarEntry(deviceKey, 'switch', item, provider);
+    if (avatarEntry != null) {
+      return (key: deviceKey, mac: mac, widget: avatarEntry.widget, gridSpanX: avatarEntry.gridSpanX, gridSpanY: avatarEntry.gridSpanY, autoHeight: false);
+    }
+    final bool isDevOnline = item['online'] == true;
+    final String status = "${item['state']}_$isDevOnline";
+    final bool isOn = item['state'] == 'ON';
+    final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
+    return (key: deviceKey, mac: mac, gridSpanX: 1, gridSpanY: 1, autoHeight: false, widget: SmartSwitchCard(
+      key: ValueKey("${mac}_${ep}_$status"),
+      mac: mac,
+      endpointKey: ep,
+      backendName: item['name'],
+      initialStatus: isOn,
+      isOffline: !isDevOnline,
+      isMaster: item['isMaster'] == true,
+      provider: provider,
+      onRefresh: _handleRefresh,
+      rawDeviceData: item['rawDevice'],
+      isHidden: _hiddenDevices.contains(deviceKey),
+      isSelectionMode: _isSelectionMode,
+      isSelected: _selectedDevices.contains(deviceKey),
+      hasHiddenDevices: _hiddenDevices.isNotEmpty,
+      isShowingHidden: _showHiddenFilter,
+      onToggleShowHidden: () => setState(() => _showHiddenFilter = !_showHiddenFilter),
+      onEnterSelectionMode: () => setState(() { _isSelectionMode = true; _selectedDevices.add(deviceKey); }),
+      onToggleSelect: () => setState(() { _selectedDevices.contains(deviceKey) ? _selectedDevices.remove(deviceKey) : _selectedDevices.add(deviceKey); if (_selectedDevices.isEmpty) _isSelectionMode = false; }),
+      onToggleHide: (hide) => setState(() { hide ? _hiddenDevices.add(deviceKey) : _hiddenDevices.remove(deviceKey); _persistHiddenDevices(); }),
+      onDelete: cb.delete,
+      onRename: cb.rename,
+      onChangeAvatar: cb.changeAvatar,
+      onAssignHome: cb.assignHome,
+      onAssignRoom: cb.assignRoom,
+      onDeviceTimer: cb.timer,
+      onDeviceHistory: cb.history,
+      onDeviceAutomation: cb.automation,
+      onDeviceShare: cb.share,
+    ));
+  }
+
+  /// [GIAI ĐOẠN 115] Thiết bị Công tắc >=2 kênh CÙNG MAC — MỘT entry duy nhất (khối mặt công tắc
+  /// vật lý). key/mac của entry = MAC trần (KHÔNG còn mac_endpoint) — Ẩn/Chọn nhiều/kéo-thả áp
+  /// dụng cho CẢ KHỐI; mỗi nút con vẫn đọc avatar_map/tên RIÊNG theo endpoint của chính nó (xem
+  /// vòng lặp cells bên dưới, dùng lại NGUYÊN _tryBuildAvatarEntry như thẻ đơn).
+  ({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight}) _buildFaceplateEntry(
+    String mac,
+    List<Map<String, dynamic>> channels,
+    Map<String, dynamic>? masterItem,
+    DeviceProvider provider,
+  ) {
+    final bool anyOnline = channels.any((c) => c['online'] == true);
+    // Tên khối mặc định: ưu tiên tên nút "Tất cả (N kênh)" đã có sẵn (masterItem, xem
+    // allSwitches ở _buildDevicesGridBody) — nếu vì lý do gì đó không có (không nên xảy ra khi
+    // channels.length>=2, nhưng phòng thủ), rơi về "sw-{4 cuối MAC}" đúng quy tắc đặt tên chung.
+    final String deviceName = (masterItem?['name'] as String?) ??
+        'sw-${(mac.length >= 4 ? mac.substring(mac.length - 4) : mac).toLowerCase()}';
+
+    // [FIX GIAI ĐOẠN 116 — GIỮ NGUYÊN DATA MODEL GỐC] "Ẩn"/"Chọn nhiều" của TỪNG NÚT vẫn dùng
+    // ĐÚNG hideKey (mac_endpoint) như trước Giai đoạn 115 — _selectedMacs()/_bulkCreateGroup
+    // (Nhóm ảo/Cầu thang) vốn đã hoạt động độc lập theo hideKey; gộp UI theo khối KHÔNG được phép
+    // đổi granularity của 2 tập dữ liệu này (yêu cầu tường minh của user).
+    final List<Widget> cells = [];
+    for (final item in channels) {
+      final String ep = item['endpoint'] as String;
+      final String hideKey = "${mac}_$ep";
+      final avatarEntry = _tryBuildAvatarEntry(hideKey, 'switch', item, provider);
+      if (avatarEntry != null) {
+        cells.add(KeyedSubtree(key: ValueKey('gang_$hideKey'), child: avatarEntry.widget));
+        continue;
+      }
+      final bool isOn = item['state'] == 'ON';
+      final bool isOffline = item['online'] != true;
+      final String name = (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : ep;
+      cells.add(KeyedSubtree(
+        key: ValueKey('gang_$hideKey'),
+        child: _SwitchGangButton(
+          name: name,
+          isOn: isOn,
+          isOffline: isOffline,
+          isSelectionMode: _isSelectionMode,
+          isSelected: _selectedDevices.contains(hideKey),
+          // [FIX GIAI ĐOẠN 116] Đang Chọn nhiều -> chạm nút = tick chọn/bỏ chọn ĐÚNG nút đó (khớp
+          // hành vi gốc của SmartSwitchCard._handleTap khi isSelectionMode); không thì chạm = bật/tắt.
+          onTap: () {
+            if (_isSelectionMode) {
+              setState(() {
+                _selectedDevices.contains(hideKey) ? _selectedDevices.remove(hideKey) : _selectedDevices.add(hideKey);
+                if (_selectedDevices.isEmpty) _isSelectionMode = false;
+              });
+            } else {
+              provider.toggleDevice(mac, ep, isOn);
+            }
+          },
+          onLongPress: () => _openGangMenu(mac, hideKey, name, ep),
+        ),
+      ));
+    }
+
+    // [FIX GIAI ĐOẠN 116] "Ẩn cả khối" (menu tiêu đề) hiển thị ĐANG ẨN chỉ khi TẤT CẢ kênh đều bị
+    // ẩn — dùng để quyết định overlay xám của khối; việc ẩn/hiện thật vẫn ghi từng hideKey riêng
+    // (xem _openFaceplateDeviceMenu), không có khái niệm "khoá ẩn cấp khối" nào tồn tại.
+    final bool allHidden = channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}"));
+
+    final String groupKey = mac; // vẫn dùng làm entry.key/entry.mac cho kéo-thả/grid-layout — KHÔNG liên quan gì đến Ẩn/Chọn nhiều
+    // [FIX GIAI ĐOẠN 113] Span 3-4 nút = 2 (giống Cửa Gara) — chứa nhiều UI con, cần bề ngang
+    // rộng hơn hẳn 1 ô lưới thường để không vỡ nút bấm bên trong (yêu cầu tường minh).
+    final int span = channels.length >= 3 ? 2 : 1;
+    return (
+      key: groupKey,
+      mac: mac,
+      gridSpanX: span,
+      gridSpanY: 1,
+      autoHeight: true,
+      widget: PhysicalSwitchBlockCard(
+        deviceName: deviceName,
+        cells: cells,
+        isOffline: !anyOnline,
+        isHidden: allHidden,
+        isSelectionMode: _isSelectionMode,
+        onOpenDeviceMenu: () => _openFaceplateDeviceMenu(mac, groupKey, deviceName, channels),
+        // [KHÔI PHỤC NÚT "TẤT CẢ"] Trước đây là 1 thẻ SmartSwitchCard ĐỘC LẬP riêng biệt — nay gộp
+        // vào hành vi CHẠM TIÊU ĐỀ của khối (xem PhysicalSwitchBlockCard.onToggleAll).
+        onToggleAll: masterItem != null
+            ? () => provider.toggleDevice(mac, 'all', masterItem['state'] == 'ON')
+            : null,
+      ),
+    );
   }
 
   // [FIX — GỠ STAGGEREDGRID, DÙNG Wrap ĐỂ TÔN TRỌNG TUYỆT ĐỐI THỨ TỰ ĐÃ KÉO-THẢ] StaggeredGrid
@@ -1199,22 +1574,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // (StaggeredGridTile.count) nên KHÔNG cần phân biệt autoHeight=true/false nữa; giữ nguyên 2
   // field này trong record/lúc gọi entries.add() (không rủi ro khi thừa, chỉ đơn giản không đọc
   // tới) để tránh phải sửa lại ~14 chỗ dựng entries chỉ để xoá 2 field không còn ý nghĩa.
+  // [FIX GIAI ĐOẠN 113] Dùng chung _gridColumns() — xem giải thích đầy đủ ở _switchCrossAxisCount.
   double _smallCardWidth(double availableWidth) {
-    // [KHÔNG lấy nguyên "/3 mobile, /4 PC" tuyệt đối] — dùng cứng "/4" trên MỌI màn hình rộng
-    // (PC/Tablet) sẽ tái diễn ĐÚNG lỗi "thẻ phình to trên PC" đã sửa 2 lượt trước (màn 1920px
-    // chia 4 = 480px/thẻ công tắc — phi lý). Giữ ĐÚNG mốc "3 cột trên Mobile" (yêu cầu tường
-    // minh, không suy ra từ công thức) và "4 cột" làm ĐIỂM KHỞI ĐẦU cho Tablet/PC, nhưng cho
-    // phép tự thêm cột khi màn hình CÀNG RỘNG (dựa trên đích ~130px/thẻ) thay vì khoá cứng 4 mãi
-    // mãi — vẫn giữ đúng tinh thần "4 cột trên Tablet cỡ vừa", chỉ không phá lại fix PC trước đó.
     const double spacing = 16;
-    late final int columns;
-    if (availableWidth < 600) {
-      columns = 3; // Mobile — BẮT BUỘC đúng 3 cột theo yêu cầu tường minh.
-    } else {
-      const double targetWidth = 130;
-      columns = ((availableWidth - spacing) / (targetWidth + spacing)).floor().clamp(4, 10);
-    }
+    final int columns = _gridColumns(availableWidth);
     return (availableWidth - spacing * (columns - 1)) / columns;
+  }
+
+  // [GIAI ĐOẠN 108, TÁCH RA THÀNH HÀM RIÊNG Ở GIAI ĐOẠN 113] Hợp nhất [entries] (2 khối "thẻ
+  // lớn"+"Công tắc" nối thẳng, xem nơi gọi) theo ĐÚNG macOrderRank — sort ỔN ĐỊNH (tiebreak bằng
+  // chỉ số gốc, vì List.sort của Dart KHÔNG đảm bảo stable) để giữ nguyên thứ tự kênh nội bộ của
+  // từng MAC đa kênh. Đây là đường mặc định khi người dùng CHƯA từng dùng tính năng "khoảng
+  // trống" (Giai đoạn 113, xem _applyGridLayout) — 2 đường merge SONG SONG tồn tại, KHÔNG đường
+  // nào thay thế đường kia.
+  List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> _mergeEntriesByMacOrderRank(
+    List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> entries,
+    Map<String, int> macOrderRank,
+  ) {
+    final List<int> mergeOrder = List<int>.generate(entries.length, (i) => i)
+      ..sort((ia, ib) {
+        final int ra = macOrderRank[entries[ia].mac] ?? 999999;
+        final int rb = macOrderRank[entries[ib].mac] ?? 999999;
+        if (ra != rb) return ra.compareTo(rb);
+        return ia.compareTo(ib);
+      });
+    return [for (final i in mergeOrder) entries[i]];
+  }
+
+  // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Hợp nhất [entries] (dựng từ thiết bị SỐNG)
+  // với _gridLayoutSlots (đã lưu — hideKey thật xen "EMPTY"/"SKIP") thành thứ tự HIỂN THỊ cuối
+  // cùng. CHỈ gọi khi _gridLayoutSlots.isNotEmpty (nơi gọi tự kiểm tra) — người dùng CHƯA từng
+  // dùng tính năng khoảng trống thì KHÔNG đụng tới hàm này, vẫn đi đường _mergeEntriesByMacOrderRank cũ.
+  List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> _applyGridLayout(
+    List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> entries,
+  ) {
+    final Map<String, ({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> byKey = {
+      for (final e in entries) e.key: e,
+    };
+    final List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> result = [];
+    int emptyCounter = 0;
+    for (final token in _gridLayoutSlots) {
+      // "SKIP" = ô bị "nuốt" bởi span của thẻ lớn đứng ngay trước — Wrap tự tính width theo
+      // gridSpanX của thẻ đó (xem _buildAvatarStaggeredGrid), KHÔNG cần vẽ ô riêng cho SKIP.
+      if (token == _kSkipToken) continue;
+      if (token == _kEmptyToken) {
+        result.add((key: 'empty_${emptyCounter++}', mac: _kEmptySlotMac, gridSpanX: 1, gridSpanY: 1, autoHeight: false, widget: const SizedBox.shrink()));
+        continue;
+      }
+      // token trỏ tới thiết bị đã bị xoá/không còn hiển thị (ẩn/mất kết nối vĩnh viễn) kể từ lần
+      // lưu trước -> TỰ BỎ QUA (self-heal, giống hệt triết lý "MAC lạ rơi cuối" của device_order,
+      // chỉ khác chiều: ở đây token lạ bị loại thay vì được giữ).
+      final entry = byKey.remove(token);
+      if (entry != null) result.add(entry);
+    }
+    // Thiết bị MỚI (chưa từng có trong layout đã lưu, vd vừa thêm) -> rơi CUỐI, giữ nguyên thứ tự
+    // tương đối gốc — cùng triết lý "rank map, unknown-appends-at-end" dùng xuyên suốt hệ thống.
+    result.addAll(byKey.values);
+    return result;
   }
 
   Widget _buildAvatarStaggeredGrid(List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> entries, bool isDark) {
@@ -1444,51 +1860,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ));
     }
 
+    // [GIAI ĐOẠN 115] Gom theo MAC — ĐÚNG cùng quy tắc với _buildSwitchCardEntries (chế độ
+    // thường): 1-gang giữ nguyên SmartSwitchCard đơn, >=2-gang gộp thành PhysicalSwitchBlockCard.
+    // Không đổi thì chế độ Sửa/thường sẽ "nhảy hình dạng" khác nhau — phá đúng nguyên tắc đã giữ
+    // xuyên suốt từ Giai đoạn 90/104.
+    final Map<String, List<Map<String, dynamic>>> editChannelsByMac = {};
+    final Map<String, Map<String, dynamic>> editMasterByMac = {};
     for (final item in visibleSwitches) {
-      final String mac = item['mac'];
-      final String ep = item['endpoint'];
-      final String deviceKey = "${mac}_$ep";
-      final bool isDevOnline = item['online'] == true;
-      final bool isOn = item['state'] == 'ON';
-      final cb = _stdCallbacks(mac, deviceKey, item['name'], endpoint: ep);
-      // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
-      // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
-      // vuông. [GIAI ĐOẠN 104] Cỡ ô nay dùng switchCellWidth (co giãn theo constraints.maxWidth
-      // thật, CHUNG công thức với _buildSwitchGrid chế độ thường) thay vì 130px cố định — đảm bảo
-      // LUÔN đúng 3 cột kể cả màn hình hẹp, và khớp cỡ 1:1 với chế độ thường (không "nhảy" cỡ).
-      addEntry(deviceKey, mac, 'switch', SizedBox(
-        width: switchCellWidth,
-        height: switchCellWidth,
-        child: SmartSwitchCard(
-          key: ValueKey('edit_${mac}_$ep'),
-          mac: mac,
-          endpointKey: ep,
-          backendName: item['name'],
-          initialStatus: isOn,
-          isOffline: !isDevOnline,
-          isMaster: item['isMaster'] == true,
-          provider: provider,
-          onRefresh: _handleRefresh,
-          rawDeviceData: item['rawDevice'],
-          isHidden: _hiddenDevices.contains(deviceKey),
-          isSelectionMode: false,
-          isSelected: false,
-          hasHiddenDevices: false,
-          isShowingHidden: false,
-          onToggleShowHidden: () {},
-          onEnterSelectionMode: () {},
-          onToggleSelect: () {},
-          onToggleHide: (_) {},
-          onDelete: cb.delete,
-          onRename: cb.rename,
-          onAssignHome: cb.assignHome,
-          onAssignRoom: cb.assignRoom,
-          onDeviceTimer: cb.timer,
-          onDeviceHistory: cb.history,
-          onDeviceAutomation: cb.automation,
-          onDeviceShare: cb.share,
-        ),
-      ));
+      final String mac = item['mac'] as String;
+      if (item['isMaster'] == true) { editMasterByMac[mac] = item; continue; }
+      editChannelsByMac.putIfAbsent(mac, () => []).add(item);
+    }
+    final Set<String> editEmittedMacs = {};
+    for (final item in visibleSwitches) {
+      if (item['isMaster'] == true) continue;
+      final String mac = item['mac'] as String;
+      if (!editEmittedMacs.add(mac)) continue;
+      final channels = editChannelsByMac[mac]!;
+
+      if (channels.length == 1) {
+        final single = channels.first;
+        final String ep = single['endpoint'] as String;
+        final String deviceKey = "${mac}_$ep";
+        final bool isDevOnline = single['online'] == true;
+        final bool isOn = single['state'] == 'ON';
+        final cb = _stdCallbacks(mac, deviceKey, single['name'], endpoint: ep);
+        // [BOUNDED SIZE] SmartSwitchCard bình thường CHỈ sống trong GridView (kích thước ép bởi
+        // childAspectRatio) — Wrap cấp constraint KHÔNG giới hạn cho từng con, phải tự bọc SizedBox
+        // vuông. [GIAI ĐOẠN 104] Cỡ ô nay dùng switchCellWidth (co giãn theo constraints.maxWidth
+        // thật, CHUNG công thức với lưới chế độ thường) thay vì 130px cố định — đảm bảo LUÔN đúng
+        // số cột kể cả màn hình hẹp, và khớp cỡ 1:1 với chế độ thường (không "nhảy" cỡ).
+        addEntry(deviceKey, mac, 'switch', SizedBox(
+          width: switchCellWidth,
+          height: switchCellWidth,
+          child: SmartSwitchCard(
+            key: ValueKey('edit_${mac}_$ep'),
+            mac: mac,
+            endpointKey: ep,
+            backendName: single['name'],
+            initialStatus: isOn,
+            isOffline: !isDevOnline,
+            isMaster: single['isMaster'] == true,
+            provider: provider,
+            onRefresh: _handleRefresh,
+            rawDeviceData: single['rawDevice'],
+            isHidden: _hiddenDevices.contains(deviceKey),
+            isSelectionMode: false,
+            isSelected: false,
+            hasHiddenDevices: false,
+            isShowingHidden: false,
+            onToggleShowHidden: () {},
+            onEnterSelectionMode: () {},
+            onToggleSelect: () {},
+            onToggleHide: (_) {},
+            onDelete: cb.delete,
+            onRename: cb.rename,
+            onAssignHome: cb.assignHome,
+            onAssignRoom: cb.assignRoom,
+            onDeviceTimer: cb.timer,
+            onDeviceHistory: cb.history,
+            onDeviceAutomation: cb.automation,
+            onDeviceShare: cb.share,
+          ),
+        ));
+      } else {
+        // [KHỐI MẶT CÔNG TẮC — CHẾ ĐỘ SỬA] Callback bên trong đều NO-OP: addEntry() bọc
+        // AbsorbPointer ngoài cùng đã chặn hết tương tác (chỉ còn dùng để cầm-kéo), giống hệt
+        // nguyên tắc mọi thẻ khác trong chế độ Sửa (xem addEntry ở trên).
+        final bool anyOnline = channels.any((c) => c['online'] == true);
+        final List<Widget> cells = [
+          for (final item in channels)
+            _SwitchGangButton(
+              name: (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : item['endpoint'] as String,
+              isOn: item['state'] == 'ON',
+              isOffline: item['online'] != true,
+              onTap: () {},
+              onLongPress: () {},
+            ),
+        ];
+        final int span = channels.length >= 3 ? 2 : 1;
+        addEntry(mac, mac, 'switch', SizedBox(
+          width: span >= 2 ? switchCellWidth * 2 + 16 : switchCellWidth,
+          height: span >= 2 ? null : switchCellWidth,
+          child: PhysicalSwitchBlockCard(
+            deviceName: (editMasterByMac[mac]?['name'] as String?) ?? 'sw-${(mac.length >= 4 ? mac.substring(mac.length - 4) : mac).toLowerCase()}',
+            cells: cells,
+            isOffline: !anyOnline,
+            // [FIX GIAI ĐOẠN 116] Ẩn per-endpoint như bản chính — hiển thị "đã ẩn" chỉ khi TẤT CẢ
+            // kênh trong khối đều bị ẩn (không có khoá ẩn cấp khối).
+            isHidden: channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}")),
+            onOpenDeviceMenu: () {},
+          ),
+        ));
+      }
+    }
+
+    // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Dựng thêm entry cho MỌI "ô trống" người
+    // dùng đã thêm — nguồn DUY NHẤT là _editOrderDraft (không có "thiết bị sống" nào đại diện cho
+    // khái niệm ô trống). Đăng ký vào macByKey/widgetByKey CÙNG CƠ CHẾ với thẻ thật để commitReorder()
+    // và ReorderableWrap bên dưới xử lý đồng nhất, không cần nhánh riêng.
+    for (final d in _editOrderDraft) {
+      if (d.mac != _kEmptySlotMac) continue;
+      macByKey[d.key] = _kEmptySlotMac;
+      widgetByKey[d.key] = _EmptySlotEditTile(
+        size: switchCellWidth,
+        onDelete: () => setState(() {
+          _editOrderDraft = _editOrderDraft.where((x) => x.key != d.key).toList();
+        }),
+      );
     }
 
     if (widgetByKey.isEmpty) {
@@ -2176,7 +2655,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         delete: () => _deleteDevice(mac),
         assignRoom: () => _assignSingleRoom(mac),
         assignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
-        changeAvatar: () => _showAvatarPicker(key),
+        changeAvatar: () => _showAvatarPicker(key, mac),
         // [RESPONSIVE NAV] Mobile: push toàn màn hình; PC: cửa sổ dialog lớn nổi trên
         // Dashboard — Sidebar/Topbar phía sau GIỮ NGUYÊN, không bị route đè mất
         // [FIX MULTI-RELAY] endpoint truyền xuống DeviceTimerScreen -> Hẹn giờ/Đếm ngược chỉ
@@ -4581,6 +5060,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return rank(a).compareTo(rank(b));
     });
 
+    // [FIX GIAI ĐOẠN 116 — REVERT GIAI ĐOẠN 115] "Ẩn cả khối" (menu tiêu đề PhysicalSwitchBlockCard,
+    // xem _openFaceplateDeviceMenu) nay lặp ghi TỪNG hideKey per-kênh thay vì 1 khoá mac trần — bộ
+    // lọc CHỈ cần kiểm tra ĐÚNG hideKey per-endpoint như nguyên gốc trước Giai đoạn 115, không cần
+    // nhánh mac trần nào nữa (khỏi phải giữ 2 dạng khoá song song).
     final visibleSwitches = allSwitches.where((item) => !_hiddenDevices.contains("${item['mac']}_${item['endpoint']}") || _showHiddenFilter).toList();
     // Quạt và cảm biến cũng tôn trọng danh sách ẩn — trước đây thẻ quạt không lọc
     // nên nút "Ẩn khỏi Bảng điều khiển" có gọi được cũng không thấy tác dụng
@@ -4592,18 +5075,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final visibleDimmers = allDimmers.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
     final visibleGenericPrimary = allGenericPrimary.where((e) => !_hiddenDevices.contains("${e['mac']}_${e['endpoint']}") || _showHiddenFilter).toList();
 
-    // [GIAI ĐOẠN 75] Ghi lại thứ tự thẻ NHÌN THẤY hiện tại (key+mac, KHÔNG dựng Widget — rẻ,
-    // an toàn chạy mỗi lượt build kể cả ngoài edit mode) — làm hạt giống cho _editOrderDraft khi
-    // người dùng bấm Cây bút bật chế độ Sửa (xem _toggleEditOrder).
-    _lastVisualCardOrder = [
-      for (final e in visibleFans) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
-      for (final e in visibleSensors) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
-      for (final e in visibleRollingDoors) (key: "${e['mac']}_${e['upEp']}", mac: e['mac'] as String),
-      for (final e in visiblePumps) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
-      for (final e in visibleDimmers) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
-      for (final e in visibleGenericPrimary) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
-      for (final e in visibleSwitches) (key: "${e['mac']}_${e['endpoint']}", mac: e['mac'] as String),
+    // [FIX GIAI ĐOẠN 113 — _lastVisualCardOrder PHẢI KHỚP ĐÚNG THỨ TỰ HIỂN THỊ THẬT] Trước đây
+    // gộp theo khối cố định [fans,sensors,rollingDoors,pumps,dimmers,genericPrimary,switches] —
+    // ĐÃ LỆCH với thứ tự HIỂN THỊ THẬT kể từ Giai đoạn 108 (màn thường merge theo macOrderRank,
+    // có thể xen kẽ Công tắc giữa các thẻ lớn): bấm Sửa, _editOrderDraft (seed từ biến này) khởi
+    // đầu KHÔNG khớp những gì mắt vừa thấy. Nay build entries + áp ĐÚNG MỘT đường merge (grid
+    // layout nếu người dùng đã dùng tính năng khoảng trống, không thì macOrderRank cũ) NGAY TẠI
+    // ĐÂY — dùng lại y hệt cho Builder hiển thị bên dưới (không tính 2 lần).
+    final List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> displayEntries = [
+      ..._buildAllDeviceCardEntries(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, provider, isDark),
+      ..._buildSwitchCardEntries(visibleSwitches, provider, isDark),
     ];
+    final List<({String key, String mac, Widget widget, int gridSpanX, int gridSpanY, bool autoHeight})> mergedDisplayEntries = _gridLayoutSlots.isNotEmpty
+        ? _applyGridLayout(displayEntries)
+        : _mergeEntriesByMacOrderRank(displayEntries, macOrderRank);
+
+    // [GIAI ĐOẠN 75] Ghi lại thứ tự thẻ NHÌN THẤY hiện tại (key+mac, KHÔNG dựng Widget) — làm hạt
+    // giống cho _editOrderDraft khi người dùng bấm Cây bút bật chế độ Sửa (xem _toggleEditOrder).
+    // Bỏ qua entry "ô trống" (_kEmptySlotMac) — chế độ Sửa dựng lại ô trống từ CHÍNH _gridLayoutSlots
+    // (xem _buildInPlaceEditWrap), không cần _lastVisualCardOrder mang theo.
+    _lastVisualCardOrder = [
+      for (final e in mergedDisplayEntries)
+        if (e.mac != _kEmptySlotMac) (key: e.key, mac: e.mac),
+    ];
+    // [GIAI ĐOẠN 113] Ghi kèm gridSpanX theo key — xem giải thích tại khai báo _lastEntrySpanByKey.
+    _lastEntrySpanByKey = {
+      for (final e in mergedDisplayEntries)
+        if (e.mac != _kEmptySlotMac) e.key: e.gridSpanX,
+    };
 
     // [GIAI ĐOẠN 75] Chế độ Sửa -> nhánh CỘNG THÊM riêng (_buildInPlaceEditWrap), KHÔNG đụng
     // khối Column bình thường bên dưới. Vẫn giữ dải cảnh báo mất kết nối + Công tắc tổng phòng ở
@@ -4645,6 +5144,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     : 'Giữ và kéo để sắp xếp lại vị trí thẻ thiết bị',
                 style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 12, fontWeight: FontWeight.w600),
               )),
+              // [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Nút TẠO ô trống mới — CHỈ hiện
+              // khi Sửa CẢ NHÀ (_editingScopedRoomId == null). Grid-layout là 1 chuỗi token PHẲNG
+              // cho CẢ NHÀ, không có công thức ghép-theo-phòng như device_order (xem
+              // _saveDeviceOrder) — ẩn nút này khi Sửa theo phòng để không tạo trạng thái mù mờ
+              // (ô trống thêm vào lúc Sửa theo phòng sẽ không có chỗ nào để lưu).
+              if (_editingScopedRoomId == null)
+              TextButton.icon(
+                onPressed: () => setState(() {
+                  _editOrderDraft = [
+                    ..._editOrderDraft,
+                    (key: 'empty_${DateTime.now().microsecondsSinceEpoch}', mac: _kEmptySlotMac),
+                  ];
+                }),
+                icon: Icon(Icons.add_box_outlined, size: 16, color: tkGreen),
+                label: Text('Thêm khoảng trống', style: TextStyle(color: tkGreen, fontSize: 12, fontWeight: FontWeight.w700)),
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              ),
             ]),
           ),
           _buildInPlaceEditWrap(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, visibleSwitches, provider, isDark),
@@ -4706,22 +5222,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // MERGE 2 khối lại theo ĐÚNG macOrderRank (đã tính sẵn ở trên cho allSwitches.sort()) —
         // sort ỔN ĐỊNH (tiebreak bằng chỉ số gốc, vì List.sort của Dart KHÔNG đảm bảo stable) để
         // giữ nguyên thứ tự kênh nội bộ của từng MAC đa kênh.
+        //
+        // [FIX GIAI ĐOẠN 113] entries + merge (macOrderRank HOẶC grid layout nếu có khoảng trống)
+        // giờ tính MỘT LẦN DUY NHẤT phía trên (biến mergedDisplayEntries, dùng chung với
+        // _lastVisualCardOrder) — KHÔNG còn dựng lại toàn bộ Widget thẻ thiết bị lần thứ 2 ở đây.
         // ====================================================================
-        Builder(builder: (context) {
-          final entries = [
-            ..._buildAllDeviceCardEntries(visibleFans, visibleSensors, visibleRollingDoors, visiblePumps, visibleDimmers, visibleGenericPrimary, provider, isDark),
-            ..._buildSwitchCardEntries(visibleSwitches, provider, isDark),
-          ];
-          final List<int> mergeOrder = List<int>.generate(entries.length, (i) => i)
-            ..sort((ia, ib) {
-              final int ra = macOrderRank[entries[ia].mac] ?? 999999;
-              final int rb = macOrderRank[entries[ib].mac] ?? 999999;
-              if (ra != rb) return ra.compareTo(rb);
-              return ia.compareTo(ib); // tiebreak ổn định — giữ nguyên thứ tự kênh nội bộ 1 MAC
-            });
-          final mergedEntries = [for (final i in mergeOrder) entries[i]];
-          return _buildAvatarStaggeredGrid(mergedEntries, isDark);
-        }),
+        _buildAvatarStaggeredGrid(mergedDisplayEntries, isDark),
 
         // ====================================================================
         // [NHÓM] CÔNG TẮC ẢO — render bằng chính SmartSwitchCard (badge "NHÓM")
@@ -5330,7 +5836,324 @@ class _SmartSwitchCardState extends State<SmartSwitchCard> {
 }
 
 // ============================================================================
-// 🌀 QUẠT THÔNG MINH 
+// 🧱 [GIAI ĐOẠN 115] KHỐI MẶT CÔNG TẮC VẬT LÝ (PHYSICAL FACEPLATE) — Đa kênh (2-4 gang)
+// ============================================================================
+// [KIẾN TRÚC "SERVER MÙ"] Backend KHÔNG đổi gì — thứ tự vẫn tính theo MAC (device_order/
+// device_grid_layout, xem Giai đoạn 72/113). Đây THUẦN là quyết định RENDER phía Flutter: thay vì
+// N thẻ SmartSwitchCard rời rạc (1 thẻ/1 kênh) cho các công tắc CÙNG MAC, gom lại thành MỘT khối
+// duy nhất giống mặt công tắc vật lý thật — xem _buildFaceplateEntry() (nơi gọi, trong
+// _buildSwitchCardEntries). [1-GANG GIỮ NGUYÊN 100%] Thiết bị chỉ có ĐÚNG 1 kênh KHÔNG đi qua
+// đường này — vẫn dùng thẳng SmartSwitchCard như trước (xem _buildSingleSwitchEntry) để tuyệt
+// đối không đổi hình dáng/hành vi của đa số thiết bị (1-gang) đang có trong nhà người dùng.
+//
+// [MENU 2 CẤP] Nhấn giữ MỘT NÚT (ô con) -> menu NHẸ chỉ gồm "Đổi tên nút"+"Thay đổi giao diện"
+// (2 việc THẬT SỰ thuộc về riêng kênh đó). Nhấn giữ vùng TIÊU ĐỀ (tên thiết bị, phía trên khối)
+// -> menu ĐẦY ĐỦ cấp thiết bị (Cài đặt/Hẹn giờ/Lịch sử/Ngữ cảnh/Chia sẻ/Ẩn CẢ KHỐI/Chuyển phòng/
+// Chuyển nhà/Xóa CẢ THIẾT BỊ) — khớp đúng cách người dùng nghĩ về 1 mặt công tắc vật lý: đổi tên
+// từng nút thì làm ngay tại nút, còn "cài đặt thiết bị"/"xóa" là việc của CẢ CÁI mặt công tắc.
+
+/// Một Ô BẤM bên trong khối — KHÔNG tự có shell/viền/blur riêng (khối cha PhysicalSwitchBlockCard
+/// cấp NỀN KÍNH DÙNG CHUNG + đường viền phân cách giữa các ô, xem buildGrid()) — chỉ là
+/// icon+nhãn+InkWell. Stateless: mọi prop đọc trực tiếp mỗi lần build lại (không cần local state
+/// mirror như SmartSwitchCard — khối cha đã rebuild toàn bộ mỗi khi DeviceProvider đổi).
+///
+/// [FIX GIAI ĐOẠN 116 — CHỌN NHIỀU TRẢ VỀ ĐÚNG TỪNG NÚT] Trước đây "Chọn nhiều" gộp theo CẢ
+/// KHỐI (mac trần) — SAI, vì _selectedMacs()/_bulkCreateGroup (Nhóm ảo/Cầu thang) vốn hoạt động
+/// độc lập theo TỪNG hideKey (mac_endpoint) từ trước giờ, không hề đổi. Nay mỗi nút tự có
+/// isSelectionMode/isSelected/checkbox RIÊNG — đúng data model gốc, chỉ hình dáng (layout) đổi.
+///
+/// [GIAI ĐOẠN 117 — PHÍM 3D NỔI (NEUMORPHIC)] Đập bỏ nền phẳng+Divider — mỗi nút giờ là MỘT khối
+/// riêng biệt: bo góc + đổ 2 lớp bóng (sáng góc trên-trái, tối góc dưới-phải) tạo cảm giác lồi lên
+/// khỏi mặt kính. TẮT = nền kính/tối trung tính, icon+chữ nhạt. BẬT = phủ gradient màu thương
+/// hiệu (tkGreen — DÙNG ĐÚNG màu tkGreen xuyên suốt toàn app thay vì bịa xanh dương mới, giữ nhất
+/// quán thị giác với mọi thẻ khác), icon+chữ trắng tinh, đổ thêm bóng màu (glow) cho cảm giác
+/// "sáng đèn". Icon 38px (trong khoảng 36-42 theo yêu cầu) — cân đối với khối nổi lớn hơn hẳn
+/// bản phẳng cũ.
+class _SwitchGangButton extends StatelessWidget {
+  final String name;
+  final bool isOn;
+  final bool isOffline;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final bool isSelectionMode;
+  final bool isSelected;
+  const _SwitchGangButton({
+    required this.name,
+    required this.isOn,
+    required this.isOffline,
+    required this.onTap,
+    required this.onLongPress,
+    this.isSelectionMode = false,
+    this.isSelected = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // tkGreen: CHỈ còn dùng cho huy hiệu tick-chọn (isSelectionMode, cuối build()) — đồng bộ màu
+    // "đã chọn" với mọi UI chọn nhiều khác trong app; KHÔNG dùng cho trạng thái BẬT/TẮT nữa (đã
+    // đổi sang Colors.greenAccent theo phong cách Neon Glow, xem bên dưới).
+    const Color tkGreen = Color(0xFF00A651);
+    final bool lit = isOn && !isOffline;
+
+    // [GIAI ĐOẠN 119 — NEON GLOW, BỎ ĐỔ FULL MÀU NỀN] Theo yêu cầu tường minh: nền KHÔNG BAO GIỜ
+    // đổ xanh nữa (kể cả lúc BẬT) — chỉ đổi VIỀN + BÓNG TỎA (glow) sang Colors.greenAccent. TẮT
+    // giữ nguyên tông xám/tối trung tính + bóng nổi neumorphic (Giai đoạn 117, KHÔNG đụng).
+    final Color ringColor = isOffline ? Colors.grey.withValues(alpha: 0.5) : (lit ? Colors.greenAccent : Colors.grey);
+    final Color textColor = isOffline ? Colors.grey : (lit ? Colors.greenAccent : (isDark ? Colors.white70 : Colors.black87));
+
+    // Nền LUÔN trung tính (tối/xám kính) — không còn nhánh màu riêng cho lit nữa.
+    final Color bgColor = isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF243248) : Colors.white);
+    final Border? border = lit ? Border.all(color: Colors.greenAccent, width: 1.5) : null;
+    final List<BoxShadow> boxShadow = lit
+        ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.3), blurRadius: 12, spreadRadius: 2)]
+        // TẮT: giữ nguyên 2 lớp bóng nổi neumorphic (Giai đoạn 117) — yêu cầu lần này chỉ đổi
+        // style lúc BẬT, không đụng cảm giác "phím nổi" lúc tắt.
+        : [
+            BoxShadow(color: isDark ? Colors.black.withValues(alpha: 0.5) : Colors.black.withValues(alpha: 0.12), blurRadius: 8, offset: const Offset(3, 4)),
+            BoxShadow(color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.white, blurRadius: 6, offset: const Offset(-3, -3)),
+          ];
+
+    // [FIX GIAI ĐOẠN 116 — LAYOUT KHÔNG CÒN CẦN CHIỀU CAO BOUNDED] mainAxisSize.min (thay vì mặc
+    // định .max) — nút tự cao theo đúng nội dung (icon+chữ), không đòi hỏi cha phải cấp chiều cao
+    // xác định — VẪN GIỮ ở bản 3D này (nguyên nhân crash gốc chưa đổi, xem PhysicalSwitchBlockCard).
+    return Container(
+      margin: const EdgeInsets.all(5), // [YÊU CẦU #1] 4-8px — tạo rãnh gạch giữa các phím
+      // [YÊU CẦU #1 — user yêu cầu lại] KHÔNG thêm alignment: Alignment.center ở ĐÂY — Container
+      // này KHÔNG phải cha trực tiếp của Column (còn 3 lớp Material->InkWell->Padding->Stack ở
+      // giữa, xem Giai đoạn 118), thêm alignment vào đây bọc Material trong Align -> đổi từ
+      // constraint CHẶT sang LỎNG -> vùng chạm/ripple co lại chỉ vừa icon+chữ, để một rìa "chết"
+      // quanh phím không bấm được — regression đã giải thích ở Giai đoạn 118, giữ nguyên quyết
+      // định đó. Căn giữa THẬT đã đúng 100% qua Stack(alignment: Alignment.center) bên dưới.
+      decoration: BoxDecoration(
+        color: bgColor,
+        border: border,
+        borderRadius: BorderRadius.circular(14), // [YÊU CẦU #1] 12-16px
+        boxShadow: boxShadow,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias, // ripple giới hạn ĐÚNG trong khối bo góc này, không lem ra ngoài
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: isOffline && !isSelectionMode ? null : onTap,
+          onLongPress: isSelectionMode ? null : onLongPress,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+            // [FIX GIAI ĐOẠN 118 — NGUYÊN NHÂN THẬT CỦA "DÍNH MÉP TRÁI-TRÊN"] Column bên dưới ĐÃ
+            // có đủ mainAxisSize.min + mainAxisAlignment/crossAxisAlignment.center từ Giai đoạn
+            // 117 — tự thân nó xếp Icon+Text đúng giữa BÊN TRONG chính nó. NHƯNG Stack (thêm vào
+            // để vẽ huy hiệu tick chọn khi Chọn nhiều) mặc định `alignment: AlignmentDirectional.
+            // topStart` — Column co lại vừa khít nội dung (mainAxisSize.min) rồi bị STACK dán vào
+            // góc trên-trái của toàn bộ vùng còn lại, bất kể bản thân Column có tự căn giữa nội bộ
+            // hay không. Đây là gốc rễ thật — KHÔNG phải do Container 3D ngoài cùng thiếu
+            // `alignment` (thêm alignment vào ĐÓ sẽ bọc Material trong Align -> cấp constraint
+            // LỎNG thay vì CHẶT -> vùng chạm/ripple co lại chỉ vừa icon+chữ, để lại rìa "chết"
+            // không bấm được quanh phím — một regression khác, nên KHÔNG làm theo đúng y chang).
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // [YÊU CẦU #2] Căn giữa tuyệt đối — cả 2 trục.
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // [YÊU CẦU #3 — VÒNG TRÒN BAO ICON] Icon giờ nằm TRONG một vòng tròn viền
+                    // riêng — viền/màu icon đổi theo lit (xanh neon khi BẬT, xám khi TẮT/mất kết
+                    // nối), ĐỘC LẬP với viền+bóng glow của cả khối (2 lớp viền tách biệt: khối
+                    // ngoài + vòng tròn trong, cùng tông màu để đồng bộ thị giác).
+                    Container(
+                      padding: const EdgeInsets.all(8.0),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: ringColor, width: 1.5),
+                      ),
+                      child: Icon(isOffline ? Icons.cloud_off_rounded : Icons.power_settings_new_rounded, size: 28.0, color: ringColor),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(name, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w800)),
+                  ],
+                ),
+                if (isSelectionMode)
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      padding: const EdgeInsets.all(1),
+                      decoration: BoxDecoration(color: isDark ? const Color(0xFF243248) : Colors.white, shape: BoxShape.circle),
+                      child: Icon(
+                        isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                        size: 16,
+                        color: isSelected ? tkGreen : (isDark ? Colors.white38 : Colors.grey.shade400),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Khối mặt công tắc HOÀN CHỈNH — bọc N [_SwitchGangButton] (hoặc widget Avatar per-gang, xem
+/// _buildFaceplateEntry) theo layout khớp gangCount (cells.length): 2 -> Row chia đôi có
+/// [VerticalDivider]; 3 -> Column chia 3 có [Divider] ngang; 4+ -> lưới 2 cột (2x2 chuẩn EU/VN,
+/// dư hàng tự xuống dòng).
+///
+/// [FIX GIAI ĐOẠN 116 — CRASH LAYOUT KHỐI 3-4 NÚT] Khối span>=2 (3-4 gang, xem _buildFaceplateEntry)
+/// được _buildAvatarStaggeredGrid cấp height=null (KHÔNG bounded — để khối tự phình theo nội
+/// dung, đúng yêu cầu Giai đoạn 115). Bản trước dùng `Flexible(child: buildGrid())` bên trong một
+/// Column không có chiều cao xác định — Flutter THROW RenderFlex assertion ("children have
+/// non-zero flex but incoming height constraints are unbounded") vì Flexible/Expanded BẮT BUỘC
+/// cha phải bounded. Lỗi render này chính là nguyên nhân "giao diện thô" (Flutter vẽ overlay lỗi
+/// đỏ/vàng thay vì thẻ thật) VÀ "mất sự kiện" (subtree lỗi không nhận hit-test đúng) người dùng
+/// báo — KHÔNG phải do quên gán callback. Nay dùng LayoutBuilder đọc constraints.maxHeight THẬT:
+/// bounded (1-2 gang, ô vuông) -> vẫn dùng Expanded lấp đầy như cũ; unbounded (3-4 gang) -> bỏ
+/// hẳn Expanded/Flexible, để Column/GridView tự cao theo nội dung (không cần ép).
+class PhysicalSwitchBlockCard extends StatelessWidget {
+  final String deviceName;
+  final List<Widget> cells;
+  final bool isOffline;
+  final bool isHidden;
+  final VoidCallback onOpenDeviceMenu; // menu CẤP THIẾT BỊ — nhấn giữ vùng tiêu đề
+  // [GIAI ĐOẠN 115] null = thiết bị KHÔNG có nút "Tất cả" ảo (hiếm — luôn có khi >=2 kênh, xem
+  // _buildFaceplateEntry) -> chạm tiêu đề không làm gì. Khác null -> chạm tiêu đề TOGGLE TẤT CẢ
+  // kênh — khôi phục đúng chức năng nút "Tất cả (N kênh)" trước đây (từng là 1 thẻ ĐỘC LẬP, nay
+  // gộp vào tiêu đề khối). [FIX GIAI ĐOẠN 116] Chỉ hoạt động khi KHÔNG đang Chọn nhiều (tránh bật
+  // nhầm cả cụm relay khi người dùng đang thao tác chọn) — xem build().
+  final VoidCallback? onToggleAll;
+  final bool isSelectionMode;
+  const PhysicalSwitchBlockCard({
+    super.key,
+    required this.deviceName,
+    required this.cells,
+    this.isOffline = false,
+    this.isHidden = false,
+    required this.onOpenDeviceMenu,
+    this.onToggleAll,
+    this.isSelectionMode = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+    final int n = cells.length;
+    final Color dividerColor = isDark ? Colors.white24 : Colors.grey.withValues(alpha: 0.25);
+
+    // [ĐỢT 18 — ĐÁNH NỔI KHỐI] Cùng công thức viền+bóng đổ Sáng Thường đã dùng cho SmartSwitchCard
+    // (chỉ khác object riêng vì đây là widget top-level, không truy cập được field của State khác).
+    final BoxDecoration outerDecoration = (!isDark && !isGlass)
+        ? BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.2), width: 1),
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+          )
+        : BoxDecoration(borderRadius: BorderRadius.circular(16));
+
+    // [GIAI ĐOẠN 117 — BỎ HẲN Divider/VerticalDivider PHẲNG] Rãnh phân cách giữa các phím giờ đến
+    // từ margin+boxShadow CỦA CHÍNH _SwitchGangButton (mỗi nút tự "nổi" lên như phím vật lý riêng
+    // biệt) — không còn cần đường kẻ Divider giả để tách ô nữa. wrapCell thêm MỘT lớp đệm 5px
+    // NGOÀI margin riêng của _SwitchGangButton (chấp nhận rãnh hơi rộng hơn 1 chút cho nút mặc
+    // định) — áp dụng ĐỒNG NHẤT cho MỌI cell (kể cả avatar riêng kênh, xem _buildFaceplateEntry —
+    // loại cell đó KHÔNG tự có margin) để không có ô nào "dính sát" mép láng giềng.
+    Widget wrapCell(Widget cell) => Padding(padding: const EdgeInsets.all(5), child: cell);
+    final List<Widget> wrapped = [for (final c in cells) wrapCell(c)];
+
+    Widget buildGrid(bool boundedHeight) {
+      if (n <= 1) return wrapped.isEmpty ? const SizedBox() : wrapped.first;
+      if (n == 2) {
+        // Row chỉ cần bounded WIDTH (luôn có, từ SizedBox cha) — height của Row tự do theo nội
+        // dung trong cả 2 trường hợp, không cần nhánh riêng như Column bên dưới.
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [Expanded(child: wrapped[0]), Expanded(child: wrapped[1])],
+        );
+      }
+      if (n == 3) {
+        if (boundedHeight) {
+          // Chiều cao XÁC ĐỊNH (hiếm với 3-gang vì span=2 -> height=null, nhưng phòng thủ đầy đủ
+          // cho mọi ngữ cảnh gọi khác trong tương lai) -> lấp đầy bằng Expanded như thiết kế gốc.
+          return Column(children: [Expanded(child: wrapped[0]), Expanded(child: wrapped[1]), Expanded(child: wrapped[2])]);
+        }
+        // Chiều cao KHÔNG xác định (thực tế luôn rơi vào đây) -> KHÔNG Expanded, tự cao theo nội
+        // dung — đúng gốc rễ fix crash (xem class doc ở trên).
+        return Column(mainAxisSize: MainAxisSize.min, children: wrapped);
+      }
+      // 4 nút trở lên -> lưới 2 cột (2x2 chuẩn EU/VN) — GridView.builder(shrinkWrap:true) tự tính
+      // chiều cao từ childAspectRatio, KHÔNG cần bounded height cha trong mọi trường hợp (khác
+      // Column ở trên) nên không cần nhánh bounded/unbounded riêng.
+      return GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.15),
+        itemCount: n,
+        itemBuilder: (_, i) => wrapped[i],
+      );
+    }
+
+    // [FIX GIAI ĐOẠN 116 — Expanded PHẢI LÀ CON TRỰC TIẾP CỦA Column] `Expanded`/`Flexible` chỉ
+    // hợp lệ khi là PHẦN TỬ TRỰC TIẾP trong `children:` của 1 Flex (Row/Column) — không thể trả
+    // về từ bên trong LayoutBuilder rồi lồng qua Padding (ném lỗi "Incorrect use of
+    // ParentDataWidget"). Nên xác định bounded/unbounded ở NGOÀI CÙNG (LayoutBuilder bọc toàn bộ
+    // build() — outerConstraints CHÍNH LÀ constraint cha thật đã cấp cho PhysicalSwitchBlockCard,
+    // ví dụ SizedBox(height: smallWidth) cho 1-2 gang = bounded, height: null cho 3-4 gang =
+    // unbounded, xem _buildAvatarStaggeredGrid) TRƯỚC khi dựng children, rồi chèn thẳng
+    // `Expanded(...)` hoặc widget thường vào ĐÚNG vị trí phần tử trong children: [...] bên dưới.
+    return LayoutBuilder(builder: (context, outerConstraints) {
+      final bool boundedHeight = outerConstraints.maxHeight.isFinite;
+      final Widget gridArea = Padding(padding: const EdgeInsets.all(4), child: buildGrid(boundedHeight));
+
+      return Container(
+        decoration: outerDecoration,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              foregroundDecoration: isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
+              decoration: BoxDecoration(
+                color: isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white, width: 1.5),
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      onTap: isSelectionMode ? null : onToggleAll,
+                      onLongPress: isSelectionMode ? null : onOpenDeviceMenu,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+                        child: Row(children: [
+                          Icon(Icons.grid_view_rounded, size: 13, color: isDark ? Colors.white54 : Colors.grey.shade500),
+                          const SizedBox(width: 6),
+                          Expanded(child: Text(deviceName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54))),
+                        ]),
+                      ),
+                    ),
+                    Divider(height: 1, thickness: 1, color: dividerColor),
+                    if (boundedHeight) Expanded(child: gridArea) else gridArea,
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+// ============================================================================
+// 🌀 QUẠT THÔNG MINH
 // ============================================================================
 class SmartFanCard extends StatefulWidget {
   final String mac, endpoint; final int initialSpeed; final bool initialSwing; final DeviceProvider provider;
@@ -6610,4 +7433,75 @@ class _JiggleTileState extends State<_JiggleTile> with SingleTickerProviderState
       child: widget.child,
     );
   }
+}
+
+// ============================================================================
+// 🕳️ [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Ô TRỐNG trong chế độ Sửa
+// ============================================================================
+/// Ô vuông viền ĐỨT NÉT (không dùng package ngoài — CustomPainter tự vẽ) báo hiệu "khoảng trống
+/// người dùng cố ý để lại" — kéo được như thẻ thật (ReorderableWrap không phân biệt), kèm nút "x"
+/// nhỏ để XOÁ hẳn ô này (đóng khoảng trống lại). KHÔNG bọc _JiggleTile (rung lắc) — ô trống không
+/// có "nội dung" cần rung để báo hiệu kéo được, giữ tĩnh cho dễ nhìn giữa các thẻ đang rung.
+class _EmptySlotEditTile extends StatelessWidget {
+  final double size;
+  final VoidCallback onDelete;
+  const _EmptySlotEditTile({required this.size, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color lineColor = isDark ? Colors.white38 : Colors.black38;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: CustomPaint(painter: _DashedBorderPainter(color: lineColor, radius: 14)),
+          ),
+          const Center(child: Icon(Icons.crop_free_rounded, size: 20, color: Colors.grey)),
+          Positioned(
+            top: 4,
+            right: 4,
+            child: GestureDetector(
+              onTap: onDelete,
+              child: Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.85), shape: BoxShape.circle),
+                child: const Icon(Icons.close_rounded, size: 12, color: Colors.white),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DashedBorderPainter extends CustomPainter {
+  final Color color;
+  final double radius;
+  const _DashedBorderPainter({required this.color, required this.radius});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final RRect rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius));
+    final Path path = Path()..addRRect(rrect);
+    final Paint paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    const double dashLen = 6, gapLen = 4;
+    for (final metric in path.computeMetrics()) {
+      double distance = 0;
+      while (distance < metric.length) {
+        final double next = (distance + dashLen).clamp(0, metric.length);
+        canvas.drawPath(metric.extractPath(distance, next), paint);
+        distance = next + gapLen;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DashedBorderPainter oldDelegate) => oldDelegate.color != color || oldDelegate.radius != radius;
 }

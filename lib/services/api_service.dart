@@ -410,4 +410,43 @@ class ApiService {
       return false;
     }
   }
+
+  // --- [GIAI ĐOẠN 113 — Ô LƯỚI TUYỆT ĐỐI + KHOẢNG TRỐNG] Bố cục lưới riêng theo Nhà ---
+  /// PUT /api/homes/{homeId}/grid-layout {"slots": [...]} — SetGridLayoutHandler (Go) lưu NGUYÊN
+  /// VĂN mảng token (hideKey thiết bị / "EMPTY" / "SKIP") vào Redis device_grid_layout:{homeId},
+  /// TÁCH BIỆT HOÀN TOÀN với device-order ở trên (xem giải thích tại SetGridLayoutHandler phía
+  /// Backend — device-order KHÔNG thể biểu diễn "khoảng trống" vì applyDeviceOrder() chỉ xếp hạng
+  /// thiết bị THẬT, không có khái niệm ô ảo).
+  Future<bool> setGridLayout(String homeId, List<String> slots) async {
+    try {
+      final response = await authorizedPut(
+        '$baseUrl/homes/${Uri.encodeComponent(homeId)}/grid-layout',
+        {'slots': slots},
+      );
+      if (kDebugMode) print('📡 [GRID LAYOUT] HTTP ${response.statusCode} — ${response.body}');
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi setGridLayout: $e');
+      return false;
+    }
+  }
+
+  /// GET /api/homes/{homeId}/grid-layout — trả null khi lỗi mạng (khác [] rỗng = "đã fetch
+  /// thành công nhưng chưa từng tuỳ biến lưới"), để nơi gọi phân biệt được "chưa có dữ liệu, đừng
+  /// ghi đè local" với "server xác nhận rỗng thật, được phép ghi đè local".
+  Future<List<String>?> getGridLayout(String homeId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/grid-layout');
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [GRID LAYOUT] Lỗi tải bố cục (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final List<dynamic> raw = (decoded['slots'] as List?) ?? const [];
+      return raw.map((e) => e.toString()).toList();
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getGridLayout: $e');
+      return null;
+    }
+  }
 }

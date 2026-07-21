@@ -40,7 +40,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
 
   // 0: Menu, 1: Quét QR, 2: Nhập tay, 3: Chế độ AP Tự động, 4: Quét mạng LAN (menu độc lập),
   // 5: Nhập WiFi nhà (App-driven provisioning — [ĐỢT 31] cũng là nơi hiện spinner lúc đang gửi,
-  // xem _isSending; KHÔNG còn View 6 riêng cho việc này nữa),
+  // xem _isSending),
+  // 6: [GIAI ĐOẠN 110] Hướng dẫn cấp nguồn thiết bị — bước đệm TRƯỚC View 3 (số 6 trước đây bỏ
+  // trống từ Đợt 31, nay tái dùng).
   // 7: [ĐỢT 25] Đăng ký trực tiếp bằng MAC (Direct MAC Binding — thay auto-jump sang View 4)
   int _currentView = 0;
   bool _isProcessing = false;
@@ -709,10 +711,12 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
             borderRadius: BorderRadius.circular(20),
             child: InkWell(
               borderRadius: BorderRadius.circular(20),
-              onTap: () {
-                setState(() => _currentView = 3);
-                _startAPDetection(); // Gọi hàm quét ngầm và phát radar
-              },
+              // [GIAI ĐOẠN 110] Trước đây bấm vào đây NHẢY THẲNG vào radar dò AP (View 3) —
+              // người dùng chưa kịp đọc hướng dẫn gì đã phải chờ máy dò trong khi có thể còn
+              // chưa cắm nguồn/chưa đợi đèn nháy xong. Nay chèn View 6 (hướng dẫn cấp nguồn)
+              // làm bước ĐỆM bắt buộc trước — _startAPDetection() dời qua nút "Tiếp tục" của
+              // View 6 (xem _buildApInstructionView), KHÔNG gọi ở đây nữa.
+              onTap: () => setState(() => _currentView = 6),
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Row(
@@ -1011,6 +1015,81 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                   : Text(t.text('confirm_connection_btn'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           )
+        ],
+      ),
+    );
+  }
+
+  // --- VIEW 6: [GIAI ĐOẠN 110] HƯỚNG DẪN CẤP NGUỒN — bước đệm TRƯỚC khi vào radar dò AP (View
+  // 3). Thuần hiển thị hướng dẫn (icon minh hoạ vẽ bằng Icon/Animation có sẵn — dự án chưa có
+  // asset GIF thật, dùng icon động thay thế để không tham chiếu file không tồn tại) — không gọi
+  // bất kỳ API/HTTP nào, không có logic nào để "vỡ", nên không cần try-catch ở view này.
+  Widget _buildApInstructionView(bool isDark, Color textMain, Color textSub, AppTranslations t) {
+    Widget step(String text) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.check_circle_outline_rounded, color: tkGreen, size: 18),
+              const SizedBox(width: 10),
+              Expanded(child: Text(text, style: TextStyle(color: textMain, fontSize: 13, height: 1.45))),
+            ],
+          ),
+        );
+
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildHeader(t.text('ap_instruction_header'), textMain, textSub),
+          const SizedBox(height: 24),
+
+          // Minh hoạ: icon nguồn điện + sóng Wi-Fi nhấp nháy — thay cho GIF thật (chưa có asset
+          // trong dự án). AnimatedBuilder dùng lại _pulseController đã có sẵn (khởi tạo ở
+          // initState, dùng chung cho cả radar View 3) — tránh tạo thêm AnimationController mới.
+          SizedBox(
+            height: 110,
+            child: Center(
+              child: AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, child) {
+                  final double t2 = _pulseController.isAnimating ? _pulseController.value : 0.5;
+                  return Container(
+                    width: 90,
+                    height: 90,
+                    decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.10 + t2 * 0.08), shape: BoxShape.circle),
+                    child: Icon(Icons.bolt_rounded, color: Colors.orange.withValues(alpha: 0.6 + t2 * 0.4), size: 48),
+                  );
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          step(t.text('ap_instruction_step1')),
+          step(t.text('ap_instruction_step2')),
+          step(t.text('ap_instruction_step3')),
+          const SizedBox(height: 12),
+
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: tkGreen,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 0,
+              ),
+              onPressed: () {
+                setState(() => _currentView = 3);
+                _startAPDetection(); // Chỉ bắt đầu dò radar SAU KHI user xác nhận đã cấp nguồn
+              },
+              child: Text(t.text('ap_instruction_continue_btn'), style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+            ),
+          ),
         ],
       ),
     );
@@ -1449,7 +1528,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> with SingleTickerProv
                                   ? _buildLanScanView(isDark, textMain, textSub, t) // View 4: Quét LAN
                                   : _currentView == 5
                                       ? _buildWifiCredentialView(isDark, textMain, textSub, t) // View 5: Nhập WiFi nhà (kể cả lúc đang gửi, xem _isSending)
-                                      : _buildDeviceRegisteringView(isDark, textMain, textSub, t), // View 7: Đăng ký trực tiếp MAC (View 6 đã xóa — không còn dùng)
+                                      : _currentView == 6
+                                          ? _buildApInstructionView(isDark, textMain, textSub, t) // View 6: [GIAI ĐOẠN 110] Hướng dẫn cấp nguồn, TRƯỚC AP Mode
+                                          : _buildDeviceRegisteringView(isDark, textMain, textSub, t), // View 7: Đăng ký trực tiếp MAC
             ),
         ),
     );

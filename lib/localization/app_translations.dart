@@ -485,6 +485,13 @@ class AppTranslations {
       'open_settings_action': 'MỞ CÀI ĐẶT',
       'invalid_device_id': 'Mã định danh thiết bị không hợp lệ!',
 
+      // --- [GIAI ĐOẠN 110] Bước Hướng dẫn cấp nguồn — trước khi vào chế độ AP Tự động ---
+      'ap_instruction_header': 'Bước 1: Cấp nguồn thiết bị',
+      'ap_instruction_step1': 'Cắm nguồn điện cho thiết bị Smart Hub / công tắc thông minh.',
+      'ap_instruction_step2': 'Chờ khoảng 5-10 giây cho đến khi đèn LED trên thiết bị NHÁY NHANH liên tục — đây là dấu hiệu thiết bị đã vào chế độ phát Wi-Fi (AP Mode) để cài đặt.',
+      'ap_instruction_step3': 'Nếu đèn không nháy, giữ nút Reset trên thiết bị khoảng 5 giây rồi thử lại.',
+      'ap_instruction_continue_btn': 'ĐÈN ĐÃ NHÁY, TIẾP TỤC',
+
       // --- Đợt 6: Thẻ nhà — số thiết bị/thành viên (home_management_screen.dart) ---
       'devices_stat_suffix': ' TB',
       'switches_stat_suffix': ' CT',
@@ -1043,6 +1050,13 @@ class AppTranslations {
       'camera_permission_needed': 'You need to allow Camera access to scan the QR code on the device label.',
       'open_settings_action': 'OPEN SETTINGS',
       'invalid_device_id': 'Invalid device ID!',
+
+      // --- [Stage 110] Power-up instruction step — before entering AP Mode ---
+      'ap_instruction_header': 'Step 1: Power On The Device',
+      'ap_instruction_step1': 'Plug in the Smart Hub / smart switch device.',
+      'ap_instruction_step2': 'Wait about 5-10 seconds until the LED on the device starts BLINKING FAST — this means the device has entered Wi-Fi setup mode (AP Mode).',
+      'ap_instruction_step3': 'If the LED does not blink, hold the Reset button on the device for about 5 seconds and try again.',
+      'ap_instruction_continue_btn': 'LED IS BLINKING, CONTINUE',
 
       // --- Round 6: Home card — device/member counts (home_management_screen.dart) ---
       'devices_stat_suffix': ' Devices',

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'app_ui_wrappers.dart';
 import '../localization/app_translations.dart';
+import '../providers/theme_provider.dart';
 
 /// Một mục menu tùy biến (card-specific) truyền thêm vào [DeviceMenuHelper] — ví dụ
 /// "Chọn nhiều thiết bị", "Xem thiết bị ẩn"... để không phá vỡ tính dùng chung.
@@ -56,8 +58,20 @@ class DeviceMenuHelper {
     List<DeviceMenuItem> extraItems = const [], // mục card-specific (Chọn nhiều, Xem ẩn...)
   }) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    // [FIX GIAI ĐOẠN 112 — TƯƠNG PHẢN SÁNG+KÍNH] textSub trước đây dùng chung 0xFF64748B (slate)
+    // cho MỌI trường hợp Sáng — trên nền kính gần như trong suốt (kGlassFrostFill mặc định chỉ
+    // 5% trắng, xem glassTint bên dưới) màu này quá nhạt, đúng report "chữ phụ mờ/tàng hình".
+    // BẮT BUỘC dùng Theme.of(context).brightness (đã có sẵn qua isDark) — KHÔNG đụng nhánh Tối.
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final Color textSub = isDark ? Colors.white54 : Colors.black54;
+    // [FIX GIAI ĐOẠN 112] Nền kính (_GlassSurface bên trong showAppDialog) mặc định CHỈ đục 5%
+    // (kGlassFrostFill) — đủ trên nền Tối (chữ trắng + đổ bóng đen kGlassTextShadow vẫn nổi) NHƯNG
+    // quá trong suốt trên nền Sáng (chữ đen/xám gần như biến mất vào nền phía sau). Tái dùng ĐÚNG
+    // công thức đã kiểm chứng cho các popup kính khác trên nền Sáng (0.65 — xem AppContainer.
+    // glassTint tại dashboard_screen.dart dòng ~3225) — CHỈ áp khi Sáng+Kính, Tối+Kính giữ NGUYÊN
+    // mặc định cũ (glassTint=null -> không đổi gì, tuyệt đối không ảnh hưởng Dark Mode).
+    final bool isGlass = context.read<ThemeProvider>().isGlassThemeEnabled;
+    final Color? glassTint = (isGlass && !isDark) ? Colors.white.withValues(alpha: 0.65) : null;
 
     Widget row(IconData icon, String title, Color color, VoidCallback onTap,
         {String? sub, bool destructive = false}) {
@@ -67,7 +81,10 @@ class DeviceMenuHelper {
         hoverColor: destructive ? Colors.redAccent.withValues(alpha: 0.1) : Colors.white10,
         leading: Icon(icon, color: color, size: 24),
         title: Text(title, style: TextStyle(color: color, fontSize: 15, fontWeight: destructive ? FontWeight.bold : FontWeight.w600)),
-        subtitle: sub != null ? Text(sub, style: TextStyle(color: Colors.grey.shade500, fontSize: 12, height: 1.2)) : null,
+        // [FIX GIAI ĐOẠN 112] Trước đây HARDCODE Colors.grey.shade500 bất kể Sáng/Tối/Kính — đúng
+        // nguyên nhân "Nhật ký bật/tắt"/"Phân bổ thiết bị..." (2 dòng sub hay gặp nhất) bị mờ trên
+        // nền Sáng+Kính. Nay dùng ĐÚNG textSub theo brightness (đã tính ở trên).
+        subtitle: sub != null ? Text(sub, style: TextStyle(color: textSub, fontSize: 12, height: 1.2)) : null,
         onTap: onTap,
       );
     }
@@ -79,6 +96,7 @@ class DeviceMenuHelper {
     // (dùng trong row()) cần 1 Material ancestor để vẽ ripple — _GlassSurface không tự cấp.
     showAppDialog(
       context: context,
+      glassTint: glassTint,
       child: Builder(
         builder: (ctx) {
         // Builder.builder chạy TRONG pha build thật của route dialog -> AppTranslations.of(ctx)
@@ -183,13 +201,19 @@ class DeviceMenuHelper {
 
 
   // Hộp xác nhận xóa DÙNG CHUNG — không còn _confirmDeleteDevice/_confirmDeleteFan lặp mỗi thẻ.
+  // [FIX GIAI ĐOẠN 112] Cùng họ lỗi tương phản Sáng+Kính với showGenericDeviceMenu ở trên — dialog
+  // này TÁCH RIÊNG (Navigator.pop(ctx) của menu cha đã chạy trước khi dialog này mở) nên phải tự
+  // tính lại isGlass/glassTint, không tái dùng được biến của hàm kia.
   static void _confirmDelete(BuildContext context, String name, VoidCallback onDelete) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+    final Color textSub = isDark ? Colors.white54 : Colors.black54;
+    final bool isGlass = context.read<ThemeProvider>().isGlassThemeEnabled;
+    final Color? glassTint = (isGlass && !isDark) ? Colors.white.withValues(alpha: 0.65) : null;
     // [GLASS THEME] AlertDialog (title/content/actions) ĐÃ THAY bằng showAppDialog().
     showAppDialog(
       context: context,
+      glassTint: glassTint,
       child: Builder(
         builder: (ctx) {
           final t = AppTranslations.of(ctx);

@@ -526,6 +526,13 @@ Future<T?> showAppDialog<T>({
   bool barrierDismissible = true,
   double? maxWidth,
   EdgeInsetsGeometry? contentPadding,
+  // [GIAI ĐOẠN 112] Ghi đè TOÀN BỘ màu frost mặc định (kGlassFrostFill — CHỈ 5% trắng, quá
+  // trong suốt trên nền Sáng+Kính) — cùng cơ chế `frostOverride`/`glassTint` đã dùng cho
+  // AppContainer (ĐỢT 9, xem _buildUserAvatarMenu trong dashboard_screen.dart) nhưng trước đây
+  // CHƯA lộ ra ở showAppDialog(), khiến MỌI popup dựng bằng showAppDialog() (kể cả
+  // DeviceMenuHelper.showGenericDeviceMenu) không có đường nào tự tăng độ đục riêng. Mặc định
+  // null -> HÀNH VI CŨ giữ nguyên 100% cho mọi call site chưa cần đến tham số này.
+  Color? glassTint,
 }) {
   final bool glass = context.read<ThemeProvider>().isGlassThemeEnabled;
   final EdgeInsetsGeometry effectivePadding = contentPadding ?? const EdgeInsets.all(24);
@@ -565,7 +572,7 @@ Future<T?> showAppDialog<T>({
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxWidth ?? 420, minWidth: 280),
-          child: _GlassSurface(borderRadius: BorderRadius.circular(28), padding: effectivePadding, child: child),
+          child: _GlassSurface(borderRadius: BorderRadius.circular(28), padding: effectivePadding, frostOverride: glassTint, child: child),
         ),
       );
     },
