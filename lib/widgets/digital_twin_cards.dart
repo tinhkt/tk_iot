@@ -105,6 +105,7 @@ typedef TwinCardCallbacks = ({
   VoidCallback history,
   VoidCallback automation,
   VoidCallback share,
+  VoidCallback changeAvatar, // [BƯỚC 5] "Thay đổi giao diện (Avatar)" trong menu nhấn-giữ dùng chung
 });
 
 void _openMenu({
@@ -131,6 +132,7 @@ void _openMenu({
     onDeviceAutomation: cb.automation,
     onDeviceShare: cb.share,
     onRename: cb.rename,
+    onChangeAvatar: cb.changeAvatar,
     onAssignHome: cb.assignHome,
     onAssignRoom: cb.assignRoom,
     onDelete: cb.delete,

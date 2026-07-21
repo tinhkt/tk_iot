@@ -44,6 +44,7 @@ class DeviceMenuHelper {
     VoidCallback? onDeviceAutomation, // "Thêm vào Ngữ cảnh/Automation"
     VoidCallback? onDeviceShare, // "Chia sẻ thiết bị"
     VoidCallback? onRename, // "Sửa tên thiết bị" — ẩn nếu null
+    VoidCallback? onChangeAvatar, // [BƯỚC 5] "Thay đổi giao diện (Avatar)" — ẩn nếu null
     VoidCallback? onAssignHome, // "Chuyển sang nhà khác" — TỰ render nếu != null
     VoidCallback? onAssignRoom, // "Chuyển / Thêm vào phòng" — TỰ render nếu != null
     VoidCallback? onEditGroup, // "Chỉnh sửa nhóm" — CHỈ hiện với Công tắc ảo (nhóm)
@@ -117,8 +118,9 @@ class DeviceMenuHelper {
                   // ============================================================
                   // THỨ TỰ MENU CỐ ĐỊNH (chuẩn Tuya/Google Home):
                   // (1) Cài đặt -> (2) Thông tin -> (3) Hẹn giờ -> (4) Lịch sử ->
-                  // (5) Ngữ cảnh -> (6) Chia sẻ -> (7) Sửa tên -> (8) Chuyển phòng ->
-                  // (9) Chuyển nhà [+Chỉnh sửa nhóm] -> (10) Ẩn -> (11) extraItems -> (12) Xóa (đỏ).
+                  // (5) Ngữ cảnh -> (6) Chia sẻ -> (7) Sửa tên -> (7b) [BƯỚC 5] Đổi giao diện
+                  // (Avatar) -> (8) Chuyển phòng -> (9) Chuyển nhà [+Chỉnh sửa nhóm] -> (10) Ẩn ->
+                  // (11) extraItems -> (12) Xóa (đỏ).
                   // Mục nào callback null thì TỰ ẩn.
                   // [FIX OVERFLOW] Flexible + SingleChildScrollView: header cố định, danh sách chức năng CUỘN.
                   // ============================================================
@@ -140,6 +142,8 @@ class DeviceMenuHelper {
                     row(Icons.share, t.text('share_device_menu'), textMain, () { Navigator.pop(ctx); onDeviceShare(); }),
                   if (onRename != null)
                     row(Icons.edit_rounded, t.text('edit_device_name_menu'), textMain, () { Navigator.pop(ctx); onRename(); }),
+                  if (onChangeAvatar != null)
+                    row(Icons.palette_outlined, t.text('change_avatar_menu'), textMain, () { Navigator.pop(ctx); onChangeAvatar(); }),
                   if (onAssignRoom != null)
                     row(Icons.meeting_room, t.text('move_to_room_menu'), textMain, () { Navigator.pop(ctx); onAssignRoom(); }),
                   if (onAssignHome != null)
