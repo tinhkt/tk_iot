@@ -322,6 +322,9 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
 
   String _displayName(AppTranslations t) => widget.backendName?.isNotEmpty == true ? widget.backendName! : t.text('rolling_door_default_name');
 
+  // [FIX GIAI ĐOẠN 120 — PHÓNG TO NÚT LÊN/XUỐNG] 44x36/icon 18 quá nhỏ để bấm trúng trên màn hình
+  // cảm ứng — tăng lên 60x50/icon 26 (đã có sẵn nền BoxDecoration+bo góc từ trước, chỉ cần tăng
+  // kích thước theo đúng yêu cầu, không cần thêm decoration mới).
   Widget _buildHoldButton({required IconData icon, required String direction, required bool isDark}) {
     final bool active = _holdingDirection == direction;
     return GestureDetector(
@@ -335,13 +338,13 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
       onTapCancel: _endHold,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        width: 44, height: 36,
+        width: 60, height: 50,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: active ? _tkGreen : (isDark ? Colors.white10 : Colors.grey.shade200),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(14),
         ),
-        child: Icon(icon, size: 18, color: active ? Colors.white : (isDark ? Colors.white70 : Colors.black54)),
+        child: Icon(icon, size: 26, color: active ? Colors.white : (isDark ? Colors.white70 : Colors.black54)),
       ),
     );
   }
@@ -374,8 +377,16 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
           // ---- PHẦN TRÊN: ẢNH ĐỘNG MÔ PHỎNG NAN CỬA CUỐN ----
           // [GIAI ĐOẠN 71 — UI POLISH] Đổ bóng nổi khối + viền kính nhẹ (glassmorphism) cho vùng
           // graphic — trước đây chỉ có ClipRRect trơn, không có chiều sâu 3D.
+          // [FIX GIAI ĐOẠN 120] 90 -> 130 (tăng ~44%, trong khoảng 40-50% yêu cầu) — trông giống
+          // một cánh cửa thật hơn, không còn dẹt.
+          // [FIX GIAI ĐOẠN 121 — LÙI XUỐNG 120 ĐỂ HẾT TRÀN VIỀN] 130 gây "Overflowed by 12 pixels"
+          // trên thiết bị thật — xem giải thích đầy đủ tại SmartRollingDoorCard.build() (KHÔNG
+          // dùng Expanded như đề xuất vì sẽ CRASH thay vì chỉ tràn viền — _TwinCardShell đặt Column
+          // này vào 1 khe KHÔNG-Expanded trong Column riêng của chính nó). Lùi 130 -> 120 (+33% so
+          // bản gốc 90, cộng với giảm 1 khoảng cách bên dưới) — chừa dư khoảng 18px so mức tràn 12px
+          // đã báo, có biên an toàn.
           Container(
-            height: 90,
+            height: 120,
             width: double.infinity,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
@@ -424,7 +435,8 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          // [FIX GIAI ĐOẠN 120] 10 -> 16 — khoảng cách rộng rãi hơn giữa khối mô phỏng cửa và thanh trượt.
+          const SizedBox(height: 16),
           // ---- PHẦN GIỮA: SLIDER 0-100% (bọc khung đổ bóng + viền gradient nổi bật) ----
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
@@ -461,6 +473,10 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
               ),
             ),
           ),
+          // [FIX GIAI ĐOẠN 120] Thêm khoảng cách giữa thanh trượt và hàng nút Lên/Dừng/Xuống.
+          // [FIX GIAI ĐOẠN 121] 16 -> 8 — nhường bớt cho height cửa (xem giải thích ở Container
+          // graphic phía trên), vẫn còn khoảng cách rõ rệt so với 0 (dính sát) trước Giai đoạn 120.
+          const SizedBox(height: 8),
           // ---- PHẦN DƯỚI: LÊN / DỪNG / XUỐNG ----
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -469,10 +485,11 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
               GestureDetector(
                 behavior: HitTestBehavior.opaque, // cùng lý do cách ly cảm ứng như nút Lên/Xuống
                 onTap: widget.isOffline ? null : _tapStop,
+                // [FIX GIAI ĐOẠN 120] Phóng to đồng bộ với nút Lên/Xuống (44x36/icon18 -> 60x50/icon26).
                 child: Container(
-                  width: 44, height: 36, alignment: Alignment.center,
-                  decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
-                  child: const Icon(Icons.stop_rounded, size: 18, color: Colors.redAccent),
+                  width: 60, height: 50, alignment: Alignment.center,
+                  decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(14)),
+                  child: const Icon(Icons.stop_rounded, size: 26, color: Colors.redAccent),
                 ),
               ),
               _buildHoldButton(icon: Icons.keyboard_arrow_down_rounded, direction: 'down', isDark: isDark),

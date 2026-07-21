@@ -1054,6 +1054,99 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // [FIX GIAI ĐOẠN 123 — DIALOG CĂN GIỮA + STATE SỐNG] 2 lỗi user báo: (1) showAppBottomSheet
+  // trước đây trượt lên từ ĐÁY màn hình, KHÔNG bao giờ căn giữa (đúng nguyên nhân "lệch tâm") ->
+  // đổi hẳn sang showAppDialog() (Dialog CĂN GIỮA tuyệt đối, bo góc, cùng khung dùng chung với
+  // MỌI dialog khác trong app — không tự dựng showDialog/Dialog() thô để giữ nhất quán theming
+  // Sáng/Tối/Kính đã có sẵn, xem app_ui_wrappers.dart); bọc thêm ConstrainedBox(maxHeight: 70%
+  // màn hình) làm lưới an toàn cho thiết bị nhiều kênh bất thường (vd 16-gang tương lai). (2) Bấm
+  // nút trong popup KHÔNG đổi màu vì [cells] trước đây là ẢNH TĨNH build 1 lần lúc mở — nay bọc
+  // Consumer<DeviceProvider> NGAY TRONG popup, tự dựng lại cells SỐNG từ liveProvider mỗi khi có
+  // gói MQTT mới cho MAC này (xem _buildFaceplateCellsLive).
+  void _showFaceplateExpanded({
+    required String mac,
+    required String groupKey,
+    required String deviceName,
+    required List<Map<String, dynamic>> channels,
+    required Map<String, dynamic>? masterItem,
+    required bool isHidden,
+  }) {
+    showAppDialog(
+      context: context,
+      maxWidth: 400,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+        child: Consumer<DeviceProvider>(
+          builder: (context, liveProvider, _) {
+            final DeviceModel? live = liveProvider.devices[mac];
+            final bool anyOnline = live?.online ?? channels.any((c) => c['online'] == true);
+            final bool anyOn = channels.any((c) => live?.isOn(c['endpoint'] as String) ?? false);
+            return PhysicalSwitchBlockCard(
+              deviceName: deviceName,
+              cells: _buildFaceplateCellsLive(mac, channels, liveProvider),
+              isOffline: !anyOnline,
+              isHidden: isHidden,
+              isSelectionMode: _isSelectionMode,
+              onOpenDeviceMenu: () => _openFaceplateDeviceMenu(mac, groupKey, deviceName, channels),
+              onToggleAll: masterItem != null ? () => liveProvider.toggleDevice(mac, 'all', anyOn) : null,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// [GIAI ĐOẠN 123] Dựng lại TOÀN BỘ nút con của khối mặt công tắc, đọc trạng thái BẬT/TẮT +
+  /// Ngoại tuyến TRỰC TIẾP từ [liveProvider] (không phải bản snapshot [channels] đóng băng lúc mở
+  /// popup) — gọi TỪ BÊN TRONG `Consumer<DeviceProvider>.builder` nên chạy lại MỖI LẦN provider
+  /// notify, đảm bảo popup luôn phản ánh đúng trạng thái sống. [channels] chỉ còn dùng cho phần
+  /// KHÔNG đổi theo thời gian thực (danh sách endpoint tồn tại + tên mặc định).
+  List<Widget> _buildFaceplateCellsLive(String mac, List<Map<String, dynamic>> channels, DeviceProvider liveProvider) {
+    final DeviceModel? live = liveProvider.devices[mac];
+    final List<Widget> cells = [];
+    for (final rawItem in channels) {
+      final String ep = rawItem['endpoint'] as String;
+      final String hideKey = "${mac}_$ep";
+      // Đè trạng thái SỐNG lên bản snapshot — live == null (chưa từng có gói MQTT nào cho MAC
+      // này kể từ lúc mở App) thì rơi về đúng giá trị REST ban đầu trong rawItem, không đoán mò.
+      final Map<String, dynamic> item = {
+        ...rawItem,
+        if (live != null) 'state': live.isOn(ep) ? 'ON' : 'OFF',
+        if (live != null) 'online': live.online,
+      };
+      final avatarEntry = _tryBuildAvatarEntry(hideKey, 'switch', item, liveProvider);
+      if (avatarEntry != null) {
+        cells.add(KeyedSubtree(key: ValueKey('gang_live_$hideKey'), child: avatarEntry.widget));
+        continue;
+      }
+      final bool isOn = item['state'] == 'ON';
+      final bool isOffline = item['online'] != true;
+      final String name = (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : ep;
+      cells.add(KeyedSubtree(
+        key: ValueKey('gang_live_$hideKey'),
+        child: _SwitchGangButton(
+          name: name,
+          isOn: isOn,
+          isOffline: isOffline,
+          isSelectionMode: _isSelectionMode,
+          isSelected: _selectedDevices.contains(hideKey),
+          onTap: () {
+            if (_isSelectionMode) {
+              setState(() {
+                _selectedDevices.contains(hideKey) ? _selectedDevices.remove(hideKey) : _selectedDevices.add(hideKey);
+                if (_selectedDevices.isEmpty) _isSelectionMode = false;
+              });
+            } else {
+              liveProvider.toggleDevice(mac, ep, isOn);
+            }
+          },
+          onLongPress: () => _openGangMenu(mac, hideKey, name, ep),
+        ),
+      ));
+    }
+    return cells;
+  }
+
   /// Nếu [hideKey] đã được gán Avatar còn hợp lệ -> trả về Widget Avatar (bọc long-press mở
   /// ĐÚNG menu dùng chung, có "Thay đổi giao diện") + kích thước lưới ĐÚNG blueprint. null nếu
   /// chưa gán/avatar đã gỡ khỏi thư viện -> nơi gọi tự dựng card mặc định (SmartXCard) như trước.
@@ -1480,32 +1573,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final String deviceName = (masterItem?['name'] as String?) ??
         'sw-${(mac.length >= 4 ? mac.substring(mac.length - 4) : mac).toLowerCase()}';
 
-    // [FIX GIAI ĐOẠN 116 — GIỮ NGUYÊN DATA MODEL GỐC] "Ẩn"/"Chọn nhiều" của TỪNG NÚT vẫn dùng
-    // ĐÚNG hideKey (mac_endpoint) như trước Giai đoạn 115 — _selectedMacs()/_bulkCreateGroup
-    // (Nhóm ảo/Cầu thang) vốn đã hoạt động độc lập theo hideKey; gộp UI theo khối KHÔNG được phép
-    // đổi granularity của 2 tập dữ liệu này (yêu cầu tường minh của user).
-    final List<Widget> cells = [];
-    for (final item in channels) {
+    // [FIX GIAI ĐOẠN 123 — POPUP GIỜ TỰ DỰNG CELLS SỐNG] Trước đây dựng SẴN 1 mảng `cells` tĩnh ở
+    // đây rồi truyền nguyên vào popup — ảnh snapshot ĐÓNG BĂNG tại thời điểm build entries, bấm
+    // nút trong popup không đổi màu ngay vì popup KHÔNG nằm trong chu trình rebuild của
+    // Consumer<DeviceProvider> bọc _buildDevicesGridBody. Nay popup tự dựng cells NGAY BÊN TRONG
+    // Consumer<DeviceProvider> riêng của nó (xem _buildFaceplateCellsLive/_showFaceplateExpanded)
+    // — hàm này chỉ còn cần truyền [channels] (cấu trúc kênh: endpoint/tên, ổn định) sang, không
+    // cần dựng cells nữa.
+
+    // [FIX GIAI ĐOẠN 116] "Ẩn cả khối" (menu tiêu đề) hiển thị ĐANG ẨN chỉ khi TẤT CẢ kênh đều bị
+    // ẩn — dùng để quyết định overlay xám của khối; việc ẩn/hiện thật vẫn ghi từng hideKey riêng
+    // (xem _openFaceplateDeviceMenu), không có khái niệm "khoá ẩn cấp khối" nào tồn tại.
+    final bool allHidden = channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}"));
+    final bool isOffline = !anyOnline;
+
+    // [GIAI ĐOẠN 120 — Ô THU GỌN 1x1] TỐI ĐA 4 nút mini hiện trực tiếp trên lưới chính (đủ cho
+    // 2/3/4-gang); >4 kênh (vd 8-gang) hiện 3 nút đầu + 1 ô "+N" — cả 2 đều mở popup phóng to khi
+    // chạm (xem _FaceplateMoreButton/_showFaceplateExpanded). Dùng LẠI chính callback onTap/
+    // onLongPress đã gắn cho từng kênh trong [cells] (không xây lại logic toggle/menu lần 2).
+    final List<Widget> miniCells = [];
+    final int miniShown = channels.length > 4 ? 3 : channels.length;
+    for (int i = 0; i < miniShown; i++) {
+      final item = channels[i];
       final String ep = item['endpoint'] as String;
       final String hideKey = "${mac}_$ep";
-      final avatarEntry = _tryBuildAvatarEntry(hideKey, 'switch', item, provider);
-      if (avatarEntry != null) {
-        cells.add(KeyedSubtree(key: ValueKey('gang_$hideKey'), child: avatarEntry.widget));
-        continue;
-      }
       final bool isOn = item['state'] == 'ON';
-      final bool isOffline = item['online'] != true;
-      final String name = (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : ep;
-      cells.add(KeyedSubtree(
-        key: ValueKey('gang_$hideKey'),
-        child: _SwitchGangButton(
-          name: name,
+      final bool chOffline = item['online'] != true;
+      miniCells.add(KeyedSubtree(
+        key: ValueKey('mini_$hideKey'),
+        child: _FaceplateMiniButton(
           isOn: isOn,
-          isOffline: isOffline,
-          isSelectionMode: _isSelectionMode,
-          isSelected: _selectedDevices.contains(hideKey),
-          // [FIX GIAI ĐOẠN 116] Đang Chọn nhiều -> chạm nút = tick chọn/bỏ chọn ĐÚNG nút đó (khớp
-          // hành vi gốc của SmartSwitchCard._handleTap khi isSelectionMode); không thì chạm = bật/tắt.
+          isOffline: chOffline,
           onTap: () {
             if (_isSelectionMode) {
               setState(() {
@@ -1516,38 +1614,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
               provider.toggleDevice(mac, ep, isOn);
             }
           },
-          onLongPress: () => _openGangMenu(mac, hideKey, name, ep),
+          onLongPress: () => _openGangMenu(mac, hideKey, (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : ep, ep),
         ),
       ));
     }
-
-    // [FIX GIAI ĐOẠN 116] "Ẩn cả khối" (menu tiêu đề) hiển thị ĐANG ẨN chỉ khi TẤT CẢ kênh đều bị
-    // ẩn — dùng để quyết định overlay xám của khối; việc ẩn/hiện thật vẫn ghi từng hideKey riêng
-    // (xem _openFaceplateDeviceMenu), không có khái niệm "khoá ẩn cấp khối" nào tồn tại.
-    final bool allHidden = channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}"));
-
     final String groupKey = mac; // vẫn dùng làm entry.key/entry.mac cho kéo-thả/grid-layout — KHÔNG liên quan gì đến Ẩn/Chọn nhiều
-    // [FIX GIAI ĐOẠN 113] Span 3-4 nút = 2 (giống Cửa Gara) — chứa nhiều UI con, cần bề ngang
-    // rộng hơn hẳn 1 ô lưới thường để không vỡ nút bấm bên trong (yêu cầu tường minh).
-    final int span = channels.length >= 3 ? 2 : 1;
+    void expand() => _showFaceplateExpanded(
+          mac: mac,
+          groupKey: groupKey,
+          deviceName: deviceName,
+          channels: channels,
+          masterItem: masterItem,
+          isHidden: allHidden,
+        );
+    if (channels.length > 4) {
+      miniCells.add(_FaceplateMoreButton(remaining: channels.length - 3, onTap: expand));
+    }
+
+    // [FIX GIAI ĐOẠN 120 — SỬA ĐÚNG "2-4 CỘT LÀM NÁT BỐ CỤC"] TẤT CẢ khối đa kênh giờ span=1
+    // (vuông, bằng đúng công tắc đơn) — trước đây 3-4 gang span=2 bị luật "full-width thẻ lớn
+    // Mobile" (Giai đoạn 107) đẩy lên chiếm TRỌN bề ngang, phá nhịp lưới đều của các ô 1x1 xung
+    // quanh. Nội dung chi tiết chuyển hẳn vào popup (_showFaceplateExpanded) thay vì cố nhét vừa
+    // trong 1 ô lưới bình thường.
     return (
       key: groupKey,
       mac: mac,
-      gridSpanX: span,
+      gridSpanX: 1,
       gridSpanY: 1,
-      autoHeight: true,
-      widget: PhysicalSwitchBlockCard(
-        deviceName: deviceName,
-        cells: cells,
-        isOffline: !anyOnline,
+      autoHeight: false,
+      widget: _FaceplateCompactCard(
+        channelCount: channels.length,
+        miniCells: miniCells,
+        isOffline: isOffline,
         isHidden: allHidden,
-        isSelectionMode: _isSelectionMode,
-        onOpenDeviceMenu: () => _openFaceplateDeviceMenu(mac, groupKey, deviceName, channels),
-        // [KHÔI PHỤC NÚT "TẤT CẢ"] Trước đây là 1 thẻ SmartSwitchCard ĐỘC LẬP riêng biệt — nay gộp
-        // vào hành vi CHẠM TIÊU ĐỀ của khối (xem PhysicalSwitchBlockCard.onToggleAll).
-        onToggleAll: masterItem != null
-            ? () => provider.toggleDevice(mac, 'all', masterItem['state'] == 'ON')
-            : null,
+        onExpand: expand,
       ),
     );
   }
@@ -1927,29 +2027,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // [KHỐI MẶT CÔNG TẮC — CHẾ ĐỘ SỬA] Callback bên trong đều NO-OP: addEntry() bọc
         // AbsorbPointer ngoài cùng đã chặn hết tương tác (chỉ còn dùng để cầm-kéo), giống hệt
         // nguyên tắc mọi thẻ khác trong chế độ Sửa (xem addEntry ở trên).
+        // [FIX GIAI ĐOẠN 120] Dùng ĐÚNG _FaceplateCompactCard (span=1, vuông switchCellWidth) —
+        // KHÔNG còn PhysicalSwitchBlockCard cỡ lớn ở đây nữa, khớp với hình dạng THẬT sẽ hiện ở
+        // chế độ thường (nguyên tắc "không nhảy cỡ giữa 2 chế độ", Giai đoạn 90/104/107).
         final bool anyOnline = channels.any((c) => c['online'] == true);
-        final List<Widget> cells = [
-          for (final item in channels)
-            _SwitchGangButton(
-              name: (item['name'] as String?)?.isNotEmpty == true ? item['name'] as String : item['endpoint'] as String,
-              isOn: item['state'] == 'ON',
-              isOffline: item['online'] != true,
+        final int miniShown = channels.length > 4 ? 3 : channels.length;
+        final List<Widget> miniCells = [
+          for (int i = 0; i < miniShown; i++)
+            _FaceplateMiniButton(
+              isOn: channels[i]['state'] == 'ON',
+              isOffline: channels[i]['online'] != true,
               onTap: () {},
               onLongPress: () {},
             ),
         ];
-        final int span = channels.length >= 3 ? 2 : 1;
+        if (channels.length > 4) miniCells.add(_FaceplateMoreButton(remaining: channels.length - 3, onTap: () {}));
         addEntry(mac, mac, 'switch', SizedBox(
-          width: span >= 2 ? switchCellWidth * 2 + 16 : switchCellWidth,
-          height: span >= 2 ? null : switchCellWidth,
-          child: PhysicalSwitchBlockCard(
-            deviceName: (editMasterByMac[mac]?['name'] as String?) ?? 'sw-${(mac.length >= 4 ? mac.substring(mac.length - 4) : mac).toLowerCase()}',
-            cells: cells,
+          width: switchCellWidth,
+          height: switchCellWidth,
+          child: _FaceplateCompactCard(
+            channelCount: channels.length,
+            miniCells: miniCells,
             isOffline: !anyOnline,
             // [FIX GIAI ĐOẠN 116] Ẩn per-endpoint như bản chính — hiển thị "đã ẩn" chỉ khi TẤT CẢ
             // kênh trong khối đều bị ẩn (không có khoá ẩn cấp khối).
             isHidden: channels.every((c) => _hiddenDevices.contains("${mac}_${c['endpoint']}")),
-            onOpenDeviceMenu: () {},
+            onExpand: () {},
           ),
         ));
       }
@@ -6044,6 +6147,7 @@ class PhysicalSwitchBlockCard extends StatelessWidget {
     final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     final int n = cells.length;
     final Color dividerColor = isDark ? Colors.white24 : Colors.grey.withValues(alpha: 0.25);
+    const Color tkGreen = Color(0xFF00A651);
 
     // [ĐỢT 18 — ĐÁNH NỔI KHỐI] Cùng công thức viền+bóng đổ Sáng Thường đã dùng cho SmartSwitchCard
     // (chỉ khác object riêng vì đây là widget top-level, không truy cập được field của State khác).
@@ -6055,100 +6159,262 @@ class PhysicalSwitchBlockCard extends StatelessWidget {
           )
         : BoxDecoration(borderRadius: BorderRadius.circular(16));
 
-    // [GIAI ĐOẠN 117 — BỎ HẲN Divider/VerticalDivider PHẲNG] Rãnh phân cách giữa các phím giờ đến
-    // từ margin+boxShadow CỦA CHÍNH _SwitchGangButton (mỗi nút tự "nổi" lên như phím vật lý riêng
-    // biệt) — không còn cần đường kẻ Divider giả để tách ô nữa. wrapCell thêm MỘT lớp đệm 5px
-    // NGOÀI margin riêng của _SwitchGangButton (chấp nhận rãnh hơi rộng hơn 1 chút cho nút mặc
-    // định) — áp dụng ĐỒNG NHẤT cho MỌI cell (kể cả avatar riêng kênh, xem _buildFaceplateEntry —
-    // loại cell đó KHÔNG tự có margin) để không có ô nào "dính sát" mép láng giềng.
-    Widget wrapCell(Widget cell) => Padding(padding: const EdgeInsets.all(5), child: cell);
-    final List<Widget> wrapped = [for (final c in cells) wrapCell(c)];
-
-    Widget buildGrid(bool boundedHeight) {
-      if (n <= 1) return wrapped.isEmpty ? const SizedBox() : wrapped.first;
-      if (n == 2) {
-        // Row chỉ cần bounded WIDTH (luôn có, từ SizedBox cha) — height của Row tự do theo nội
-        // dung trong cả 2 trường hợp, không cần nhánh riêng như Column bên dưới.
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [Expanded(child: wrapped[0]), Expanded(child: wrapped[1])],
-        );
-      }
-      if (n == 3) {
-        if (boundedHeight) {
-          // Chiều cao XÁC ĐỊNH (hiếm với 3-gang vì span=2 -> height=null, nhưng phòng thủ đầy đủ
-          // cho mọi ngữ cảnh gọi khác trong tương lai) -> lấp đầy bằng Expanded như thiết kế gốc.
-          return Column(children: [Expanded(child: wrapped[0]), Expanded(child: wrapped[1]), Expanded(child: wrapped[2])]);
-        }
-        // Chiều cao KHÔNG xác định (thực tế luôn rơi vào đây) -> KHÔNG Expanded, tự cao theo nội
-        // dung — đúng gốc rễ fix crash (xem class doc ở trên).
-        return Column(mainAxisSize: MainAxisSize.min, children: wrapped);
-      }
-      // 4 nút trở lên -> lưới 2 cột (2x2 chuẩn EU/VN) — GridView.builder(shrinkWrap:true) tự tính
-      // chiều cao từ childAspectRatio, KHÔNG cần bounded height cha trong mọi trường hợp (khác
-      // Column ở trên) nên không cần nhánh bounded/unbounded riêng.
+    // [GIAI ĐOẠN 123 — ĐƠN GIẢN HÓA] Widget này giờ CHỈ còn sống bên trong popup phóng to
+    // (_showFaceplateExpanded, luôn cấp chiều cao BOUNDED qua ConstrainedBox) — không còn dùng
+    // trực tiếp trên lưới Dashboard nữa (đã thay bằng _FaceplateCompactCard từ Giai đoạn 120). Vì
+    // vậy KHÔNG còn cần phân biệt bounded/unbounded height hay 3 kiểu layout Row/Column/GridView
+    // riêng cho từng số kênh (nguồn của toàn bộ rủi ro crash Giai đoạn 116/121) — LUÔN dùng ĐÚNG 1
+    // GridView.builder(shrinkWrap:true) như yêu cầu tường minh: tự thu gọn chiều cao theo đúng số
+    // kênh (2 kênh -> lưới thấp, 8 kênh -> lưới cao hơn), không tràn/không thừa khoảng trống.
+    Widget buildGrid() {
+      if (n == 0) return const SizedBox();
       return GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.15),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.3, mainAxisSpacing: 4, crossAxisSpacing: 4),
         itemCount: n,
-        itemBuilder: (_, i) => wrapped[i],
+        itemBuilder: (_, i) => cells[i],
       );
     }
 
-    // [FIX GIAI ĐOẠN 116 — Expanded PHẢI LÀ CON TRỰC TIẾP CỦA Column] `Expanded`/`Flexible` chỉ
-    // hợp lệ khi là PHẦN TỬ TRỰC TIẾP trong `children:` của 1 Flex (Row/Column) — không thể trả
-    // về từ bên trong LayoutBuilder rồi lồng qua Padding (ném lỗi "Incorrect use of
-    // ParentDataWidget"). Nên xác định bounded/unbounded ở NGOÀI CÙNG (LayoutBuilder bọc toàn bộ
-    // build() — outerConstraints CHÍNH LÀ constraint cha thật đã cấp cho PhysicalSwitchBlockCard,
-    // ví dụ SizedBox(height: smallWidth) cho 1-2 gang = bounded, height: null cho 3-4 gang =
-    // unbounded, xem _buildAvatarStaggeredGrid) TRƯỚC khi dựng children, rồi chèn thẳng
-    // `Expanded(...)` hoặc widget thường vào ĐÚNG vị trí phần tử trong children: [...] bên dưới.
-    return LayoutBuilder(builder: (context, outerConstraints) {
-      final bool boundedHeight = outerConstraints.maxHeight.isFinite;
-      final Widget gridArea = Padding(padding: const EdgeInsets.all(4), child: buildGrid(boundedHeight));
-
-      return Container(
-        decoration: outerDecoration,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              foregroundDecoration: isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
-              decoration: BoxDecoration(
-                color: isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white, width: 1.5),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    InkWell(
-                      onTap: isSelectionMode ? null : onToggleAll,
-                      onLongPress: isSelectionMode ? null : onOpenDeviceMenu,
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
-                        child: Row(children: [
-                          Icon(Icons.grid_view_rounded, size: 13, color: isDark ? Colors.white54 : Colors.grey.shade500),
-                          const SizedBox(width: 6),
-                          Expanded(child: Text(deviceName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54))),
-                        ]),
+    return Container(
+      decoration: outerDecoration,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            foregroundDecoration: isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
+            decoration: BoxDecoration(
+              color: isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white, width: 1.5),
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // [GIAI ĐOẠN 122 — CÔNG TẮC TỔNG TƯỜNG MINH] Trước đây "Tất cả" chỉ ẩn trong
+                  // hành vi chạm-cả-vùng-tiêu-đề (dễ bấm nhầm/khó nhận ra) — nay tách 2 vùng RIÊNG
+                  // BIỆT trong cùng hàng: vùng tên+icon (nhấn giữ = Menu đầy đủ cấp thiết bị) và 1
+                  // "chip" nút BẬT/TẮT TẤT CẢ độc lập, chỉ hiện khi onToggleAll != null.
+                  Row(children: [
+                    Expanded(
+                      child: InkWell(
+                        onLongPress: isSelectionMode ? null : onOpenDeviceMenu,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+                          child: Row(children: [
+                            Icon(Icons.grid_view_rounded, size: 13, color: isDark ? Colors.white54 : Colors.grey.shade500),
+                            const SizedBox(width: 6),
+                            Expanded(child: Text(deviceName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54))),
+                          ]),
+                        ),
                       ),
                     ),
-                    Divider(height: 1, thickness: 1, color: dividerColor),
-                    if (boundedHeight) Expanded(child: gridArea) else gridArea,
-                  ],
-                ),
+                    if (onToggleAll != null)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 10),
+                        child: Material(
+                          color: tkGreen.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(20),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: isSelectionMode ? null : onToggleAll,
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(Icons.power_settings_new_rounded, size: 14, color: tkGreen),
+                                SizedBox(width: 4),
+                                Text('Tất cả', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: tkGreen)),
+                              ]),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ]),
+                  Divider(height: 1, thickness: 1, color: dividerColor),
+                  Padding(padding: const EdgeInsets.all(8), child: buildGrid()),
+                ],
               ),
             ),
           ),
         ),
-      );
-    });
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 🔲 [GIAI ĐOẠN 120] Ô THU GỌN 1x1 CHO KHỐI MẶT CÔNG TẮC ĐA KÊNH + PHÓNG TO XEM ĐẦY ĐỦ
+// ============================================================================
+// [TẠI SAO CẦN LỚP NÀY] Giai đoạn 115-119 xây PhysicalSwitchBlockCard đẹp, đủ chức năng — nhưng
+// span 2 (3-4 gang) trên Mobile bị luật "full-width thẻ lớn" (Giai đoạn 107) đẩy lên chiếm TRỌN
+// bề ngang màn hình, phá vỡ nhịp lưới đều 1x1 của các Công tắc đơn xung quanh — đúng report "2-4
+// cột làm nát bố cục". Nay ép TẤT CẢ khối đa kênh về ĐÚNG span=1 (vuông, bằng công tắc đơn) —
+// bên trong chỉ hiện TỐI ĐA 4 nút thu nhỏ (đủ cho 2/3/4-gang; 5+ gang hiện 3 nút đầu + 1 ô "+N"
+// gợi ý còn nhiều nút hơn) dưới dạng GridView 2 cột, CHẠM NỀN TRỐNG (không trúng nút nào) sẽ mở
+// showAppBottomSheet chứa NGUYÊN VẸN PhysicalSwitchBlockCard cỡ đầy đủ để thao tác dễ hơn.
+//
+// [GIỚI HẠN ĐÃ BIẾT — CHƯA LÀM] Nội dung bên trong popup là ẢNH TĨNH tại thời điểm mở (không bọc
+// Consumer<DeviceProvider> riêng) — nếu trạng thái đổi qua MQTT trong lúc popup đang mở, phải
+// đóng/mở lại mới thấy giá trị mới nhất; bấm nút TRONG popup vẫn gửi lệnh thật (KHÔNG mất tác
+// dụng), chỉ là icon không tự đổi màu ngay tại chỗ do dự án này theo triết lý "REAL-STATE, không
+// optimistic UI" xuyên suốt (xem SmartSwitchCard). Chấp nhận được vì popup dùng để thao tác nhanh
+// rồi đóng, không phải màn hình theo dõi trạng thái sống dài hạn.
+
+/// Nút mini bên trong ô thu gọn — CHỈ icon (không nhãn, không viền dày/glow lớn như
+/// _SwitchGangButton — sẽ vỡ hình ở kích thước ~20-30px) — vẫn giữ ngôn ngữ màu Neon Glow
+/// (Giai đoạn 119: viền+icon xanh greenAccent khi BẬT) để đồng bộ thị giác với popup phóng to.
+class _FaceplateMiniButton extends StatelessWidget {
+  final bool isOn;
+  final bool isOffline;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  const _FaceplateMiniButton({required this.isOn, required this.isOffline, required this.onTap, required this.onLongPress});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final bool lit = isOn && !isOffline;
+    final Color color = isOffline ? Colors.grey.withValues(alpha: 0.4) : (lit ? Colors.greenAccent : (isDark ? Colors.white38 : Colors.grey.shade400));
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: Material(
+        color: isDark ? Colors.white.withValues(alpha: 0.04) : Colors.black.withValues(alpha: 0.03),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: color, width: lit ? 1.4 : 1)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: isOffline ? null : onTap,
+          onLongPress: onLongPress,
+          child: Center(child: Icon(isOffline ? Icons.cloud_off_rounded : Icons.power_settings_new_rounded, size: 16, color: color)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Ô "+N" thay cho nút mini thứ 4 khi có TRÊN 4 kênh — báo hiệu còn nút chưa hiện, gợi ý chạm để
+/// xem đủ (chạm vào Ô NÀY cũng mở popup luôn, không cần chạm đúng pixel nền trống).
+class _FaceplateMoreButton extends StatelessWidget {
+  final int remaining;
+  final VoidCallback onTap;
+  const _FaceplateMoreButton({required this.remaining, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: Material(
+        color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.05),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Center(child: Text('+$remaining', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: isDark ? Colors.white70 : Colors.black54))),
+        ),
+      ),
+    );
+  }
+}
+
+/// Thẻ THU GỌN 1x1 đại diện cho khối mặt công tắc đa kênh trên lưới Dashboard chính — xem khối
+/// comment ở trên. [onExpand] mở popup cỡ đầy đủ; [onOpenDeviceMenu] cũng mở qua CHẠM NỀN TRỐNG
+/// (không có khái niệm "nhấn giữ nền = menu" riêng ở đây nữa — nền trống dành hẳn cho onExpand vì
+/// không gian 1 ô 1x1 quá nhỏ để phân biệt tap/long-press trực quan; menu đầy đủ vẫn mở được từ
+/// BÊN TRONG popup, xem PhysicalSwitchBlockCard.onOpenDeviceMenu).
+// [GIAI ĐOẠN 122 — SỐ CHÌM (WATERMARK) + NHẤN GIỮ MỞ RỘNG] Thay hẳn dòng chữ "Tất cả (x kênh)"
+// (khiến ô 1x1 vốn đã chật lại càng chật) bằng 1 con số CHÌM cực to ở NỀN — vừa cho biết ngay số
+// kênh mà không tốn diện tích UI thật nào (số nằm DƯỚI CÙNG Stack, các nút mini đè lên trên).
+// Tương tác nền đổi từ TAP sang LONG-PRESS mở popup (yêu cầu tường minh) — tap không còn tác dụng
+// gì trên vùng nền trống nữa, chỉ nút mini mới phản hồi tap (bật/tắt) như trước.
+class _FaceplateCompactCard extends StatelessWidget {
+  final int channelCount; // TỔNG số kênh thật — KHÁC miniCells.length (có thể đã cắt còn 3 + ô "+N")
+  final List<Widget> miniCells; // tối đa 4 phần tử (đã cắt + chèn _FaceplateMoreButton nếu cần)
+  final bool isOffline;
+  final bool isHidden;
+  final VoidCallback onExpand;
+  const _FaceplateCompactCard({
+    required this.channelCount,
+    required this.miniCells,
+    required this.isOffline,
+    required this.isHidden,
+    required this.onExpand,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
+
+    final BoxDecoration outerDecoration = (!isDark && !isGlass)
+        ? BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.2), width: 1),
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+          )
+        : BoxDecoration(borderRadius: BorderRadius.circular(16));
+
+    return Container(
+      decoration: outerDecoration,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            foregroundDecoration: isHidden ? BoxDecoration(color: isDark ? Colors.black.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.7)) : null,
+            decoration: BoxDecoration(
+              color: isOffline ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.grey.shade200) : (isDark ? const Color(0xFF1E293B) : Colors.white.withValues(alpha: 0.6)),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.white, width: 1.5),
+            ),
+            child: Stack(
+              children: [
+                // [LỚP DƯỚI — SỐ CHÌM] Font cực to, alpha cực thấp — chỉ gợi ý, không cạnh tranh
+                // thị giác với các nút mini vẽ đè lên trên.
+                Positioned.fill(
+                  child: Center(
+                    child: Text(
+                      '$channelCount',
+                      style: TextStyle(
+                        fontSize: 64,
+                        height: 1,
+                        fontWeight: FontWeight.w900,
+                        color: (isDark ? Colors.white : Colors.black).withValues(alpha: isDark ? 0.07 : 0.05),
+                      ),
+                    ),
+                  ),
+                ),
+                // [LỚP GIỮA — NỀN TRỐNG -> NHẤN GIỮ MỞ RỘNG] Positioned.fill nằm DƯỚI lưới nút mini
+                // (vẽ sau, xem bên dưới) — chỉ nhận được cử chỉ ở phần diện tích KHÔNG bị nút mini
+                // che phủ. CHỈ onLongPress — tap ở vùng nền không còn tác dụng gì (yêu cầu tường minh).
+                Positioned.fill(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(borderRadius: BorderRadius.circular(16), onLongPress: onExpand),
+                  ),
+                ),
+                // [LỚP TRÊN CÙNG — LƯỚI NÚT MINI] [YÊU CẦU #2] GridView.count(crossAxisCount: 2).
+                Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: GridView.count(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 0,
+                    crossAxisSpacing: 0,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: miniCells,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -6292,7 +6558,16 @@ class _SmartFanCardState extends State<SmartFanCard> {
                   children: [
                     _buildBtn(0, 'OFF', speed == 0 && !offline, isDark), const SizedBox(width: 8), _buildBtn(1, '1', speed == 1 && !offline, isDark), const SizedBox(width: 8), _buildBtn(2, '2', speed == 2 && !offline, isDark), const SizedBox(width: 8), _buildBtn(3, '3', speed == 3 && !offline, isDark), const SizedBox(width: 12),
                     Container(width: 1, height: 30, color: isDark ? Colors.white10 : Colors.grey.shade300), const SizedBox(width: 12),
-                    Material(color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : (isGlass ? Colors.white.withValues(alpha: 0.6) : Colors.grey.shade200)), borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))))
+                    // [FIX GIAI ĐOẠN 120] Cùng lỗi tương phản Sáng+Kính với _buildBtn ở trên — thêm viền
+                    // black12 CHỈ khi Sáng+Kính+CHƯA bật (isSwingActive đã có nền tkGreen đặc, tự đủ tương phản).
+                    Material(
+                      color: isSwingActive ? tkGreen.withValues(alpha: 0.85) : (isDark ? Colors.white24 : (isGlass ? Colors.white.withValues(alpha: 0.6) : Colors.grey.shade200)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        side: (isGlass && !isDark && !isSwingActive) ? const BorderSide(color: Colors.black12, width: 1) : BorderSide.none,
+                      ),
+                      child: InkWell(borderRadius: BorderRadius.circular(10), onTap: _toggleSwing, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 14), alignment: Alignment.center, child: Row(children: [Icon(Icons.threesixty, color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), size: 16), const SizedBox(width: 4), Text('Xoay', style: TextStyle(color: isSwingActive ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12, fontWeight: FontWeight.w800))]))),
+                    )
                   ],
                 ),
               )
@@ -6314,6 +6589,12 @@ class _SmartFanCardState extends State<SmartFanCard> {
         ? (isOffBtn ? Colors.redAccent.withValues(alpha: 0.85) : tkGreen.withValues(alpha: 0.85))
         : (isDark ? Colors.white10 : (isGlass ? Colors.white.withValues(alpha: 0.6) : Colors.grey.shade200));
     Color textColor = isActive ? Colors.white : (isDark ? Colors.white : Colors.black87);
+    // [FIX GIAI ĐOẠN 120 — TƯƠNG PHẢN NÚT SÁNG+KÍNH] Nút CHƯA CHỌN ở Sáng+Kính (bgColor trắng
+    // 60% alpha) không có viền -> tiệp gần như liền mạch với nền kính của cả thẻ (cũng trắng/kính
+    // mờ tương tự), mất hẳn ranh giới khối. Thêm viền mờ black12 CHỈ ở đúng trường hợp này — nút
+    // ĐANG CHỌN (đã có nền đặc màu tkGreen/đỏ, tự tương phản đủ), Tối, hay Sáng-KHÔNG-Kính (đã có
+    // Colors.grey.shade200 đủ đậm từ trước) đều KHÔNG cần viền, giữ nguyên như cũ.
+    final bool needsGlassBorder = isGlass && !isDark && !isActive;
     // [FIX CHỮ "OFF" RỚT DÒNG] Nút này nằm trong Expanded (Row 4 nút chia đều bề ngang thẻ) —
     // khi thẻ bị ép hẹp (bin-packing StaggeredGrid trước đây, hoặc bất kỳ layout nào khác sau
     // này), Text 3 ký tự "OFF" không đủ chỗ và TỰ XUỐNG DÒNG giữa chữ (Text mặc định wrap khi
@@ -6321,7 +6602,16 @@ class _SmartFanCardState extends State<SmartFanCard> {
     // tự THU NHỎ CỠ FONT để vừa đúng 1 dòng thay vì gãy dòng — không đặt FittedBox ở NGOÀI
     // Expanded (Expanded cần bề ngang xác định từ Row cha; FittedBox đo con ở ràng buộc VÔ HẠN sẽ
     // làm Expanded trong đó ném lỗi "unbounded width") — đặt ĐÚNG bên trong, quanh mỗi Text riêng.
-    return Expanded(child: Material(color: bgColor, borderRadius: BorderRadius.circular(10), child: InkWell(borderRadius: BorderRadius.circular(10), onTap: () => _changeSpeed(btnSpeed), child: Container(height: 40, alignment: Alignment.center, padding: const EdgeInsets.symmetric(horizontal: 2), child: FittedBox(fit: BoxFit.scaleDown, child: Text(label, maxLines: 1, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w900)))))));
+    return Expanded(child: Material(
+      color: bgColor,
+      // [Material.shape thay Material.borderRadius] 2 tham số này loại trừ nhau (assert) — dùng
+      // shape để vừa bo góc VỪA có thể thêm viền có điều kiện, không cần nhánh code riêng.
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: needsGlassBorder ? const BorderSide(color: Colors.black12, width: 1) : BorderSide.none,
+      ),
+      child: InkWell(borderRadius: BorderRadius.circular(10), onTap: () => _changeSpeed(btnSpeed), child: Container(height: 40, alignment: Alignment.center, padding: const EdgeInsets.symmetric(horizontal: 2), child: FittedBox(fit: BoxFit.scaleDown, child: Text(label, maxLines: 1, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w900))))),
+    ));
   }
 }
 
