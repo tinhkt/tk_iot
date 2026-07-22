@@ -17,11 +17,13 @@ import '../services/auth_service.dart';
 import '../services/dashboard_sync_service.dart';
 import '../services/push_notification_service.dart';
 import 'settings/notification_settings_screen.dart';
+import 'tuya/tuya_link_screen.dart';
 import 'cameras/add_camera_dialog.dart';
 import 'cameras/camera_player_card.dart';
 import 'cameras/camera_enlarged_dialog.dart';
 import 'cameras/add_imou_camera_dialog.dart';
-import 'cameras/imou_camera_placeholder_card.dart';
+import 'cameras/imou_camera_player_card.dart';
+import 'cameras/imou_camera_enlarged_dialog.dart';
 import '../models/imou_camera_model.dart';
 import '../models/camera_model.dart';
 import 'auth/login_screen.dart';
@@ -124,7 +126,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // trong _bootstrapSync() (cùng lúc với khởi tạo khác) — xem _loadCameras().
   List<CameraModel> _cameras = [];
   // [CAMERA P2P — IMOU] Danh sách camera Imou của nhà đang mở, nạp song song _cameras trong
-  // _loadCameras() — xem imou_camera_placeholder_card.dart (chưa có video sống, Pha 2).
+  // _loadCameras() — xem imou_camera_player_card.dart (player thật qua media_kit, HLS).
   List<ImouCameraModel> _imouCameras = [];
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...', 'main': ''};
@@ -3833,6 +3835,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // [ĐẨY THÔNG BÁO OS] Mở màn Cài đặt loại thông báo muốn nhận đẩy — xem
           // lib/screens/settings/notification_settings_screen.dart.
           buildSettingGroup([ListTile(leading: Icon(Icons.notifications_active_outlined, color: textMain), title: Text(t.text('notification_settings'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const NotificationSettingsScreen())))]),
+          Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text('Tích hợp', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+          // [TUYA CLOUD-TO-CLOUD] Mở màn Liên kết tài khoản Tuya/Smart Life — xem
+          // lib/screens/tuya/tuya_link_screen.dart. Điều khiển/hiển thị thiết bị Tuya sau khi
+          // đồng bộ KHÔNG cần code riêng (tự vào chung Dashboard qua pipeline có sẵn).
+          buildSettingGroup([ListTile(leading: Icon(Icons.cloud_queue_rounded, color: textMain), title: const Text('Liên kết Tuya / Smart Life', style: TextStyle(fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => TuyaLinkScreen(homeId: currentHomeId))))]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('security_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text(t.text('change_password'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
           // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)
@@ -4676,8 +4683,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 );
               },
             ),
-          // [CAMERA P2P — IMOU, PHA 1] Danh sách RIÊNG, hiển thị dưới khối RTSP — chưa có video
-          // sống (Pha 2), chỉ thẻ tên+badge+nút Xóa (imou_camera_placeholder_card.dart).
+          // [CAMERA P2P — IMOU, PHA 2 — PLAYER THẬT] Danh sách RIÊNG, hiển thị dưới khối RTSP.
+          // getLiveStreamInfo trả HLS phát được — dùng NGUYÊN media_kit, không cần SDK gốc (xem
+          // imou_camera_player_card.dart).
           if (_imouCameras.isNotEmpty) ...[
             const SizedBox(height: 16),
             Row(children: [
@@ -4686,56 +4694,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Text('Camera Imou (P2P)', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
             ]),
             const SizedBox(height: 8),
-            ...[for (final cam in _imouCameras) ...[
-              ImouCameraPlaceholderCard(camera: cam, onDelete: () => _deleteImouCamera(cam)),
-              const SizedBox(height: 6),
-            ]],
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3),
+              itemCount: _imouCameras.length,
+              itemBuilder: (context, index) {
+                final cam = _imouCameras[index];
+                return ImouPreviewCard(
+                  homeId: currentHomeId,
+                  camera: cam,
+                  onMaximize: () => _openImouCameraEnlarged(cam),
+                  onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ImouCameraFullscreenScreen(homeId: currentHomeId, camera: cam))),
+                );
+              },
+            ),
           ],
         ],
       ),
     );
   }
 
-  // [CAMERA P2P — IMOU — XÓA CAMERA] Xác nhận rồi gọi deleteImouCamera(); chỉ gỡ khỏi
-  // [_imouCameras] khi Server xác nhận xóa thành công (không optimistic-xóa trước).
-  Future<void> _deleteImouCamera(ImouCameraModel camera) async {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
-    final Color textSub = isDark ? Colors.white54 : Colors.black54;
-
-    final bool? confirmed = await showAppDialog<bool>(
-      context: context,
-      maxWidth: 400,
-      child: Builder(builder: (ctx) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Xóa camera "${camera.name}"?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            Text('Camera sẽ được gỡ khỏi tài khoản Imou và không còn hiện trong danh sách.', style: TextStyle(color: textSub)),
-            const SizedBox(height: 24),
-            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              ),
-            ]),
-          ],
-        );
-      }),
-    );
-    if (confirmed != true || !mounted) return;
-
-    final bool ok = await ApiService().deleteImouCamera(currentHomeId, camera.id);
-    if (!mounted) return;
-    if (ok) {
+  // [CAMERA P2P — IMOU — XÓA CAMERA] Mở Dialog Phóng to; nếu người dùng xóa camera từ trong đó
+  // (showImouCameraEnlargedDialog trả về true khi Server đã xác nhận xóa), tự gỡ khỏi
+  // [_imouCameras] — cùng pattern _openCameraEnlarged() đã dùng cho camera RTSP.
+  Future<void> _openImouCameraEnlarged(ImouCameraModel camera) async {
+    final bool deleted = await showImouCameraEnlargedDialog(context, homeId: currentHomeId, camera: camera);
+    if (deleted && mounted) {
       setState(() => _imouCameras = _imouCameras.where((c) => c.id != camera.id).toList());
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Xóa camera thất bại — kiểm tra kết nối và thử lại')));
     }
   }
 

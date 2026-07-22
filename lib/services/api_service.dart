@@ -580,28 +580,205 @@ class ApiService {
     }
   }
 
-  /// GET /api/homes/{homeId}/imou-cameras/{cameraId}/live-token — access_token NGẮN HẠN + psk
-  /// cho 1 phiên xem trực tiếp. Gọi lại MỖI LẦN mở xem (Maximize/Fullscreen), KHÔNG cache lâu dài
-  /// phía App — đúng bản chất token hết hạn theo Imou. Trả null khi lỗi/chưa cấu hình OpenAPI
-  /// (Pha 1 — xem internal/imou/token.go, ErrNotConfigured).
-  Future<({String accessToken, String psk, String deviceSerial, int channel})?> getImouLiveToken(String homeId, int cameraId) async {
+  /// GET /api/homes/{homeId}/imou-cameras/{cameraId}/live-url — URL HLS (luồng chính + luồng phụ
+  /// nếu có) cho 1 phiên xem trực tiếp — phát THẲNG qua media_kit, KHÔNG cần SDK gốc (xem
+  /// internal/imou/token.go GetLiveStreamURLs — phát hiện kiến trúc mới thay thế hẳn access_token
+  /// +psk của thiết kế Pha 1 cũ). Gọi lại MỖI LẦN mở xem (Maximize/Fullscreen), KHÔNG cache lâu
+  /// dài. Trả null khi lỗi mạng/chưa cấu hình.
+  Future<({String hlsUrl, String subHlsUrl})?> getImouLiveURL(String homeId, int cameraId) async {
     try {
-      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/live-token');
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/live-url');
       if (response.statusCode != 200) {
-        if (kDebugMode) print('⚠️ [IMOU] Lỗi lấy live-token (HTTP ${response.statusCode}): ${response.body}');
+        if (kDebugMode) print('⚠️ [IMOU] Lỗi lấy live-url (HTTP ${response.statusCode}): ${response.body}');
         return null;
       }
       final Map<String, dynamic> decoded = json.decode(response.body);
       final Map<String, dynamic> data = decoded['data'] as Map<String, dynamic>;
       return (
-        accessToken: (data['access_token'] ?? '').toString(),
-        psk: (data['psk'] ?? '').toString(),
-        deviceSerial: (data['device_serial'] ?? '').toString(),
-        channel: (data['channel'] as num?)?.toInt() ?? 0,
+        hlsUrl: (data['hls_url'] ?? '').toString(),
+        subHlsUrl: (data['sub_hls_url'] ?? '').toString(),
       );
     } catch (e) {
-      if (kDebugMode) print('❌ Lỗi mạng khi getImouLiveToken: $e');
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouLiveURL: $e');
       return null;
+    }
+  }
+
+  // ============================================================================
+  // ⚙️ CÀI ĐẶT + ĐIỀU KHIỂN + XEM LẠI CAMERA IMOU
+  // ============================================================================
+
+  /// GET .../imou-cameras/{cameraId}/settings — gộp nhiều thông tin (riêng tư/hồng ngoại/chuyển
+  /// động/SD card/dung lượng/pin/trực tuyến) thành 1 lần gọi. Trả null khi lỗi mạng — từng field
+  /// bên trong có thể rỗng riêng lẻ (best-effort phía Backend, không phải lỗi toàn bộ).
+  Future<Map<String, dynamic>?> getImouCameraSettings(String homeId, int cameraId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/settings');
+      if (response.statusCode != 200) return null;
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      return decoded['data'] as Map<String, dynamic>?;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouCameraSettings: $e');
+      return null;
+    }
+  }
+
+  Future<bool> setImouPrivacyMode(String homeId, int cameraId, bool enable) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/privacy', {'enable': enable});
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi setImouPrivacyMode: $e');
+      return false;
+    }
+  }
+
+  Future<bool> setImouNightVision(String homeId, int cameraId, String mode) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/night-vision', {'mode': mode});
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi setImouNightVision: $e');
+      return false;
+    }
+  }
+
+  /// [enabled]/[sensitivity] đều tùy chọn — chỉ gửi field khác null.
+  Future<bool> setImouMotionDetection(String homeId, int cameraId, {bool? enabled, String? sensitivity}) async {
+    try {
+      final body = <String, dynamic>{};
+      if (enabled != null) body['enabled'] = enabled;
+      if (sensitivity != null) body['sensitivity'] = sensitivity;
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/motion-detection', body);
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi setImouMotionDetection: $e');
+      return false;
+    }
+  }
+
+  Future<bool> restartImouCamera(String homeId, int cameraId) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/restart');
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi restartImouCamera: $e');
+      return false;
+    }
+  }
+
+  /// PTZ THẬT (khác D-pad placeholder camera RTSP) — direction: UP/DOWN/LEFT/RIGHT/ZOOM_IN/
+  /// ZOOM_OUT/STOP. App gọi "STOP" ngay khi người dùng nhả nút, KHÔNG chỉ dựa vào durationMs.
+  Future<bool> controlImouPTZ(String homeId, int cameraId, String direction, {int durationMs = 500}) async {
+    try {
+      final response = await authorizedPost(
+        '$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/ptz',
+        {'direction': direction, 'duration_ms': durationMs},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi controlImouPTZ: $e');
+      return false;
+    }
+  }
+
+  /// GET .../imou-cameras/{cameraId}/records?source=local|cloud&begin=...&end=... — CHỈ trả
+  /// metadata (KHÔNG có URL phát được — xem giới hạn đã xác nhận trong internal/imou/records.go
+  /// phía Backend). Trả null khi lỗi mạng/nghiệp vụ (vd chưa có gói Cloud Storage).
+  Future<List<Map<String, dynamic>>?> getImouCameraRecords(
+    String homeId,
+    int cameraId, {
+    required String source, // 'local' | 'cloud'
+    required DateTime begin,
+    required DateTime end,
+  }) async {
+    String fmt(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}:${d.second.toString().padLeft(2, '0')}';
+    try {
+      final uri = Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/records').replace(queryParameters: {
+        'source': source,
+        'begin': fmt(begin),
+        'end': fmt(end),
+      });
+      final response = await authorizedGet(uri.toString());
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [IMOU] Lỗi lấy đoạn ghi (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final List<dynamic> raw = (decoded['data'] as List?) ?? const [];
+      return raw.cast<Map<String, dynamic>>();
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouCameraRecords: $e');
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // ☁️ TUYA OPEN API (CLOUD-TO-CLOUD) — liên kết + đồng bộ thiết bị Tuya/Smart Life
+  // ============================================================================
+  // [KIẾN TRÚC] KHÔNG có method điều khiển riêng — thiết bị Tuya sau khi đồng bộ điều khiển
+  // được NGAY qua publishCommand() có sẵn (mqtt_service.dart), y hệt thiết bị vật lý, vì Backend
+  // đã tái dùng nguyên cầu nối MQTT (xem internal/mqtt/broker.go, TuyaCommandHandler).
+
+  /// POST /api/homes/{homeId}/tuya/link-url — trả (url, error). error khác null = câu chữ THẬT
+  /// server trả về (vd chưa cấu hình TUYA_CLIENT_ID) để hiện cho user, không tự đoán.
+  Future<({String? url, String? error})> getTuyaLinkURL(String homeId) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link-url');
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        final data = decoded['data'] as Map<String, dynamic>;
+        return (url: (data['url'] ?? '').toString(), error: null);
+      }
+      return (url: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getTuyaLinkURL: $e');
+      return (url: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
+
+  /// GET /api/homes/{homeId}/tuya/link-status — App POLL định kỳ sau khi mở trình duyệt ngoài để
+  /// biết Backend đã lưu liên kết xong chưa (KHÔNG dùng MQTT cho tín hiệu 1 lần này — xem lý do
+  /// đầy đủ tại GetTuyaLinkStatusHandler, Go). Trả null khi lỗi mạng (khác false = "server xác
+  /// nhận chưa liên kết thật").
+  Future<bool?> getTuyaLinkStatus(String homeId) async {
+    try {
+      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link-status');
+      if (response.statusCode != 200) return null;
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      return decoded['linked'] == true;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getTuyaLinkStatus: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/homes/{homeId}/tuya/sync — đồng bộ danh sách thiết bị Tuya. Trả (count, error).
+  Future<({int? count, String? error})> syncTuyaDevices(String homeId) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/sync');
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        final data = decoded['data'] as Map<String, dynamic>;
+        return (count: (data['synced_count'] as num?)?.toInt() ?? 0, error: null);
+      }
+      return (count: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi syncTuyaDevices: $e');
+      return (count: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
+
+  /// DELETE /api/homes/{homeId}/tuya/link — hủy liên kết tài khoản Tuya của nhà.
+  Future<bool> unlinkTuya(String homeId) async {
+    try {
+      final response = await authorizedDelete('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link');
+      return response.statusCode == 200;
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi unlinkTuya: $e');
+      return false;
     }
   }
 }
