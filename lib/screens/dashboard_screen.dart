@@ -3839,7 +3839,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // [TUYA CLOUD-TO-CLOUD] Mở màn Liên kết tài khoản Tuya/Smart Life — xem
           // lib/screens/tuya/tuya_link_screen.dart. Điều khiển/hiển thị thiết bị Tuya sau khi
           // đồng bộ KHÔNG cần code riêng (tự vào chung Dashboard qua pipeline có sẵn).
-          buildSettingGroup([ListTile(leading: Icon(Icons.cloud_queue_rounded, color: textMain), title: const Text('Liên kết Tuya / Smart Life', style: TextStyle(fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => TuyaLinkScreen(homeId: currentHomeId))))]),
+          buildSettingGroup([ListTile(leading: Icon(Icons.cloud_queue_rounded, color: textMain), title: const Text('Đồng bộ Tuya / Smart Life', style: TextStyle(fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => TuyaLinkScreen(homeId: currentHomeId))))]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('security_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text(t.text('change_password'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
           // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)

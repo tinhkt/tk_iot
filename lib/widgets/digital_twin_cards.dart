@@ -478,21 +478,30 @@ class _SmartRollingDoorCardState extends State<SmartRollingDoorCard> with Single
           // graphic phía trên), vẫn còn khoảng cách rõ rệt so với 0 (dính sát) trước Giai đoạn 120.
           const SizedBox(height: 8),
           // ---- PHẦN DƯỚI: LÊN / DỪNG / XUỐNG ----
+          // [FIX — OVERFLOWED BY 12 PIXELS trên Card hẹp] 3 nút rộng cố định 60 (tổng 180 + spacing)
+          // vượt quá bề rộng Card khi cửa sổ PC thu nhỏ. Row này nằm trong bề ngang CÓ GIỚI HẠN
+          // (Card), khác hẳn trường hợp Column/Stack chiều CAO không giới hạn từng gây crash với
+          // Expanded ở Giai đoạn 121-122/132 — ở đây Expanded AN TOÀN: mỗi nút nhận đúng 1/3 bề
+          // rộng Row, Container 60x50 bên trong tự bị Flutter kẹp (constraints.enforce) nhỏ lại
+          // vừa khít khi phần chia không đủ 60px, không tràn viền.
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _buildHoldButton(icon: Icons.keyboard_arrow_up_rounded, direction: 'up', isDark: isDark),
-              GestureDetector(
-                behavior: HitTestBehavior.opaque, // cùng lý do cách ly cảm ứng như nút Lên/Xuống
-                onTap: widget.isOffline ? null : _tapStop,
-                // [FIX GIAI ĐOẠN 120] Phóng to đồng bộ với nút Lên/Xuống (44x36/icon18 -> 60x50/icon26).
-                child: Container(
-                  width: 60, height: 50, alignment: Alignment.center,
-                  decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(14)),
-                  child: const Icon(Icons.stop_rounded, size: 26, color: Colors.redAccent),
+              Expanded(child: Center(child: _buildHoldButton(icon: Icons.keyboard_arrow_up_rounded, direction: 'up', isDark: isDark))),
+              Expanded(
+                child: Center(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque, // cùng lý do cách ly cảm ứng như nút Lên/Xuống
+                    onTap: widget.isOffline ? null : _tapStop,
+                    // [FIX GIAI ĐOẠN 120] Phóng to đồng bộ với nút Lên/Xuống (44x36/icon18 -> 60x50/icon26).
+                    child: Container(
+                      width: 60, height: 50, alignment: Alignment.center,
+                      decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(14)),
+                      child: const Icon(Icons.stop_rounded, size: 26, color: Colors.redAccent),
+                    ),
+                  ),
                 ),
               ),
-              _buildHoldButton(icon: Icons.keyboard_arrow_down_rounded, direction: 'down', isDark: isDark),
+              Expanded(child: Center(child: _buildHoldButton(icon: Icons.keyboard_arrow_down_rounded, direction: 'down', isDark: isDark))),
             ],
           ),
         ],

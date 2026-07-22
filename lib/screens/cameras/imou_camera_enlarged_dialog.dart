@@ -188,29 +188,40 @@ class _ImouCameraEnlargedDialogBodyState extends State<_ImouCameraEnlargedDialog
                 ],
               ),
             ),
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Container(
-                color: Colors.black,
-                child: _loading
-                    ? const Center(child: CircularProgressIndicator(color: _tkGreen))
-                    : _errorMessage != null
-                        ? Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 32),
-                                const SizedBox(height: 8),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                                  child: Text(_errorMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                                ),
-                                const SizedBox(height: 8),
-                                TextButton(onPressed: _openStream, child: const Text('Thử lại', style: TextStyle(color: _tkGreen, fontWeight: FontWeight.bold))),
-                              ],
-                            ),
-                          )
-                        : Video(controller: _controller),
+            // [FIX — BOTTOM OVERFLOWED BY 159 PIXELS ở màn hình ngang] AspectRatio 16:9 tính chiều
+            // cao THEO CHIỀU RỘNG dialog (90% màn hình) — trên màn ngang, chiều rộng lớn nên chiều
+            // cao suy ra cũng lớn, cộng thêm header+PTZ pad bên dưới vượt quá chiều cao thật màn
+            // hình. Bọc Flexible (KHÔNG phải Expanded — Column bên ngoài vẫn mainAxisSize.min):
+            // Flexible cho phép khối video TỰ THU NHỎ vừa đúng phần chiều cao còn lại sau khi trừ
+            // header/PTZ pad, thay vì luôn giữ nguyên chiều cao suy ra từ chiều rộng. AN TOÀN dùng
+            // Flexible/Expanded ở đây vì Dialog (showAppDialog) luôn nhận maxHeight HỮU HẠN từ màn
+            // hình thật (khác hẳn trường hợp trong SingleChildScrollView chiều cao vô hạn từng gây
+            // crash ở các Card Dashboard khác — xem giai-doan-121-122/132 memory).
+            Flexible(
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: Container(
+                  color: Colors.black,
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator(color: _tkGreen))
+                      : _errorMessage != null
+                          ? Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 32),
+                                  const SizedBox(height: 8),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                                    child: Text(_errorMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  TextButton(onPressed: _openStream, child: const Text('Thử lại', style: TextStyle(color: _tkGreen, fontWeight: FontWeight.bold))),
+                                ],
+                              ),
+                            )
+                          : Video(controller: _controller),
+                ),
               ),
             ),
             Padding(

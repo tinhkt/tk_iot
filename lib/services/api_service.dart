@@ -716,46 +716,17 @@ class ApiService {
   }
 
   // ============================================================================
-  // ☁️ TUYA OPEN API (CLOUD-TO-CLOUD) — liên kết + đồng bộ thiết bị Tuya/Smart Life
+  // ☁️ TUYA OPEN API (CLOUD-TO-CLOUD) — 1 tài khoản Tuya CHUNG cho cả hệ thống
   // ============================================================================
-  // [KIẾN TRÚC] KHÔNG có method điều khiển riêng — thiết bị Tuya sau khi đồng bộ điều khiển
-  // được NGAY qua publishCommand() có sẵn (mqtt_service.dart), y hệt thiết bị vật lý, vì Backend
-  // đã tái dùng nguyên cầu nối MQTT (xem internal/mqtt/broker.go, TuyaCommandHandler).
+  // [KIẾN TRÚC — ĐÃ ĐỔI] Bỏ hẳn OAuth "Link App Account" (project Custom Development không hỗ
+  // trợ, xác nhận qua tài liệu Tuya) — Backend dùng 1 tài khoản Tuya/Smart Life CHUNG
+  // (TUYA_ACCOUNT_USERNAME/PASSWORD trong .env server) cho TOÀN hệ thống, không phân biệt theo
+  // nhà ở tầng liên kết. App chỉ cần gọi "Đồng bộ" — không còn màn liên kết/trình duyệt/poll.
+  // KHÔNG có method điều khiển riêng — thiết bị Tuya sau khi đồng bộ điều khiển được NGAY qua
+  // publishCommand() có sẵn (mqtt_service.dart), y hệt thiết bị vật lý.
 
-  /// POST /api/homes/{homeId}/tuya/link-url — trả (url, error). error khác null = câu chữ THẬT
-  /// server trả về (vd chưa cấu hình TUYA_CLIENT_ID) để hiện cho user, không tự đoán.
-  Future<({String? url, String? error})> getTuyaLinkURL(String homeId) async {
-    try {
-      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link-url');
-      final Map<String, dynamic> decoded = json.decode(response.body);
-      if (response.statusCode == 200) {
-        final data = decoded['data'] as Map<String, dynamic>;
-        return (url: (data['url'] ?? '').toString(), error: null);
-      }
-      return (url: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
-    } catch (e) {
-      if (kDebugMode) print('❌ Lỗi mạng khi getTuyaLinkURL: $e');
-      return (url: null, error: 'Không thể kết nối đến máy chủ');
-    }
-  }
-
-  /// GET /api/homes/{homeId}/tuya/link-status — App POLL định kỳ sau khi mở trình duyệt ngoài để
-  /// biết Backend đã lưu liên kết xong chưa (KHÔNG dùng MQTT cho tín hiệu 1 lần này — xem lý do
-  /// đầy đủ tại GetTuyaLinkStatusHandler, Go). Trả null khi lỗi mạng (khác false = "server xác
-  /// nhận chưa liên kết thật").
-  Future<bool?> getTuyaLinkStatus(String homeId) async {
-    try {
-      final response = await authorizedGet('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link-status');
-      if (response.statusCode != 200) return null;
-      final Map<String, dynamic> decoded = json.decode(response.body);
-      return decoded['linked'] == true;
-    } catch (e) {
-      if (kDebugMode) print('❌ Lỗi mạng khi getTuyaLinkStatus: $e');
-      return null;
-    }
-  }
-
-  /// POST /api/homes/{homeId}/tuya/sync — đồng bộ danh sách thiết bị Tuya. Trả (count, error).
+  /// POST /api/homes/{homeId}/tuya/sync — đăng nhập tài khoản Tuya chung (Backend tự lo) rồi
+  /// đồng bộ TOÀN BỘ thiết bị của tài khoản đó vào nhà này. Trả (count, error).
   Future<({int? count, String? error})> syncTuyaDevices(String homeId) async {
     try {
       final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/sync');
@@ -768,17 +739,6 @@ class ApiService {
     } catch (e) {
       if (kDebugMode) print('❌ Lỗi mạng khi syncTuyaDevices: $e');
       return (count: null, error: 'Không thể kết nối đến máy chủ');
-    }
-  }
-
-  /// DELETE /api/homes/{homeId}/tuya/link — hủy liên kết tài khoản Tuya của nhà.
-  Future<bool> unlinkTuya(String homeId) async {
-    try {
-      final response = await authorizedDelete('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/link');
-      return response.statusCode == 200;
-    } catch (e) {
-      if (kDebugMode) print('❌ Lỗi mạng khi unlinkTuya: $e');
-      return false;
     }
   }
 }
