@@ -508,6 +508,25 @@ class ApiService {
     }
   }
 
+  /// GET /api/cameras/discover — quét WS-Discovery (ONVIF) trên mạng LAN của SERVER (KHÔNG phải
+  /// mạng của điện thoại/PC đang mở App — xem giới hạn kiến trúc ở internal/onvif/discovery.go).
+  /// Trả (cameras, error) cùng khuôn addCamera(): cameras rỗng [] hợp lệ = quét xong nhưng không
+  /// thấy camera nào, KHÁC null (lỗi mạng/HTTP — hiện thông báo lỗi thay vì "không tìm thấy").
+  Future<({List<DiscoveredCameraModel>? cameras, String? error})> discoverCameras() async {
+    try {
+      final response = await authorizedGet('$baseUrl/cameras/discover');
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        final List<dynamic> raw = (decoded['data'] as List?) ?? const [];
+        return (cameras: raw.map((e) => DiscoveredCameraModel.fromJson(e as Map<String, dynamic>)).toList(), error: null);
+      }
+      return (cameras: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi discoverCameras: $e');
+      return (cameras: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
+
   /// DELETE /api/homes/{homeId}/cameras/{cameraId} — xóa cấu hình camera khỏi nhà. Trả true chỉ
   /// khi Server xác nhận đã xóa (HTTP 200) — false cho MỌI trường hợp khác (404/403/lỗi mạng),
   /// cùng quy ước "không nuốt lỗi" đã áp cho setDeviceOrder/setGridLayout ở trên.

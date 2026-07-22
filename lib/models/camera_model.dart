@@ -42,3 +42,36 @@ class CameraModel {
     );
   }
 }
+
+/// [QUÉT LAN ONVIF] Khớp ĐÚNG `onvif.DiscoveredCamera` phía Backend Go
+/// (internal/onvif/discovery.go) — chỉ dữ liệu THÔ tìm được qua WS-Discovery + tra thêm best-
+/// effort, KHÔNG phải camera đã lưu (không có id/rtsp_url — form Thêm Camera tự điền IP/Tên rồi
+/// người dùng hoàn tất Stream Path/tài khoản như luồng nhập tay).
+class DiscoveredCameraModel {
+  final String ipAddress;
+  final String name;
+  final String macAddress;
+  final String manufacturer;
+  final String model;
+  final String serialNumber;
+
+  const DiscoveredCameraModel({
+    required this.ipAddress,
+    required this.name,
+    required this.macAddress,
+    this.manufacturer = '',
+    this.model = '',
+    this.serialNumber = '',
+  });
+
+  factory DiscoveredCameraModel.fromJson(Map<String, dynamic> json) {
+    return DiscoveredCameraModel(
+      ipAddress: (json['ip_address'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      macAddress: (json['mac_address'] ?? '').toString(),
+      manufacturer: (json['manufacturer'] ?? '').toString(),
+      model: (json['model'] ?? '').toString(),
+      serialNumber: (json['serial_number'] ?? '').toString(),
+    );
+  }
+}

@@ -2807,7 +2807,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // [FIX — Chữ vỡ layout] maxWidth: 1000 khớp ĐÚNG ConstrainedBox nội bộ của
   // WindowsSettingsDialog (Row sidebar 240px + Expanded) — showAppDialog mặc định 420 sẽ
   // bóp Expanded về gần 0 width nếu không truyền, vỡ layout chia đôi Menu/Nội dung.
-  void _showSettingsMenu({int initialTab = 0}) { showAppDialog(context: context, maxWidth: 1000, child: WindowsSettingsDialog(currentRole: userRole, currentEmail: userEmail, initialTab: initialTab)); }
+  void _showSettingsMenu({int initialTab = 0}) { showAppDialog(context: context, maxWidth: 1000, child: WindowsSettingsDialog(currentRole: userRole, currentEmail: userEmail, initialTab: initialTab, homeId: _provisioningTargetHomeId)); }
 
   void _showThemeDialog() {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -3839,7 +3839,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // [TUYA CLOUD-TO-CLOUD] Mở màn Liên kết tài khoản Tuya/Smart Life — xem
           // lib/screens/tuya/tuya_link_screen.dart. Điều khiển/hiển thị thiết bị Tuya sau khi
           // đồng bộ KHÔNG cần code riêng (tự vào chung Dashboard qua pipeline có sẵn).
-          buildSettingGroup([ListTile(leading: Icon(Icons.cloud_queue_rounded, color: textMain), title: const Text('Đồng bộ Tuya / Smart Life', style: TextStyle(fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => TuyaLinkScreen(homeId: currentHomeId))))]),
+          buildSettingGroup([ListTile(leading: Icon(Icons.cloud_queue_rounded, color: textMain), title: const Text('Đồng bộ Tuya / Smart Life', style: TextStyle(fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () async {
+            // [FIX — thiết bị Tuya "biến mất" sau khi đồng bộ] currentHomeId là "ALL_SYSTEM" (placeholder
+            // JWT) với tài khoản SUPER_USER — PHẢI dùng _provisioningTargetHomeId (cùng công thức nhà đích
+            // AddDeviceDialog/AP Mode đang dùng) để đồng bộ đúng vào nhà SUPER_USER đang xem. Đồng thời
+            // await + _handleRefresh() sau khi đóng màn — các luồng "thêm thiết bị" khác đều làm vậy,
+            // thiếu bước này Dashboard không tự fetch lại danh sách thiết bị mới.
+            await Navigator.push(context, MaterialPageRoute(builder: (context) => TuyaLinkScreen(homeId: _provisioningTargetHomeId)));
+            if (mounted) _handleRefresh();
+          })]),
           Padding(padding: const EdgeInsets.only(left: 8.0, bottom: 8.0), child: Text(t.text('security_section'), style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
           buildSettingGroup([ListTile(leading: Icon(Icons.lock_outline, color: textMain), title: Text(t.text('change_password'), style: TextStyle(color: textMain, fontWeight: FontWeight.w600)), trailing: Icon(Icons.chevron_right, color: textSub), onTap: () => _showChangePasswordDialog())]),
           // [ADMIN] Nhóm QUẢN TRỊ chỉ hiển thị cho tài khoản quyền cao nhất (SUPER_USER)
@@ -5770,8 +5778,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 class WindowsSettingsDialog extends StatefulWidget {
-  final String currentRole; final String currentEmail; final int initialTab;
-  const WindowsSettingsDialog({super.key, required this.currentRole, required this.currentEmail, this.initialTab = 0});
+  final String currentRole; final String currentEmail; final int initialTab; final String homeId;
+  const WindowsSettingsDialog({super.key, required this.currentRole, required this.currentEmail, this.initialTab = 0, required this.homeId});
   @override
   State<WindowsSettingsDialog> createState() => _WindowsSettingsDialogState();
 }
@@ -5779,9 +5787,28 @@ class WindowsSettingsDialog extends StatefulWidget {
 class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
   late int _selectedTab;
   final Color tkGreen = const Color(0xFF00A651);
+  bool _tuyaSyncing = false;
 
   @override
   void initState() { super.initState(); _selectedTab = widget.initialTab; }
+
+  // [TUYA CLOUD-TO-CLOUD — PC] CÙNG API syncTuyaDevices() mà TuyaLinkScreen (Mobile,
+  // lib/screens/tuya/tuya_link_screen.dart) đang dùng — không viết logic riêng cho PC. homeId
+  // truyền từ _showSettingsMenu() (_provisioningTargetHomeId, ĐÚNG công thức nhà đích cho
+  // SUPER_USER đã sửa ở nút Mobile — tránh lặp lại bug đồng bộ "biến mất" vì home_id
+  // "ALL_SYSTEM").
+  Future<void> _syncTuya() async {
+    if (_tuyaSyncing) return;
+    setState(() => _tuyaSyncing = true);
+    final result = await ApiService().syncTuyaDevices(widget.homeId);
+    if (!mounted) return;
+    setState(() => _tuyaSyncing = false);
+    if (result.count != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã đồng bộ ${result.count} thiết bị Tuya'), backgroundColor: tkGreen));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.error ?? 'Đồng bộ Tuya thất bại'), backgroundColor: Colors.redAccent));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5990,6 +6017,19 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
         const SizedBox(height: 40),
         ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.dns, color: textSub), title: Text(t.text('server'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('MQTT Core Golang (Armbian)', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
         ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.copyright, color: textSub), title: Text(t.text('copyright'), style: TextStyle(color: textSub, fontSize: 13, fontWeight: FontWeight.w500, shadows: sh)), subtitle: Text('© 2026 Tuan Kiet Solutions.', style: TextStyle(color: textMain, fontWeight: FontWeight.bold, shadows: sh))),
+        const SizedBox(height: 24),
+        Divider(height: 1, color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12),
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.cloud_queue_rounded, color: tkGreen),
+          title: Text('Đồng bộ thiết bị Tuya', style: TextStyle(color: textMain, fontWeight: FontWeight.w600, shadows: sh)),
+          subtitle: Text('Kéo toàn bộ thiết bị từ tài khoản Tuya/Smart Life về nhà đang xem', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
+          trailing: _tuyaSyncing
+              ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
+              : Icon(Icons.sync_rounded, color: textSub),
+          onTap: _tuyaSyncing ? null : _syncTuya,
+        ),
       ],
     );
   }

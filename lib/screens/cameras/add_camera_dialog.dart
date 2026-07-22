@@ -6,6 +6,64 @@ import '../../models/camera_model.dart';
 import '../../services/api_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
 
+/// [QUÉT LAN ONVIF] Popup danh sách camera tìm được — trả về [DiscoveredCameraModel] người dùng
+/// chọn (null nếu hủy/đóng không chọn gì). Tách hàm riêng để build() chính không phình quá dài.
+Future<DiscoveredCameraModel?> _showDiscoveredCamerasPicker(BuildContext context, List<DiscoveredCameraModel> cameras) {
+  return showAppDialog<DiscoveredCameraModel>(
+    context: context,
+    maxWidth: 440,
+    child: Builder(builder: (context) {
+      final bool isDark = Theme.of(context).brightness == Brightness.dark;
+      final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+      final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
+      return ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.wifi_find_rounded, color: _tkGreen, size: 22),
+              const SizedBox(width: 8),
+              Text('Đã tìm thấy ${cameras.length} camera', style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+            ]),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: cameras.length,
+                separatorBuilder: (_, _) => Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12),
+                itemBuilder: (context, index) {
+                  final cam = cameras[index];
+                  final String subtitle = [
+                    cam.ipAddress,
+                    if (cam.macAddress.isNotEmpty) cam.macAddress,
+                    if (cam.model.isNotEmpty) cam.model,
+                    if (cam.serialNumber.isNotEmpty) 'SN: ${cam.serialNumber}',
+                  ].join(' • ');
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.videocam_rounded, color: Colors.blueAccent),
+                    title: Text(cam.name.isNotEmpty ? cam.name : cam.ipAddress, style: TextStyle(color: textMain, fontWeight: FontWeight.w600)),
+                    subtitle: Text(subtitle, style: TextStyle(color: textSub, fontSize: 12), overflow: TextOverflow.ellipsis),
+                    trailing: Icon(Icons.chevron_right, color: textSub),
+                    onTap: () => Navigator.of(context).pop(cam),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Đóng')),
+            ),
+          ],
+        ),
+      );
+    }),
+  );
+}
+
 const Color _tkGreen = Color(0xFF00A651);
 
 /// [CAMERA IP — THÊM MỚI] Preset Stream Path cho các hãng camera IP phổ biến tại VN — điền
@@ -53,6 +111,7 @@ class _AddCameraDialogBodyState extends State<_AddCameraDialogBody> {
   bool _obscurePassword = true;
   bool _isSaving = false;
   bool _isTesting = false;
+  bool _isScanning = false;
   // null = chưa test lần nào; true/false = kết quả lần test GẦN NHẤT — đổi bất kỳ trường nào
   // liên quan kết nối (IP/Port) sẽ tự reset về null (xem _onConnectionFieldChanged) để không
   // hiện "Đã kết nối được" LỖI THỜI cho một IP/Port đã bị sửa sau đó.
@@ -97,6 +156,40 @@ class _AddCameraDialogBodyState extends State<_AddCameraDialogBody> {
       if (mounted) setState(() => _testResult = false);
     } finally {
       if (mounted) setState(() => _isTesting = false);
+    }
+  }
+
+  // [QUÉT LAN ONVIF] Backend quét NGAY TRÊN mạng LAN của chính Server (WS-Discovery, xem
+  // internal/onvif/discovery.go) — chỉ tìm thấy camera hỗ trợ ONVIF, KHÔNG thay thế hoàn toàn
+  // nhập tay (camera RTSP-only không ONVIF, hoặc Server/camera khác LAN, vẫn phải nhập tay —
+  // đúng yêu cầu "vẫn giữ tuỳ chọn nhập thủ công").
+  Future<void> _scanLan() async {
+    if (_isScanning) return;
+    setState(() => _isScanning = true);
+    final result = await ApiService().discoverCameras();
+    if (!mounted) return;
+    setState(() => _isScanning = false);
+
+    if (result.cameras == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.error ?? 'Quét mạng LAN thất bại'), backgroundColor: Colors.redAccent));
+      return;
+    }
+    if (result.cameras!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Không tìm thấy camera ONVIF nào trong mạng LAN của Server')));
+      return;
+    }
+
+    final picked = await _showDiscoveredCamerasPicker(context, result.cameras!);
+    if (picked == null || !mounted) return;
+    setState(() {
+      _ipController.text = picked.ipAddress;
+      // Model/Serial (nếu có) đính kèm vào Tên để không mất thông tin — form Thêm Camera không
+      // có ô Serial Number riêng (camera RTSP không lưu SN, khác hẳn khuôn dữ liệu Camera Imou).
+      _nameController.text = picked.name.isNotEmpty ? picked.name : picked.ipAddress;
+      _onConnectionFieldChanged();
+    });
+    if (picked.serialNumber.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã điền IP/Tên — camera này không trả Serial Number qua ONVIF (có thể cần xác thực), hãy kiểm tra tem/nhãn camera nếu cần')));
     }
   }
 
@@ -150,6 +243,27 @@ class _AddCameraDialogBodyState extends State<_AddCameraDialogBody> {
                 'Camera phải cùng mạng LAN với thiết bị đang mở App để xem được luồng RTSP trực tiếp.',
                 style: TextStyle(color: textSub, fontSize: 12),
               ),
+              const SizedBox(height: 16),
+              // [QUÉT LAN ONVIF] Quét trước để tự điền IP/Tên — vẫn có thể sửa tay mọi trường bên
+              // dưới sau khi chọn, hoặc bỏ qua nút này và nhập thủ công như trước đây.
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isScanning ? null : _scanLan,
+                  icon: _isScanning
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.wifi_find_rounded),
+                  label: Text(_isScanning ? 'Đang quét mạng LAN...' : 'Quét mạng LAN (ONVIF)'),
+                  style: OutlinedButton.styleFrom(foregroundColor: _tkGreen, side: const BorderSide(color: _tkGreen), padding: const EdgeInsets.symmetric(vertical: 12)),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Chỉ tìm được camera hỗ trợ ONVIF cùng mạng LAN với Server. Không thấy camera? Nhập thủ công bên dưới.',
+                style: TextStyle(color: textSub, fontSize: 11),
+              ),
+              const SizedBox(height: 16),
+              Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12),
               const SizedBox(height: 16),
               AppTextField(
                 controller: _nameController,
