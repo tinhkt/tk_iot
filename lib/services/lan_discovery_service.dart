@@ -73,6 +73,13 @@ class LanDiscoveryService {
         if (event == RawSocketEvent.read) {
           final Datagram? dg = socket.receive();
           if (dg != null) _handleReply(dg);
+        } else if (event == RawSocketEvent.closed) {
+          // [FIX — QUÉT LAN KHÔNG RA TRÊN iOS] iOS đôi khi tự ĐÓNG LUÔN socket sau 1 lần send()
+          // ra địa chỉ "No route to host" (dart-lang/sdk#45824/#55564) — socket chết TỪ ĐÓ,
+          // mọi send() sau đó (kể cả tới đích hợp lệ) đều câm lặng, KHÔNG ném lỗi bắt được ở
+          // _safeSend nữa (socket đã đóng hẳn, không phải lỗi từng gói). Log rõ để không nhầm
+          // "quét xong không thấy gì" với "socket chết giữa chừng" khi debug lần sau.
+          if (kDebugMode) print('⚠️ [LAN SCAN] Socket UDP bị đóng giữa chừng (thường do iOS chặn route) — kết quả còn lại trong cửa sổ quét sẽ không nhận được nữa');
         }
       }, onError: (e) {
         if (kDebugMode) print('❌ [LAN SCAN] Lỗi socket: $e');
@@ -84,7 +91,14 @@ class LanDiscoveryService {
       // máy nhiều card mạng (PC có adapter ảo) phát nhầm interface. Fix: phát THÊM
       // broadcast ĐỊNH HƯỚNG SUBNET (/24 -> x.y.z.255) cho TỪNG interface IPv4 —
       // gói dò đi đúng mọi mạng máy đang đứng trong.
-      final targets = <InternetAddress>{InternetAddress('255.255.255.255')};
+      //
+      // [FIX — QUÉT LAN KHÔNG RA TRÊN iOS, dù đã cấp quyền] iOS thường KHÔNG có route cho địa
+      // chỉ global 255.255.255.255 (khác Android/Desktop) — send() tới đó ném "No route to
+      // host" VÀ ĐÓNG LUÔN SOCKET (xác nhận qua dart-lang/sdk#45824/#55564), khiến MỌI gói sau
+      // đó — kể cả gói hợp lệ gửi tới broadcast định hướng subnet — không bao giờ rời máy nữa.
+      // Bỏ hẳn địa chỉ global trên iOS, CHỈ dùng broadcast định hướng subnet (x.y.z.255, đã đủ
+      // để tới mọi thiết bị cùng mạng LAN thật) — Android/Desktop giữ nguyên cả 2 như cũ.
+      final targets = <InternetAddress>{if (!Platform.isIOS) InternetAddress('255.255.255.255')};
       try {
         for (final iface in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
           for (final addr in iface.addresses) {
@@ -95,8 +109,11 @@ class LanDiscoveryService {
           }
         }
       } catch (e) {
-        if (kDebugMode) print('⚠️ [LAN SCAN] Không liệt kê được interface (dùng mỗi global broadcast): $e');
+        if (kDebugMode) print('⚠️ [LAN SCAN] Không liệt kê được interface: $e');
       }
+      // Lưới an toàn: liệt kê interface lỗi TRÊN iOS (targets rỗng vì đã bỏ global ở trên) ->
+      // thà thử gửi global (rủi ro đã biết) còn hơn không gửi gì cả trong tình huống hiếm này.
+      if (targets.isEmpty) targets.add(InternetAddress('255.255.255.255'));
       if (kDebugMode) {
         print('📡 [LAN SCAN] BẮT ĐẦU: cổng đích $discoveryPort, cửa sổ ${timeout.inSeconds}s, '
             'đích broadcast: ${targets.map((t) => t.address).join(", ")}');

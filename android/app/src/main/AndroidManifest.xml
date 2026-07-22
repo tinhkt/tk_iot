@@ -50,6 +50,20 @@
             </intent-filter>
         </activity>
         
+        <!-- [XEM LẠI THẺ SD — PHA 1 XÁC MINH LCOpenSDK — CHỈ ĐỂ TEST, XÓA SAU KHI XONG PHA 1]
+             Icon RIÊNG tạm thời trên màn hình chính để bấm chạy trực tiếp, không cần adb —
+             xem ImouSdkTestActivity.kt. -->
+        <activity
+            android:name=".ImouSdkTestActivity"
+            android:exported="true"
+            android:label="Imou SDK Test"
+            android:theme="@style/LaunchTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

@@ -32,7 +32,10 @@ android {
         applicationId = "com.example.tk_iot"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // [XEM LẠI THẺ SD — LCOpenSDK] AndroidManifest.xml TRONG chính file .aar khai
+        // minSdkVersion="23" — ép sàn 23 (Android 6.0) để Gradle manifest merger không xung đột
+        // nếu flutter.minSdkVersion đang thấp hơn (maxOf giữ nguyên nếu Flutter đã >= 23 sẵn).
+        minSdk = maxOf(flutter.minSdkVersion, 23)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -54,4 +57,8 @@ flutter {
 dependencies {
     // [ĐẨY THÔNG BÁO OS] Bắt buộc đi kèm isCoreLibraryDesugaringEnabled ở trên.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // [XEM LẠI THẺ SD — LCOpenSDK] SDK gốc độc quyền Imou, user tự tải từ open.imoulife.com và
+    // đặt vào libs/ (KHÔNG có trên Maven/JitPack công khai nào) — xem
+    // internal/imou/records.go + ImouSdkTestActivity.kt cho lý do cần SDK này.
+    implementation(files("libs/LCOpenSDK.aar"))
 }

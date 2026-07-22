@@ -41,6 +41,17 @@ class RoomDetailScreen extends StatelessWidget {
     return (idx < 0 ? 0 : idx, chans.isEmpty ? 1 : chans.length);
   }
 
+  /// [BẬT/TẮT NGAY TRONG DANH SÁCH PHÒNG] Kênh "gạt được" = không phải cảm biến (đã lọc ở
+  /// _channelPosition/_pickChannels) VÀ không phải quạt (quạt điều khiển bằng tốc độ, không phải
+  /// ON/OFF nhị phân —ép Switch vào đây sẽ gửi lệnh sai ý nghĩa). Cửa cuốn/rèm dùng endpoint
+  /// Lên/Dừng/Xuống RIÊNG (không đi qua "S_{mac}" như công tắc thường) nên tự động KHÔNG khớp
+  /// bất kỳ endpoint nào trong entries ở đây — không cần lọc riêng.
+  static bool _isSwitchable(DeviceModel? device, String endpoint) {
+    if (device == null) return false;
+    final type = device.typeOf(endpoint);
+    return type != 'sensor' && type != 'fan';
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -133,10 +144,16 @@ class RoomDetailScreen extends StatelessWidget {
                             subtitle: Text(isChannel ? '${entry.mac} • ${entry.endpoint}' : entry.mac,
                                 maxLines: 1, overflow: TextOverflow.ellipsis,
                                 style: TextStyle(color: textSub, fontSize: 11)),
-                            trailing: IconButton(
-                              tooltip: t.text('remove_from_room'),
-                              icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
-                              onPressed: doRemove,
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _buildToggle(deviceProvider, entry.mac, entry.endpoint, isChannel, tkGreen),
+                                IconButton(
+                                  tooltip: t.text('remove_from_room'),
+                                  icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
+                                  onPressed: doRemove,
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -146,6 +163,51 @@ class RoomDetailScreen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  /// [BẬT/TẮT NGAY TRONG DANH SÁCH PHÒNG] entry.endpoint rỗng ("") = gán NGUYÊN KHỐI thiết bị
+  /// (đường cũ, có thể nhiều kênh) — entry.endpoint khác rỗng = ĐÚNG 1 kênh đã tách riêng. Cùng
+  /// cơ chế Real-State (toggleSwitch/setSwitchState) mà SmartSwitchCard trên Dashboard đang dùng
+  /// — icon chỉ đổi khi thiết bị BÁO STATE THẬT về, không cập nhật lạc quan.
+  Widget _buildToggle(DeviceProvider deviceProvider, String mac, String endpoint, bool isChannel, Color tkGreen) {
+    final device = deviceProvider.deviceOf(mac);
+    if (device == null) return const SizedBox.shrink();
+
+    if (isChannel) {
+      if (!_isSwitchable(device, endpoint)) return const SizedBox.shrink();
+      final bool isOn = device.isOn(endpoint);
+      return Switch(
+        value: isOn,
+        activeTrackColor: tkGreen,
+        onChanged: device.online ? (_) => deviceProvider.toggleSwitch(mac, endpoint, isOn) : null,
+      );
+    }
+
+    // Nguyên khối — gom TẤT CẢ kênh gạt được của thiết bị (bỏ cảm biến/quạt), 1 kênh thì gạt
+    // trực tiếp, nhiều kênh thì gạt ĐỒNG LOẠT về cùng 1 trạng thái (cùng kiểu nút Nhóm).
+    final switchable = device.endpointIds.where((ep) => _isSwitchable(device, ep)).toList();
+    if (switchable.isEmpty) return const SizedBox.shrink();
+    if (switchable.length == 1) {
+      final ep = switchable.first;
+      final bool isOn = device.isOn(ep);
+      return Switch(
+        value: isOn,
+        activeTrackColor: tkGreen,
+        onChanged: device.online ? (_) => deviceProvider.toggleSwitch(mac, ep, isOn) : null,
+      );
+    }
+    final bool anyOn = deviceProvider.anyEndpointOn(mac);
+    return Switch(
+      value: anyOn,
+      activeTrackColor: tkGreen,
+      onChanged: device.online
+          ? (v) {
+              for (final ep in switchable) {
+                deviceProvider.setSwitchState(mac, ep, v);
+              }
+            }
+          : null,
     );
   }
 

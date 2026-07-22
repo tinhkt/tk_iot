@@ -18,12 +18,7 @@ import '../services/dashboard_sync_service.dart';
 import '../services/push_notification_service.dart';
 import 'settings/notification_settings_screen.dart';
 import 'tuya/tuya_link_screen.dart';
-import 'cameras/add_camera_dialog.dart';
-import 'cameras/camera_player_card.dart';
-import 'cameras/camera_enlarged_dialog.dart';
-import 'cameras/add_imou_camera_dialog.dart';
-import 'cameras/imou_camera_player_card.dart';
-import 'cameras/imou_camera_enlarged_dialog.dart';
+import 'cameras/camera_dashboard_section.dart';
 import '../models/imou_camera_model.dart';
 import '../models/camera_model.dart';
 import 'auth/login_screen.dart';
@@ -120,13 +115,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final r = userRole.trim().toUpperCase();
     return r == 'SUPER_USER' || r == 'ADMIN';
   }
-  int _selectedIndex = 0, _cameraViewMode = 1;
+  int _selectedIndex = 0;
   bool _isLoadingDevices = true;
   // [CAMERA IP — PHẦN 3] Danh sách camera của nhà đang mở, nạp qua ApiService().getCameras()
   // trong _bootstrapSync() (cùng lúc với khởi tạo khác) — xem _loadCameras().
   List<CameraModel> _cameras = [];
   // [CAMERA P2P — IMOU] Danh sách camera Imou của nhà đang mở, nạp song song _cameras trong
-  // _loadCameras() — xem imou_camera_player_card.dart (player thật qua media_kit, HLS).
+  // _loadCameras() — chế độ lưới/player thật nay nằm trong
+  // cameras/camera_dashboard_section.dart (đã gộp chung 1 lưới với RTSP).
   List<ImouCameraModel> _imouCameras = [];
   bool _isPushEnabled = true;
   Map<String, dynamic> _weatherData = {'temp': '--', 'condition': 'Đang tải...', 'main': ''};
@@ -260,9 +256,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// thật — cùng quy ước getGridLayout đã có trong ApiService).
   Future<void> _loadCameras() async {
     if (currentHomeId.isEmpty) return;
-    final result = await ApiService().getCameras(currentHomeId);
+    // [FIX — camera "biến mất"/lạc nhà, CÙNG HỌ BUG với Tuya "ALL_SYSTEM"] currentHomeId là
+    // placeholder JWT ("ALL_SYSTEM") với tài khoản SUPER_USER — PHẢI dùng _provisioningTargetHomeId
+    // (đúng công thức nhà đích đã áp cho Tuya/AP Mode) để camera gắn đúng nhà SUPER_USER đang xem.
+    final String targetHomeId = _provisioningTargetHomeId;
+    final result = await ApiService().getCameras(targetHomeId);
     if (mounted && result != null) setState(() => _cameras = result);
-    final imouResult = await ApiService().getImouCameras(currentHomeId);
+    final imouResult = await ApiService().getImouCameras(targetHomeId);
     if (mounted && imouResult != null) setState(() => _imouCameras = imouResult);
   }
 
@@ -4602,145 +4602,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return const _EnergySliderCard();
   }
 
+  // [ĐẬP BỎ UI CAMERA — QUY HOẠCH LẠI NVR] Toàn bộ khối cũ (2 lưới rời RTSP/Imou, "cấp 2" Phóng to
+  // giữa Dashboard, overlay luôn hiện...) đã ĐẬP BỎ theo yêu cầu, thay bằng 1 widget tự trị DUY
+  // NHẤT — xem lib/screens/cameras/camera_dashboard_section.dart (gộp 2 loại camera vào chung 1
+  // lưới động 1x1/2x2/3x3/1+4, tự phân trang, overlay chạm-hiện-tự-ẩn, trang Fullscreen riêng).
   Widget _buildCameraWidget(bool isDark, Color textMain, Color textSub) {
-    final t = AppTranslations.of(context);
-    return AppContainer(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Wrap(
-            alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, spacing: 8, runSpacing: 8,
-            children: [
-              Row(children: [const Icon(Icons.videocam_rounded, color: Colors.blueAccent, size: 22), const SizedBox(width: 8), Text(t.text('camera'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold))]),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    height: 28, decoration: BoxDecoration(color: isDark ? Colors.white10 : Colors.grey.shade200, borderRadius: BorderRadius.circular(6)),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        InkWell(onTap: () => setState(() => _cameraViewMode = 1), child: Container(padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: _cameraViewMode == 1 ? Colors.blueAccent : Colors.transparent, borderRadius: BorderRadius.circular(6)), child: Center(child: Icon(Icons.crop_din_rounded, size: 16, color: _cameraViewMode == 1 ? Colors.white : textSub)))),
-                        InkWell(onTap: () => setState(() => _cameraViewMode = 4), child: Container(padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: _cameraViewMode == 4 ? Colors.blueAccent : Colors.transparent, borderRadius: BorderRadius.circular(6)), child: Center(child: Icon(Icons.grid_view_rounded, size: 16, color: _cameraViewMode == 4 ? Colors.white : textSub))))
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // [CAMERA IP — PHẦN 2 + IMOU P2P] Nút "+" giờ cho chọn 2 loại camera — RTSP
-                  // (LAN, media_kit) hoặc Imou P2P (Internet, xem add_imou_camera_dialog.dart).
-                  // Thêm xong nối luôn vào list tương ứng (optimistic, khỏi gọi lại API).
-                  PopupMenuButton<int>(
-                    icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.blueAccent, size: 20),
-                    padding: EdgeInsets.zero,
-                    tooltip: 'Thêm Camera',
-                    itemBuilder: (ctx) => const [
-                      PopupMenuItem(value: 0, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_rounded, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('Camera RTSP (LAN)')])),
-                      PopupMenuItem(value: 1, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.cloud_queue_rounded, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('Camera Imou (Internet)')])),
-                    ],
-                    onSelected: (v) async {
-                      if (v == 0) {
-                        final added = await showAddCameraDialog(context, homeId: currentHomeId);
-                        if (added != null && mounted) setState(() => _cameras = [..._cameras, added]);
-                      } else {
-                        final added = await showAddImouCameraDialog(context, homeId: currentHomeId);
-                        if (added != null && mounted) setState(() => _imouCameras = [..._imouCameras, added]);
-                      }
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  // [CAMERA IP — PHẦN 3] "Mở rộng" -> Fullscreen LUỒNG CHÍNH của camera đang hiện
-                  // ở ô đầu tiên (chế độ 1 ô) hoặc camera đầu danh sách (chế độ lưới 4 ô).
-                  IconButton(
-                    icon: Icon(Icons.open_in_new_rounded, color: _cameras.isEmpty ? textSub.withValues(alpha: 0.4) : textSub, size: 20),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: _cameras.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: _cameras.first))),
-                  )
-                ],
-              )
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (_cameras.isEmpty)
-            AspectRatio(aspectRatio: 16 / 9, child: Container(decoration: BoxDecoration(color: isDark ? Colors.black45 : Colors.grey.shade300, borderRadius: BorderRadius.circular(12)), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.videocam_off_rounded, color: textSub, size: 32), const SizedBox(height: 8), Text('Chưa có camera nào — bấm nút + để thêm', style: TextStyle(color: textSub, fontSize: 12))]))))
-          else if (_cameraViewMode == 1)
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: CameraPreviewCard(
-                camera: _cameras.first,
-                onMaximize: () => _openCameraEnlarged(_cameras.first),
-                onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: _cameras.first))),
-              ),
-            )
-          else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3),
-              // [GIỚI HẠN ĐÃ BIẾT] Tối đa 4 ô hiển thị dù có nhiều camera hơn — đúng đúng ý nghĩa
-              // "lưới 4 ô" ban đầu, KHÔNG phân trang/cuộn thêm camera thứ 5+ ở chế độ này.
-              itemCount: _cameras.length > 4 ? 4 : _cameras.length,
-              itemBuilder: (context, index) {
-                final cam = _cameras[index];
-                return CameraPreviewCard(
-                  camera: cam,
-                  onMaximize: () => _openCameraEnlarged(cam),
-                  onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenScreen(camera: cam))),
-                );
-              },
-            ),
-          // [CAMERA P2P — IMOU, PHA 2 — PLAYER THẬT] Danh sách RIÊNG, hiển thị dưới khối RTSP.
-          // getLiveStreamInfo trả HLS phát được — dùng NGUYÊN media_kit, không cần SDK gốc (xem
-          // imou_camera_player_card.dart).
-          if (_imouCameras.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Row(children: [
-              Icon(Icons.cloud_queue_rounded, size: 14, color: textSub),
-              const SizedBox(width: 6),
-              Text('Camera Imou (P2P)', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w600)),
-            ]),
-            const SizedBox(height: 8),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 4 / 3),
-              itemCount: _imouCameras.length,
-              itemBuilder: (context, index) {
-                final cam = _imouCameras[index];
-                return ImouPreviewCard(
-                  homeId: currentHomeId,
-                  camera: cam,
-                  onMaximize: () => _openImouCameraEnlarged(cam),
-                  onFullscreen: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ImouCameraFullscreenScreen(homeId: currentHomeId, camera: cam))),
-                );
-              },
-            ),
-          ],
-        ],
-      ),
+    return CameraDashboardSection(
+      cameras: _cameras,
+      imouCameras: _imouCameras,
+      homeId: _provisioningTargetHomeId,
+      onCamerasChanged: (rtsp, imou) => setState(() { _cameras = rtsp; _imouCameras = imou; }),
     );
-  }
-
-  // [CAMERA P2P — IMOU — XÓA CAMERA] Mở Dialog Phóng to; nếu người dùng xóa camera từ trong đó
-  // (showImouCameraEnlargedDialog trả về true khi Server đã xác nhận xóa), tự gỡ khỏi
-  // [_imouCameras] — cùng pattern _openCameraEnlarged() đã dùng cho camera RTSP.
-  Future<void> _openImouCameraEnlarged(ImouCameraModel camera) async {
-    final bool deleted = await showImouCameraEnlargedDialog(context, homeId: currentHomeId, camera: camera);
-    if (deleted && mounted) {
-      setState(() => _imouCameras = _imouCameras.where((c) => c.id != camera.id).toList());
-    }
-  }
-
-  // [CAMERA IP — XÓA CAMERA] Mở Dialog Phóng to; nếu người dùng xóa camera từ trong đó
-  // (showCameraEnlargedDialog trả về true khi Server đã xác nhận xóa), tự gỡ khỏi [_cameras]
-  // ngay — cùng kiểu optimistic-update đã dùng cho lúc thêm camera (nút "+" ở trên).
-  Future<void> _openCameraEnlarged(CameraModel camera) async {
-    final bool deleted = await showCameraEnlargedDialog(context, homeId: currentHomeId, camera: camera);
-    if (deleted && mounted) {
-      setState(() => _cameras = _cameras.where((c) => c.id != camera.id).toList());
-    }
   }
 
   // [FIX CĂN LỀ] Icon/Tiêu đề/Giá trị giờ nằm thẳng hàng CHÍNH GIỮA thẻ (không còn bám lề trái):
