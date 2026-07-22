@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/imou_camera_model.dart';
 import '../../services/api_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
+import 'imou_ptz_pad.dart';
 
 const Color _tkGreen = Color(0xFF00A651);
 
@@ -35,26 +36,6 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
   bool _loading = true;
   Map<String, dynamic> _data = {};
   bool _restarting = false;
-
-  // [DỜI TỪ imou_camera_enlarged_dialog.dart — file đó đã xóa theo "đập bỏ UI Camera cấp 2"]
-  // PTZ THẬT (không phải D-pad placeholder) — nhấn giữ = xoay liên tục (gọi lại mỗi 400ms), nhả
-  // ra = "STOP" ngay — KHÔNG chỉ dựa vào duration_ms tự hết hạn phía camera (an toàn 2 lớp).
-  bool _ptzHolding = false;
-
-  Future<void> _ptzStart(String direction) async {
-    if (_ptzHolding) return;
-    _ptzHolding = true;
-    while (_ptzHolding) {
-      await _api.controlImouPTZ(widget.homeId, widget.camera.id, direction, durationMs: 500);
-      await Future.delayed(const Duration(milliseconds: 400));
-    }
-  }
-
-  void _ptzStop(String direction) {
-    if (!_ptzHolding) return;
-    _ptzHolding = false;
-    _api.controlImouPTZ(widget.homeId, widget.camera.id, 'STOP');
-  }
 
   // Optimistic local state cho toggle/slider — tách khỏi _data để UI phản hồi tức thì.
   bool _privacy = false;
@@ -112,6 +93,58 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
     final ok = await _api.setImouMotionDetection(widget.homeId, widget.camera.id, sensitivity: value.round().toString());
     if (!ok && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đổi độ nhạy chuyển động thất bại')));
+    }
+  }
+
+  // [DỜI TỪ imou_camera_enlarged_dialog.dart — file đó đã xóa theo "đập bỏ UI Camera cấp 2"]
+  // Nút xóa camera trước đây nằm trên thanh tiêu đề Dialog Phóng to — bị BỎ SÓT khi dời PTZ, gây
+  // hiện tượng "không có cách nào gỡ camera" (báo lỗi thật từ user). Pop(true) khi xóa thành công
+  // để CameraDashboardSection tự gỡ khỏi danh sách, cùng quy ước Navigator.pop trả bool đã dùng
+  // cho toàn bộ luồng camera khác trong app.
+  bool _deleting = false;
+
+  Future<void> _confirmDelete() async {
+    final bool? confirmed = await showAppDialog<bool>(
+      context: context,
+      maxWidth: 400,
+      child: Builder(builder: (ctx) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final textMain = isDark ? Colors.white : const Color(0xFF0F172A);
+        final textSub = isDark ? Colors.white54 : Colors.black54;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Xóa camera "${widget.camera.name}"?', style: TextStyle(color: textMain, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Camera sẽ được gỡ khỏi tài khoản Imou và không còn hiện trong danh sách.', style: TextStyle(color: textSub)),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Xóa ngay', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ],
+        );
+      }),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _deleting = true);
+    final ok = await _api.deleteImouCamera(widget.homeId, widget.camera.id);
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() => _deleting = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Xóa camera thất bại — kiểm tra kết nối và thử lại')));
     }
   }
 
@@ -194,6 +227,11 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         foregroundColor: textMain,
         elevation: 0,
+        actions: [
+          _deleting
+              ? const Padding(padding: EdgeInsets.all(16), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent)))
+              : IconButton(icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent), tooltip: 'Xóa camera', onPressed: _confirmDelete),
+        ],
       ),
       body: SafeArea(
         child: _loading
@@ -292,7 +330,7 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
                     const SizedBox(height: 20),
 
                     _sectionLabel('Điều khiển hướng (PTZ)', textSub),
-                    AppContainer(child: Center(child: _buildPtzPad(isDark))),
+                    AppContainer(child: Center(child: ImouPtzPad(homeId: widget.homeId, cameraId: widget.camera.id))),
                     const SizedBox(height: 20),
 
                     _sectionLabel('Vận hành', textSub),
@@ -320,56 +358,6 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
       );
 
   Widget _divider(bool isDark) => Divider(height: 1, color: isDark ? Colors.white10 : Colors.black12);
-
-  // [DỜI TỪ imou_camera_enlarged_dialog.dart] direction PHẢI khớp ĐÚNG ptzOperations phía Go
-  // (internal/imou/settings.go) — "UP"/"DOWN"/"LEFT"/"RIGHT"/"ZOOM_IN"/"ZOOM_OUT".
-  Widget _buildPtzPad(bool isDark) {
-    final Color bg = isDark ? Colors.white.withValues(alpha: 0.08) : const Color(0xFFF1F5F9);
-    final Color icon = isDark ? Colors.white70 : const Color(0xFF334155);
-
-    Widget dirButton(IconData iconData, String direction) {
-      return GestureDetector(
-        onTapDown: (_) => _ptzStart(direction),
-        onTapUp: (_) => _ptzStop(direction),
-        onTapCancel: () => _ptzStop(direction),
-        child: Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
-          child: Icon(iconData, color: icon, size: 20),
-        ),
-      );
-    }
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        dirButton(Icons.keyboard_arrow_up_rounded, 'UP'),
-        const SizedBox(height: 4),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            dirButton(Icons.keyboard_arrow_left_rounded, 'LEFT'),
-            const SizedBox(width: 4),
-            Container(width: 40, height: 40, alignment: Alignment.center, child: Icon(Icons.videocam_rounded, color: icon.withValues(alpha: 0.4), size: 16)),
-            const SizedBox(width: 4),
-            dirButton(Icons.keyboard_arrow_right_rounded, 'RIGHT'),
-          ],
-        ),
-        const SizedBox(height: 4),
-        dirButton(Icons.keyboard_arrow_down_rounded, 'DOWN'),
-        const SizedBox(height: 10),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            dirButton(Icons.zoom_in_rounded, 'ZOOM_IN'),
-            const SizedBox(width: 8),
-            dirButton(Icons.zoom_out_rounded, 'ZOOM_OUT'),
-          ],
-        ),
-      ],
-    );
-  }
 
   Widget _infoRow(String label, String value, Color textMain, Color textSub, bool isDark) {
     return Padding(

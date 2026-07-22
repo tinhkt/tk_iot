@@ -48,14 +48,19 @@ class CameraGridPageView extends StatefulWidget {
 }
 
 class _CameraGridPageViewState extends State<CameraGridPageView> {
+  // [VUỐT QUAY VÒNG TRÒN — theo yêu cầu user] PageView.builder KHÔNG hỗ trợ loop tự nhiên với
+  // itemCount hữu hạn — mẹo chuẩn: itemCount=null (vô hạn CẢ 2 CHIỀU), bắt đầu ở 1 mốc xa 0
+  // (_loopAnchor) để vuốt lùi cũng có "trang" để đi tới, itemBuilder dùng index % pages.length để
+  // luôn trỏ đúng 1 trang thật. Chỉ áp dụng khi >1 trang — 1 trang thì loop vô nghĩa.
+  static const int _loopAnchor = 10000;
   late PageController _pageController;
-  late int _currentPage;
+  late int _rawPage; // index THẬT của PageView (có thể rất lớn/âm khi đang loop) — _rawPage % pages.length mới là trang hiển thị thật.
 
   @override
   void initState() {
     super.initState();
-    _currentPage = widget.initialPage;
-    _pageController = PageController(initialPage: widget.initialPage);
+    _rawPage = _loopAnchor + widget.initialPage;
+    _pageController = PageController(initialPage: _rawPage);
   }
 
   @override
@@ -64,9 +69,9 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
     // Đổi chế độ lưới (số ô/trang đổi) -> số trang đổi theo, PageController cũ có thể trỏ ra
     // ngoài phạm vi trang mới -> reset về trang 0 an toàn thay vì giữ index cũ có thể lỗi.
     if (oldWidget.mode != widget.mode) {
-      _currentPage = 0;
+      _rawPage = _loopAnchor;
       _pageController.dispose();
-      _pageController = PageController(initialPage: 0);
+      _pageController = PageController(initialPage: _rawPage);
     }
   }
 
@@ -88,18 +93,22 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
   @override
   Widget build(BuildContext context) {
     final pages = _pages;
+    final bool canLoop = pages.length > 1;
+    // Dart % luôn trả kết quả CÙNG DẤU với số chia (khi số chia dương) — an toàn với _rawPage âm,
+    // không cần tự xử lý âm riêng như C/Java.
+    final int currentPageIndex = _rawPage % pages.length;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Expanded(
           child: PageView.builder(
             controller: _pageController,
-            itemCount: pages.length,
+            itemCount: canLoop ? null : 1,
             onPageChanged: (i) {
-              setState(() => _currentPage = i);
-              widget.onPageChanged?.call(i);
+              setState(() => _rawPage = i);
+              widget.onPageChanged?.call(i % pages.length);
             },
-            itemBuilder: (context, pageIndex) => _buildPageLayout(pages[pageIndex]),
+            itemBuilder: (context, index) => _buildPageLayout(pages[canLoop ? index % pages.length : 0]),
           ),
         ),
         if (pages.length > 1) ...[
@@ -111,9 +120,9 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   margin: const EdgeInsets.symmetric(horizontal: 3),
-                  width: i == _currentPage ? 18 : 6,
+                  width: i == currentPageIndex ? 18 : 6,
                   height: 6,
-                  decoration: BoxDecoration(color: i == _currentPage ? _tkGreen : Colors.grey.withValues(alpha: 0.4), borderRadius: BorderRadius.circular(3)),
+                  decoration: BoxDecoration(color: i == currentPageIndex ? _tkGreen : Colors.grey.withValues(alpha: 0.4), borderRadius: BorderRadius.circular(3)),
                 ),
             ],
           ),
@@ -134,6 +143,17 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
           onOpenTalk: () => widget.onOpenTalk(e),
         );
 
+    // [FIX — ĐÍNH CHÍNH lần sửa trước] childAspectRatio PHẢI cố định 16:9 (tỉ lệ THẬT của camera),
+    // KHÔNG "đo theo khung chứa" như bản trước — đo theo khung chứa nghĩa là MỖI Ô bị BÓP/GIÃN
+    // méo theo hình dạng khung ngoài (đúng triệu chứng user báo: "kéo dài kích thước khung hình
+    // xuống dưới"), dù khung ngoài đó có hình dạng gì. Toán học xác nhận: lưới NxN chia đều (N
+    // cột = N hàng, đúng 1x1/2x2/3x3 ở đây) gồm các ô 16:9 THẬT thì TOÀN KHỐI cũng LUÔN ra đúng
+    // 16:9 (co giãn đều 2 chiều theo cùng hệ số N không đổi tỉ lệ) — nên khung ngoài 16:9 (xem
+    // camera_dashboard_section.dart) + childAspectRatio 16/9 cố định ở đây khớp nhau HOÀN HẢO,
+    // không cần đo động, không còn rủi ro méo ô theo hình dạng khung ngoài bất kỳ (vd màn hình
+    // ngang ở CameraFullscreenGridScreen, tỉ lệ thật KHÁC 16:9).
+    const double kCameraAspectRatio = 16 / 9;
+
     if (widget.mode == CameraGridMode.oneMainFour) {
       final main = pageEntries.first;
       final smalls = pageEntries.length > 1 ? pageEntries.sublist(1) : <CameraEntry>[];
@@ -148,6 +168,7 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 4,
               crossAxisSpacing: 4,
+              childAspectRatio: kCameraAspectRatio,
               children: [for (final e in smalls) Padding(padding: const EdgeInsets.all(4), child: tileFor(e))],
             ),
           ),
@@ -156,11 +177,17 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
     }
 
     final int crossAxisCount = widget.mode == CameraGridMode.single ? 1 : (widget.mode == CameraGridMode.grid2x2 ? 2 : 3);
+    // [KHÔNG NeverScrollableScrollPhysics ở đây — CÓ CHỦ Ý] Khối nhúng trong Dashboard (bọc
+    // AspectRatio 16:9 khớp CHÍNH XÁC lưới 16:9 thật, xem camera_dashboard_section.dart) không
+    // bao giờ cần cuộn (vừa khít). Nhưng CameraFullscreenGridScreen (màn hình ngang thật) có tỉ
+    // lệ khác 16:9 (thường RỘNG hơn) — lưới 16:9 thật có thể cần chiều cao NHIỀU hơn khoảng trống
+    // thật còn lại; cho phép cuộn dọc làm lưới an toàn thay vì cắt mất hàng cuối.
     return GridView.count(
       crossAxisCount: crossAxisCount,
       padding: const EdgeInsets.all(4),
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
+      childAspectRatio: kCameraAspectRatio,
       children: [for (final e in pageEntries) tileFor(e)],
     );
   }

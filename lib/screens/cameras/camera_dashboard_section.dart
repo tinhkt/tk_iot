@@ -40,7 +40,16 @@ class CameraDashboardSection extends StatefulWidget {
 }
 
 class _CameraDashboardSectionState extends State<CameraDashboardSection> {
-  CameraGridMode _gridMode = CameraGridMode.single;
+  // [MẶC ĐỊNH THEO KÍCH THƯỚC MÀN HÌNH — theo yêu cầu user] Mobile mặc định lưới 2x2 (4 cam/trang)
+  // — Desktop/tablet vẫn 1x1 (camera đơn đã đủ lớn để xem rõ, không cần chia sẵn). null = "chưa
+  // quyết định" (chờ có context ở build() để đọc MediaQuery — field initializer/initState không
+  // đảm bảo có context ổn định).
+  CameraGridMode? _gridMode;
+
+  CameraGridMode _defaultModeFor(BuildContext context) {
+    final bool isMobile = MediaQuery.sizeOf(context).width < 600;
+    return isMobile ? CameraGridMode.grid2x2 : CameraGridMode.single;
+  }
 
   List<CameraEntry> get _entries => [
         for (final c in widget.cameras) CameraEntry.rtsp(homeId: widget.homeId, rtspCamera: c),
@@ -57,9 +66,14 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
     }
   }
 
-  void _openSettings(CameraEntry e) {
+  Future<void> _openSettings(CameraEntry e) async {
     if (e.provider == CameraProviderType.imou) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => ImouCameraSettingsScreen(homeId: e.homeId, camera: e.imouCamera!)));
+      // ImouCameraSettingsScreen pop(true) khi xóa thành công (xem nút xóa mới thêm ở đó) — tự gỡ
+      // khỏi danh sách ngay, cùng quy ước optimistic-update đã dùng cho add/xóa RTSP.
+      final bool? deleted = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => ImouCameraSettingsScreen(homeId: e.homeId, camera: e.imouCamera!)));
+      if (deleted == true && mounted) {
+        widget.onCamerasChanged(widget.cameras, widget.imouCameras.where((c) => c.id != e.imouCamera!.id).toList());
+      }
       return;
     }
     _showRtspSettingsSheet(e);
@@ -130,9 +144,11 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
   }
 
   void _openFullscreen() {
+    // build() luôn chạy trước khi nút này bấm được (đã render ra màn hình) nên _gridMode chắc
+    // chắn đã có giá trị — fallback single() chỉ để thỏa kiểu dữ liệu, không thực sự xảy ra.
     Navigator.push(context, MaterialPageRoute(builder: (_) => CameraFullscreenGridScreen(
           entries: _entries,
-          initialMode: _gridMode,
+          initialMode: _gridMode ?? CameraGridMode.single,
           onOpenSettings: _openSettings,
           onOpenRecords: _openRecords,
           onOpenTalk: _openTalk,
@@ -145,6 +161,10 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
     final Color textMain = isDark ? Colors.white : const Color(0xFF0F172A);
     final Color textSub = isDark ? Colors.white54 : const Color(0xFF64748B);
     final entries = _entries;
+    // Chỉ gán 1 LẦN (giữ nguyên lựa chọn user nếu đã tự đổi) — những lần build sau _gridMode đã
+    // khác null nên dòng này không ghi đè lựa chọn thủ công của user nữa.
+    _gridMode ??= _defaultModeFor(context);
+    final CameraGridMode gridMode = _gridMode!;
 
     return AppContainer(
       padding: const EdgeInsets.all(20),
@@ -168,7 +188,7 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
                 children: [
                   PopupMenuButton<CameraGridMode>(
                     tooltip: 'Chia lưới',
-                    icon: Icon(_gridMode.icon, color: textSub, size: 20),
+                    icon: Icon(gridMode.icon, color: textSub, size: 20),
                     padding: EdgeInsets.zero,
                     onSelected: (m) => setState(() => _gridMode = m),
                     itemBuilder: (ctx) => [for (final m in CameraGridMode.values) PopupMenuItem(value: m, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(m.icon, size: 18), const SizedBox(width: 8), Text(m.label)]))],
@@ -211,14 +231,17 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
               ),
             )
           else
-            // 16:9 theo CẢ TRANG (không theo từng ô) — khớp cảm giác "1 khung camera lớn" người
-            // dùng yêu cầu thay vì nhiều khung rời rạc. AspectRatio tự tính theo bề rộng khả dụng
-            // thật của AppContainer (đã trừ padding), không cần MediaQuery thô.
+            // [ĐÍNH CHÍNH — quay lại 16:9] Toán học xác nhận: lưới NxN chia đều (1x1/2x2/3x3) của
+            // các ô camera THẬT (16:9) luôn có TỔNG THỂ cũng ra đúng 16:9 (co giãn đều 2 chiều
+            // theo cùng hệ số N, không đổi tỉ lệ) — khớp CHÍNH XÁC childAspectRatio cố định 16/9
+            // trong camera_grid_page_view.dart, không cần khối "cao hơn" nào cả. Lần sửa trước ép
+            // 8:9 dựa trên suy luận sai (tưởng nhiều hàng cần nhiều chiều cao hơn, quên rằng chiều
+            // rộng mỗi ô cũng giảm theo đúng tỉ lệ).
             AspectRatio(
               aspectRatio: 16 / 9,
               child: CameraGridPageView(
                 entries: entries,
-                mode: _gridMode,
+                mode: gridMode,
                 onOpenSettings: _openSettings,
                 onOpenRecords: _openRecords,
                 onOpenTalk: _openTalk,

@@ -3273,7 +3273,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(t.text('notifications_title'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+                                  // [FIX — RenderFlex overflow trên màn hẹp] Tiêu đề + nút "Đọc tất
+                                  // cả" cộng lại rộng hơn panel trên mobile (width - 32) -> Expanded
+                                  // + ellipsis để tiêu đề co lại nhường chỗ cho nút, thay vì tràn ra
+                                  // ngoài (không dùng Expanded thì Row tính kích thước tự nhiên của
+                                  // cả 2 con, tràn phải khi tổng > panel).
+                                  Expanded(
+                                    child: Text(t.text('notifications_title'), style: TextStyle(color: textMain, fontSize: 16, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  ),
+                                  const SizedBox(width: 8),
                                   // Nút "Đọc tất cả" chỉ bật khi còn tin chưa đọc
                                   notifProvider.unreadCount > 0
                                       ? TextButton.icon(
@@ -4873,7 +4881,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       child: Material(
                         color: Colors.transparent,
                         child: InkWell(
-                          onTap: () { setState(() => _selectedHomeForSuperUser = home); _initializeHome(); },
+                          // [FIX — Camera "Chưa có camera nào" sau khi SUPER_USER chọn nhà] Nhánh
+                          // chọn nhà của SUPER_USER trước đây CHỈ gọi _initializeHome() (nạp lại
+                          // thiết bị MQTT/DPS) — KHÔNG gọi _loadCameras(), nên _cameras/_imouCameras
+                          // kẹt nguyên giá trị từ lúc bootstrap (fetch cho "ALL_SYSTEM" -> rỗng).
+                          // Khác _onActiveHomeChanged() (đường chuyển nhà của user thường) đã gọi
+                          // đúng cả 2 hàm — nhánh SUPER_USER này bị bỏ sót, không phải do UI camera
+                          // filter sai device_type.
+                          onTap: () { setState(() => _selectedHomeForSuperUser = home); _initializeHome(); _loadCameras(); },
                           child: Stack(
                             children: [
                               Positioned(top: 10, left: 10, child: Icon(Icons.maps_home_work_outlined, color: isAnyOn ? Colors.white : tkGreen, size: 18)),
