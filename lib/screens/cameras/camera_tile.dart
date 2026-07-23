@@ -23,10 +23,8 @@ const Color _tkGreen = Color(0xFF00A651);
 class CameraTile extends StatefulWidget {
   final CameraEntry entry;
   final VoidCallback? onOpenSettings;
-  final VoidCallback? onOpenRecords;
-  final VoidCallback? onOpenTalk;
 
-  const CameraTile({super.key, required this.entry, this.onOpenSettings, this.onOpenRecords, this.onOpenTalk});
+  const CameraTile({super.key, required this.entry, this.onOpenSettings});
 
   @override
   State<CameraTile> createState() => _CameraTileState();
@@ -76,8 +74,6 @@ class _CameraTileState extends State<CameraTile> {
       context,
       entry: widget.entry,
       onOpenSettings: () => widget.onOpenSettings?.call(),
-      onOpenRecords: () => widget.onOpenRecords?.call(),
-      onOpenTalk: () => widget.onOpenTalk?.call(),
     );
   }
 

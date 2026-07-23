@@ -135,8 +135,11 @@ class ImouSdkTestActivity : Activity() {
 
         log("== BƯỚC 2: playRecordStream (fileId=$RECORD_FILE_ID, psk=$DEVICE_SERIAL) ==")
         val playBackWindow = LCOpenSDK_PlayBackWindow()
-        // [CHƯA XÁC MINH] 2 tham số cuối (Int, Boolean) — tạm 0/false, xem ghi chú đầu file.
-        playBackWindow.initPlayWindow(this, playContainer, 0, false)
+        // [THỬ LẦN 2 — lần 1 isUseSurfaceView=false (TextureView) chạy 46s chỉ ra onPlayFinished,
+        // KHÔNG BAO GIỜ onPlayBegin/onPlayLoading] Đổi sang true (SurfaceView) — một số bản SDK
+        // Trung Quốc decode cứng chỉ hoạt động ổn định qua SurfaceView, đường TextureView có thể
+        // có bug/thiếu init nội bộ khiến luồng không bao giờ thực sự bắt đầu dù bắt tay HTTP OK.
+        playBackWindow.initPlayWindow(this, playContainer, 0, true)
         playBackWindow.setPlayBackListener(object : LCOpenSDK_PlayBackListener() {
             override fun onPlayBegin(handle: Int, deviceId: String?) {
                 log("*** onPlayBegin — PHÁT THÀNH CÔNG (deviceId=$deviceId) ***")

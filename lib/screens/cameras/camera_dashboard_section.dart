@@ -9,7 +9,6 @@ import 'add_camera_dialog.dart';
 import 'add_imou_camera_dialog.dart';
 import 'camera_fullscreen_grid_screen.dart';
 import 'camera_grid_page_view.dart';
-import 'imou_camera_records_screen.dart';
 import 'imou_camera_settings_screen.dart';
 
 /// [ĐẬP BỎ UI CAMERA — KHỐI DASHBOARD DUY NHẤT] Thay THẲNG `_buildCameraWidget()` cũ trong
@@ -25,6 +24,7 @@ class CameraDashboardSection extends StatefulWidget {
   final List<CameraModel> cameras;
   final List<ImouCameraModel> imouCameras;
   final String homeId;
+  final String homeName;
   final void Function(List<CameraModel> rtsp, List<ImouCameraModel> imou) onCamerasChanged;
 
   const CameraDashboardSection({
@@ -32,6 +32,7 @@ class CameraDashboardSection extends StatefulWidget {
     required this.cameras,
     required this.imouCameras,
     required this.homeId,
+    this.homeName = '',
     required this.onCamerasChanged,
   });
 
@@ -52,8 +53,8 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
   }
 
   List<CameraEntry> get _entries => [
-        for (final c in widget.cameras) CameraEntry.rtsp(homeId: widget.homeId, rtspCamera: c),
-        for (final c in widget.imouCameras) CameraEntry.imou(homeId: widget.homeId, imouCamera: c),
+        for (final c in widget.cameras) CameraEntry.rtsp(homeId: widget.homeId, homeName: widget.homeName, rtspCamera: c),
+        for (final c in widget.imouCameras) CameraEntry.imou(homeId: widget.homeId, homeName: widget.homeName, imouCamera: c),
       ];
 
   Future<void> _addCamera(int type) async {
@@ -77,29 +78,6 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
       return;
     }
     _showRtspSettingsSheet(e);
-  }
-
-  void _openRecords(CameraEntry e) {
-    if (e.provider == CameraProviderType.imou) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => ImouCameraRecordsScreen(homeId: e.homeId, camera: e.imouCamera!)));
-      return;
-    }
-    _showUnsupportedDialog('Chưa hỗ trợ xem lại', 'Hệ thống hiện chưa hỗ trợ ghi hình/lưu trữ cho camera RTSP.');
-  }
-
-  void _openTalk(CameraEntry e) {
-    _showUnsupportedDialog('Chưa hỗ trợ đàm thoại 2 chiều', 'Tính năng đàm thoại 2 chiều chưa được tích hợp cho loại camera này.');
-  }
-
-  void _showUnsupportedDialog(String title, String message) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đã hiểu'))],
-      ),
-    );
   }
 
   // [SHEET CÀI ĐẶT RTSP — TOÀN BỘ KHẢ NĂNG THẬT HIỆN CÓ] RTSP chỉ có 1 hành động thật: xóa camera
@@ -150,8 +128,6 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
           entries: _entries,
           initialMode: _gridMode ?? CameraGridMode.single,
           onOpenSettings: _openSettings,
-          onOpenRecords: _openRecords,
-          onOpenTalk: _openTalk,
         )));
   }
 
@@ -243,8 +219,6 @@ class _CameraDashboardSectionState extends State<CameraDashboardSection> {
                 entries: entries,
                 mode: gridMode,
                 onOpenSettings: _openSettings,
-                onOpenRecords: _openRecords,
-                onOpenTalk: _openTalk,
               ),
             ),
         ],

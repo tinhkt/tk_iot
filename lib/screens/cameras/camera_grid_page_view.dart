@@ -27,8 +27,6 @@ class CameraGridPageView extends StatefulWidget {
   final List<CameraEntry> entries;
   final CameraGridMode mode;
   final void Function(CameraEntry) onOpenSettings;
-  final void Function(CameraEntry) onOpenRecords;
-  final void Function(CameraEntry) onOpenTalk;
   final int initialPage;
   final ValueChanged<int>? onPageChanged;
 
@@ -37,8 +35,6 @@ class CameraGridPageView extends StatefulWidget {
     required this.entries,
     required this.mode,
     required this.onOpenSettings,
-    required this.onOpenRecords,
-    required this.onOpenTalk,
     this.initialPage = 0,
     this.onPageChanged,
   });
@@ -136,11 +132,14 @@ class _CameraGridPageViewState extends State<CameraGridPageView> {
       return const Center(child: Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 32));
     }
 
+    // [FIX — key theo identity, Trụ cột 1/4 rà soát hiệu năng] Thiếu key khiến GridView tái dùng
+    // Element theo VỊ TRÍ thay vì camera thật khi danh sách đổi thứ tự/số lượng — Player bên trong
+    // CameraTile có thể bị gán nhầm camera, phải tự dò qua didUpdateWidget thay vì Flutter tự nhận
+    // biết đúng ngay từ đầu.
     Widget tileFor(CameraEntry e) => CameraTile(
+          key: ValueKey(e.id),
           entry: e,
           onOpenSettings: () => widget.onOpenSettings(e),
-          onOpenRecords: () => widget.onOpenRecords(e),
-          onOpenTalk: () => widget.onOpenTalk(e),
         );
 
     // [FIX — ĐÍNH CHÍNH lần sửa trước] childAspectRatio PHẢI cố định 16:9 (tỉ lệ THẬT của camera),

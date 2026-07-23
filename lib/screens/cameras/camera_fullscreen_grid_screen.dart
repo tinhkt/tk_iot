@@ -16,16 +16,12 @@ class CameraFullscreenGridScreen extends StatefulWidget {
   final CameraGridMode initialMode;
   final int initialPage;
   final void Function(CameraEntry) onOpenSettings;
-  final void Function(CameraEntry) onOpenRecords;
-  final void Function(CameraEntry) onOpenTalk;
 
   const CameraFullscreenGridScreen({
     super.key,
     required this.entries,
     required this.initialMode,
     required this.onOpenSettings,
-    required this.onOpenRecords,
-    required this.onOpenTalk,
     this.initialPage = 0,
   });
 
@@ -65,8 +61,6 @@ class _CameraFullscreenGridScreenState extends State<CameraFullscreenGridScreen>
                 mode: _mode,
                 initialPage: widget.initialPage,
                 onOpenSettings: widget.onOpenSettings,
-                onOpenRecords: widget.onOpenRecords,
-                onOpenTalk: widget.onOpenTalk,
               ),
             ),
             Positioned(

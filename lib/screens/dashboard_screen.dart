@@ -4615,10 +4615,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // NHẤT — xem lib/screens/cameras/camera_dashboard_section.dart (gộp 2 loại camera vào chung 1
   // lưới động 1x1/2x2/3x3/1+4, tự phân trang, overlay chạm-hiện-tự-ẩn, trang Fullscreen riêng).
   Widget _buildCameraWidget(bool isDark, Color textMain, Color textSub) {
+    // [TÊN NHÀ CHO MÀN CHI TIẾT CAMERA] SUPER_USER đang xem nhà cụ thể -> lấy từ
+    // _selectedHomeForSuperUser (giống các tiêu đề khác trong file này); user thường -> HomeProvider.
+    final String homeName = (userRole == 'SUPER_USER' && _selectedHomeForSuperUser != null)
+        ? (_selectedHomeForSuperUser!['home_name'] ?? '').toString()
+        : (Provider.of<HomeProvider>(context, listen: false).activeHome?['home_name'] ?? '').toString();
     return CameraDashboardSection(
       cameras: _cameras,
       imouCameras: _imouCameras,
       homeId: _provisioningTargetHomeId,
+      homeName: homeName,
       onCamerasChanged: (rtsp, imou) => setState(() { _cameras = rtsp; _imouCameras = imou; }),
     );
   }

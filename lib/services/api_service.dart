@@ -734,6 +734,38 @@ class ApiService {
     }
   }
 
+  /// GET .../imou-cameras/{cameraId}/events?begin=...&end=... — danh sách SỰ KIỆN báo động THẬT
+  /// kèm ảnh thumbnail (getAlarmMessage, xem internal/imou/alarms.go phía Backend) — KHÁC HẲN
+  /// records: API công khai dùng ĐẦY ĐỦ qua HTTP, không vướng giới hạn "cần SDK gốc" như phát lại
+  /// video ghi hình liên tục.
+  Future<List<Map<String, dynamic>>?> getImouCameraEvents(
+    String homeId,
+    int cameraId, {
+    required DateTime begin,
+    required DateTime end,
+  }) async {
+    String fmt(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}:${d.second.toString().padLeft(2, '0')}';
+    try {
+      final uri = Uri.parse('$baseUrl/homes/${Uri.encodeComponent(homeId)}/imou-cameras/$cameraId/events').replace(queryParameters: {
+        'begin': fmt(begin),
+        'end': fmt(end),
+      });
+      final response = await authorizedGet(uri.toString());
+      if (response.statusCode != 200) {
+        if (kDebugMode) print('⚠️ [IMOU] Lỗi lấy sự kiện (HTTP ${response.statusCode}): ${response.body}');
+        return null;
+      }
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      final List<dynamic> raw = (decoded['data'] as List?) ?? const [];
+      return raw.cast<Map<String, dynamic>>();
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi getImouCameraEvents: $e');
+      return null;
+    }
+  }
+
   // ============================================================================
   // ☁️ TUYA OPEN API (CLOUD-TO-CLOUD) — 1 tài khoản Tuya CHUNG cho cả hệ thống
   // ============================================================================

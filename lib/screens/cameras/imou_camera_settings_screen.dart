@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../models/imou_camera_model.dart';
 import '../../services/api_service.dart';
 import '../../widgets/app_ui_wrappers.dart';
-import 'imou_ptz_pad.dart';
 
 const Color _tkGreen = Color(0xFF00A651);
 
@@ -327,10 +326,6 @@ class _ImouCameraSettingsScreenState extends State<ImouCameraSettingsScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
-
-                    _sectionLabel('Điều khiển hướng (PTZ)', textSub),
-                    AppContainer(child: Center(child: ImouPtzPad(homeId: widget.homeId, cameraId: widget.camera.id))),
                     const SizedBox(height: 20),
 
                     _sectionLabel('Vận hành', textSub),
