@@ -48,6 +48,9 @@ class _CameraDetailScreen extends StatefulWidget {
 class _CameraDetailScreenState extends State<_CameraDetailScreen> {
   late final Player _player;
   late final VideoController _controller;
+  // [FIX — RÀ SOÁT HIỆU NĂNG Trụ cột 2, Thấp — cùng họ với camera_tile.dart] Lưu tường minh thay
+  // vì gọi .listen() rồi bỏ, để cancel() rõ ràng trong dispose().
+  StreamSubscription<String>? _errorSub;
   _DetailTab _tab = _DetailTab.live;
   bool _isFullscreen = false;
   bool _ptzPanelOpen = false;
@@ -82,7 +85,7 @@ class _CameraDetailScreenState extends State<_CameraDetailScreen> {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
-    _player.stream.error.listen((e) {
+    _errorSub = _player.stream.error.listen((e) {
       if (mounted) setState(() { _liveError = e; _liveLoading = false; });
     });
     _loadLive();
@@ -102,6 +105,7 @@ class _CameraDetailScreenState extends State<_CameraDetailScreen> {
     // trên 1 State đã dispose (dù có check `mounted` mới không crash, vẫn là 1 Timer "mồ côi" tồn
     // tại thừa trong bộ nhớ tới khi tự bắn xong).
     _quickActionsTimer?.cancel();
+    _errorSub?.cancel();
     _player.dispose();
     super.dispose();
   }

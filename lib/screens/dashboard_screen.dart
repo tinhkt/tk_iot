@@ -4824,13 +4824,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // DashboardScreen, nên khi DeviceProvider đổi CHỈ đúng lưới thiết bị vẽ lại, sidebar/header/
   // rooms giữ nguyên không rebuild. _buildDevicesGrid giờ nhận [provider] qua tham số thay vì tự
   // tra bằng context của State.
+  // [FIX — RÀ SOÁT HIỆU NĂNG Trụ cột 3 (God Widget), lỗ hổng cách ly còn sót] Comment gốc ngay
+  // dưới đây giải thích ĐÚNG lý do bọc Consumer<DeviceProvider> — NHƯNG _buildDevicesGridBody bên
+  // dưới lại tự gọi THÊM `context.watch<RoomGroupProvider>()` VÀ `context.watch<ThemeProvider>()`
+  // bằng `context` của CHÍNH _DashboardScreenState (vì đây là 1 PHƯƠNG THỨC của State, không phải
+  // build() của 1 Widget/Element riêng) — 2 dependency đó vẫn đăng ký lên Element của
+  // DashboardScreen y hệt lỗi ban đầu, chỉ khác Provider. Đổi phòng (RoomGroupProvider) hoặc đổi
+  // theme Kính (ThemeProvider) vẫn kéo theo rebuild TOÀN BỘ Dashboard dù Consumer<DeviceProvider>
+  // đã chặn đúng phần DeviceProvider. Fix: lồng thêm 2 Consumer NGAY TẠI ĐÂY (nơi duy nhất tạo
+  // Widget/Element mới), roomProv/isGlass nhận qua THAM SỐ thay vì tự watch bằng context của
+  // State — dependency giờ đăng ký đúng lên Element Consumer trong cùng, không lan lên Dashboard.
   Widget _buildDevicesGrid(bool isDark, Color textMain, Color textSub) {
     return Consumer<DeviceProvider>(
-      builder: (_, provider, _) => _buildDevicesGridBody(provider, isDark, textMain, textSub),
+      builder: (_, provider, _) => Consumer<RoomGroupProvider>(
+        builder: (_, roomProv, _) => Consumer<ThemeProvider>(
+          builder: (_, themeProv, _) => _buildDevicesGridBody(provider, roomProv, themeProv.isGlassThemeEnabled, isDark, textMain, textSub),
+        ),
+      ),
     );
   }
 
-  Widget _buildDevicesGridBody(DeviceProvider provider, bool isDark, Color textMain, Color textSub) {
+  Widget _buildDevicesGridBody(DeviceProvider provider, RoomGroupProvider roomProv, bool isGlass, bool isDark, Color textMain, Color textSub) {
     if (_isLoadingDevices) return Center(child: Padding(padding: const EdgeInsets.all(40), child: CircularProgressIndicator(color: tkGreen)));
 
     // [PHÒNG] Phòng đang chọn (null = Tất cả) — dùng để LỌC thiết bị + chèn Công tắc tổng.
@@ -4841,14 +4855,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // CŨ giữ nguyên 100%; mở Sửa từ tab 1 phòng cụ thể -> lọc ĐÚNG phòng đó xuyên suốt lúc Sửa,
     // cho kéo-thả CHỈ trong phạm vi phòng. _saveDeviceOrder() chịu trách nhiệm GHÉP đúng thứ tự
     // con đó vào thứ tự CẢ NHÀ trước khi gửi lên Backend — không còn nguy cơ mất MAC phòng khác.
-    final roomProv = context.watch<RoomGroupProvider>();
     final String? selRoom = _isEditingOrder ? _editingScopedRoomId : roomProv.selectedRoomId;
 
     // VIEW 1: SUPER USER (HIỂN THỊ THẺ NHÀ) - Giữ nguyên của bác
     // [ĐỢT 21] Thẻ Nhà nằm trong ClipRRect+BackdropFilter riêng (như SmartSwitchCard) nên border/
     // shadow mới PHẢI ở một Container bọc NGOÀI ClipRRect — đặt trực tiếp vào AnimatedContainer sẽ
     // bị chính ClipRRect của nó cắt mất, xem bài học "Shadow phải nằm ngoài ClipRRect".
-    final bool isGlass = context.watch<ThemeProvider>().isGlassThemeEnabled;
     if (userRole == 'SUPER_USER' && _selectedHomeForSuperUser == null) {
       if (_allHomesForSuperUser.isEmpty) return _buildEmptyState(isDark, textSub, "Không tìm thấy ngôi nhà nào trên hệ thống.");
       return LayoutBuilder(
@@ -5681,6 +5693,7 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
   late int _selectedTab;
   final Color tkGreen = const Color(0xFF00A651);
   bool _tuyaSyncing = false;
+  bool _tuyaUnsyncing = false;
 
   @override
   void initState() { super.initState(); _selectedTab = widget.initialTab; }
@@ -5700,6 +5713,34 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã đồng bộ ${result.count} thiết bị Tuya'), backgroundColor: tkGreen));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.error ?? 'Đồng bộ Tuya thất bại'), backgroundColor: Colors.redAccent));
+    }
+  }
+
+  // [TÍNH NĂNG MỚI — PC, theo yêu cầu user] Cùng API unsyncTuyaDevices() mà TuyaLinkScreen
+  // (Mobile) dùng — không viết logic riêng cho PC, đúng tiền lệ _syncTuya() ở trên.
+  Future<void> _unsyncTuya() async {
+    if (_tuyaUnsyncing) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hủy đồng bộ Tuya?'),
+        content: const Text('Toàn bộ thiết bị Tuya đã đồng bộ sẽ bị gỡ khỏi nhà này (không đụng thiết bị vật lý). Đồng bộ lại bất cứ lúc nào để kéo về y hệt.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Xác nhận', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _tuyaUnsyncing = true);
+    final result = await ApiService().unsyncTuyaDevices(widget.homeId);
+    if (!mounted) return;
+    setState(() => _tuyaUnsyncing = false);
+    if (result.count != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã gỡ ${result.count} thiết bị Tuya khỏi nhà này'), backgroundColor: Colors.redAccent));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.error ?? 'Hủy đồng bộ Tuya thất bại'), backgroundColor: Colors.redAccent));
     }
   }
 
@@ -5922,6 +5963,16 @@ class _WindowsSettingsDialogState extends State<WindowsSettingsDialog> {
               ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: tkGreen))
               : Icon(Icons.sync_rounded, color: textSub),
           onTap: _tuyaSyncing ? null : _syncTuya,
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.link_off_rounded, color: Colors.redAccent),
+          title: Text('Hủy đồng bộ Tuya', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600, shadows: sh)),
+          subtitle: Text('Gỡ toàn bộ thiết bị Tuya khỏi nhà đang xem (không đụng thiết bị vật lý)', style: TextStyle(color: textSub, fontSize: 12, fontWeight: FontWeight.w500, shadows: sh)),
+          trailing: _tuyaUnsyncing
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent))
+              : const Icon(Icons.chevron_right_rounded, color: Colors.redAccent),
+          onTap: _tuyaUnsyncing ? null : _unsyncTuya,
         ),
       ],
     );

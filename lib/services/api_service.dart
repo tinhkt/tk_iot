@@ -792,4 +792,21 @@ class ApiService {
       return (count: null, error: 'Không thể kết nối đến máy chủ');
     }
   }
+
+  /// POST /api/homes/{homeId}/tuya/unsync — [TÍNH NĂNG MỚI] gỡ TOÀN BỘ thiết bị Tuya đã đồng bộ
+  /// khỏi nhà này (chỉ thiết bị Tuya, không đụng thiết bị vật lý). Trả (count, error).
+  Future<({int? count, String? error})> unsyncTuyaDevices(String homeId) async {
+    try {
+      final response = await authorizedPost('$baseUrl/homes/${Uri.encodeComponent(homeId)}/tuya/unsync');
+      final Map<String, dynamic> decoded = json.decode(response.body);
+      if (response.statusCode == 200) {
+        final data = decoded['data'] as Map<String, dynamic>;
+        return (count: (data['removed_count'] as num?)?.toInt() ?? 0, error: null);
+      }
+      return (count: null, error: (decoded['error'] ?? 'Lỗi không xác định từ Server').toString());
+    } catch (e) {
+      if (kDebugMode) print('❌ Lỗi mạng khi unsyncTuyaDevices: $e');
+      return (count: null, error: 'Không thể kết nối đến máy chủ');
+    }
+  }
 }

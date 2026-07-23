@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -33,6 +35,12 @@ class CameraTile extends StatefulWidget {
 class _CameraTileState extends State<CameraTile> {
   late final Player _player;
   late final VideoController _controller;
+  // [FIX — RÀ SOÁT HIỆU NĂNG Trụ cột 2, Thấp] Lưu tường minh StreamSubscription thay vì gọi
+  // .listen() rồi bỏ luôn — trước đây dựa hoàn toàn vào _player.dispose() đóng stream ngầm (hoạt
+  // động đúng trong thực tế vì media_kit tự đóng, nhưng không phải pattern an toàn tường minh).
+  // cancel() rõ ràng trong dispose() loại bỏ hẳn khả năng callback chạy đúng lúc dispose đang xử
+  // lý dở, dù rủi ro thực tế đã thấp nhờ check `mounted` sẵn có.
+  StreamSubscription<String>? _errorSub;
   bool _loading = true;
   String? _errorMessage;
   bool _zoomedIn = false;
@@ -42,7 +50,7 @@ class _CameraTileState extends State<CameraTile> {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
-    _player.stream.error.listen((e) {
+    _errorSub = _player.stream.error.listen((e) {
       if (kDebugMode) print('❌ [CameraTile ${widget.entry.id}] player error: $e');
       if (mounted) setState(() { _errorMessage = e; _loading = false; });
     });
@@ -79,6 +87,7 @@ class _CameraTileState extends State<CameraTile> {
 
   @override
   void dispose() {
+    _errorSub?.cancel();
     _player.dispose();
     super.dispose();
   }
