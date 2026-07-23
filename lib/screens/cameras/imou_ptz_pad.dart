@@ -35,6 +35,21 @@ class _ImouPtzPadState extends State<ImouPtzPad> {
     _api.controlImouPTZ(widget.homeId, widget.cameraId, 'STOP');
   }
 
+  // [FIX — RÀ SOÁT HIỆU NĂNG, Ưu tiên 1] _ptzStart() là vòng while chạy async ĐỘC LẬP vòng đời
+  // widget — trước đây CHỈ _ptzStop() (gọi từ onTapUp/onTapCancel) mới hạ được _ptzHolding. Nếu
+  // widget bị dispose (màn hình bị pop) trong lúc đang giữ nút mà 2 callback đó không kịp bắn ra,
+  // vòng lặp chạy MÃI MÃI sau khi widget đã chết — spam API PTZ ra Imou Cloud mỗi 400ms vô thời
+  // hạn. dispose() là lưới an toàn CUỐI CÙNG, độc lập với gesture, luôn chạy khi widget bị huỷ dù
+  // vì lý do gì (pop, đổi cây widget cha, hot reload...).
+  @override
+  void dispose() {
+    if (_ptzHolding) {
+      _ptzHolding = false;
+      _api.controlImouPTZ(widget.homeId, widget.cameraId, 'STOP');
+    }
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;

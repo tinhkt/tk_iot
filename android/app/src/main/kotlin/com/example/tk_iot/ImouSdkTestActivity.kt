@@ -67,10 +67,10 @@ class ImouSdkTestActivity : Activity() {
     // khi curl HTTPS cổng 443 từ chính điện thoại trả 200 OK bình thường).
     private val HOST = "openapi-sg.easy4ip.com:443"
 
-    // ---- [CẦN THAY] Đoạn ghi thật trên thẻ SD — rỗng = chưa có, sẽ dừng sau bước lấy playToken ----
-    private val RECORD_FILE_ID = ""
-    private val RECORD_START_MS = 0L
-    private val RECORD_END_MS = 0L
+    // ---- Đoạn ghi THẬT lấy từ Backend hôm nay (2026-07-23), camera 6G00644PAZED884 ----
+    private val RECORD_FILE_ID = "/mnt/sd/mmcblk0p0/2026-07-23/001/dav/01/01.16.36-01.17.17[M][0@0][0].dav"
+    private val RECORD_START_MS = 1784744196000L
+    private val RECORD_END_MS = 1784744237000L
 
     private lateinit var logView: TextView
     private lateinit var playContainer: FrameLayout
