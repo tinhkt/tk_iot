@@ -2903,19 +2903,56 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // MAC của các thiết bị đang chọn (deviceKey = "MAC_endpoint" -> lấy MAC ở segment đầu)
   List<String> _selectedMacs() => _selectedDevices.map((k) => k.split('_').first).toSet().toList();
 
-  // [PHÒNG] Chuyển HÀNG LOẠT thiết bị đã chọn vào 1 phòng (API thật qua RoomGroupProvider).
+  // [PHÒNG] Chuyển HÀNG LOẠT thiết bị/kênh đã chọn vào 1 phòng (API thật qua RoomGroupProvider).
+  // [FIX GOM CHÙM] _selectedDevices lưu theo TỪNG KÊNH ("MAC_endpoint" — xem hideKey/deviceKey ở
+  // các nơi setState thêm/bớt selection), nhưng bản cũ gọi _selectedMacs() rút gọn về MAC rồi gán
+  // NGUYÊN KHỐI qua assignDevicesToRoom — chọn riêng lẻ 1-2 kênh của công tắc đa nút để "Chuyển
+  // phòng" hàng loạt vẫn kéo theo mọi kênh khác cùng MAC. Nay gom theo MAC rồi tự quyết định:
+  // user đã tick ĐỦ mọi kênh điều khiển được của 1 MAC (hoặc chọn đúng nút "Tất cả") -> gán cả
+  // thiết bị (tương đương, gọn 1 lời gọi); chỉ tick MỘT PHẦN kênh -> gán RIÊNG từng kênh đó qua
+  // assignEndpointsToRoom, không đụng các kênh chưa được chọn.
   Future<void> _bulkAssignRoom() async {
-    final macs = _selectedMacs();
-    if (macs.isEmpty) return;
-    final provider = Provider.of<RoomGroupProvider>(context, listen: false);
-    final room = await showRoomSelectionDialog(context, provider);
+    if (_selectedDevices.isEmpty) return;
+    final roomProvider = Provider.of<RoomGroupProvider>(context, listen: false);
+    final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+    final room = await showRoomSelectionDialog(context, roomProvider);
     if (room == null || !mounted) return;
+
+    final Map<String, Set<String>> selectedEpsByMac = {};
+    for (final key in _selectedDevices) {
+      final idx = key.indexOf('_');
+      if (idx <= 0) continue;
+      selectedEpsByMac.putIfAbsent(key.substring(0, idx), () => {}).add(key.substring(idx + 1));
+    }
+
+    final List<String> wholeMacs = [];
+    final List<({String mac, String endpoint})> partialItems = [];
+    selectedEpsByMac.forEach((mac, selectedEps) {
+      final device = deviceProvider.deviceOf(mac);
+      final allChannels = device == null
+          ? <String>{}
+          : device.endpointIds.where((ep) => device.typeOf(ep) != 'sensor' && device.typeOf(ep) != 'fan').toSet();
+      final bool selectedWhole = selectedEps.contains('all') ||
+          allChannels.isEmpty ||
+          allChannels.difference(selectedEps).isEmpty;
+      if (selectedWhole) {
+        wholeMacs.add(mac);
+      } else {
+        for (final ep in selectedEps) {
+          if (ep != 'all') partialItems.add((mac: mac, endpoint: ep));
+        }
+      }
+    });
+
     showDialog(context: context, barrierDismissible: false, builder: (_) => Center(child: CircularProgressIndicator(color: tkGreen)));
-    final err = await provider.assignDevicesToRoom(macs, room.id);
+    String? err;
+    if (wholeMacs.isNotEmpty) err = await roomProvider.assignDevicesToRoom(wholeMacs, room.id);
+    if (err == null && partialItems.isNotEmpty) err = await roomProvider.assignEndpointsToRoom(partialItems, room.id);
     if (!mounted) return;
     Navigator.pop(context); // đóng loading
+    final int total = wholeMacs.length + partialItems.length;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(err ?? 'Đã chuyển ${macs.length} thiết bị vào "${room.name}"'),
+        content: Text(err ?? 'Đã chuyển $total thiết bị/kênh vào "${room.name}"'),
         backgroundColor: err == null ? tkGreen : Colors.redAccent));
     if (err == null) setState(() { _isSelectionMode = false; _selectedDevices.clear(); });
   }
@@ -2965,7 +3002,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }) _stdCallbacks(String mac, String key, String name, {String endpoint = ''}) => (
         rename: () => _showRenameDialog(key, name),
         delete: () => _deleteDevice(mac),
-        assignRoom: () => _assignSingleRoom(mac),
+        // [FIX GOM CHÙM] endpoint của ĐÚNG thẻ vừa mở menu — cho _assignSingleRoom biết cần gán
+        // riêng 1 kênh hay cả thiết bị (xem doc-comment tại đó).
+        assignRoom: () => _assignSingleRoom(mac, endpoint),
         assignHome: _isSuperUser ? () => _showAssignHomeDialog(mac) : null,
         changeAvatar: () => _showAvatarPicker(key, mac),
         // [RESPONSIVE NAV] Mobile: push toàn màn hình; PC: cửa sổ dialog lớn nổi trên
@@ -2978,12 +3017,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
         share: () => showShareDeviceDialog(context, mac: mac, deviceName: name),
       );
 
-  // [PHÒNG] Gán 1 thiết bị vào phòng (từ menu ngữ cảnh của thẻ).
-  Future<void> _assignSingleRoom(String mac) async {
+  // [PHÒNG] Gán 1 thiết bị (hoặc đúng 1 kênh) vào phòng (từ menu ngữ cảnh của thẻ).
+  // [FIX GOM CHÙM] Trước đây LUÔN gọi assignDevicesToRoom(mac) — gán NGUYÊN KHỐI cả thiết bị,
+  // nên mở menu "Chuyển phòng" từ MỘT kênh của công tắc đa nút (SSW04...) vẫn kéo theo TẤT CẢ
+  // kênh còn lại cùng MAC vào chung 1 phòng. Nay: [endpoint] rỗng/'all', hoặc thiết bị chỉ có
+  // đúng 1 kênh điều khiển được -> giữ hành vi cũ (gán cả thiết bị, coi như tương đương). Thiết
+  // bị ĐA KÊNH mở đúng từ 1 thẻ kênh cụ thể -> CHỈ gán riêng kênh đó qua assignEndpointsToRoom
+  // (API tách kênh đã có sẵn ở Backend — cùng API mà RoomDetailScreen._pickChannels dùng).
+  Future<void> _assignSingleRoom(String mac, [String endpoint = '']) async {
     final provider = Provider.of<RoomGroupProvider>(context, listen: false);
     final room = await showRoomSelectionDialog(context, provider);
     if (room == null || !mounted) return;
-    final err = await provider.assignDevicesToRoom([mac], room.id);
+
+    final device = Provider.of<DeviceProvider>(context, listen: false).deviceOf(mac);
+    final int channelCount = device == null
+        ? 0
+        : device.endpointIds.where((ep) => device.typeOf(ep) != 'sensor' && device.typeOf(ep) != 'fan').length;
+    final bool wholeDevice = endpoint.isEmpty || endpoint == 'all' || channelCount <= 1;
+
+    final err = wholeDevice
+        ? await provider.assignDevicesToRoom([mac], room.id)
+        : await provider.assignEndpointsToRoom([(mac: mac, endpoint: endpoint)], room.id);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(err ?? 'Đã thêm vào "${room.name}"'),
@@ -4937,6 +4991,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Chụp kho thiết bị sống MỘT LẦN cho cả lượt vẽ này
     final liveDevices = provider.devices;
 
+    // [FIX ĐỒNG BỘ PHÒNG] roomOf(mac) chỉ phản ánh gán NGUYÊN KHỐI (_deviceRoom) — thiết bị
+    // gán qua picker "Thêm thiết bị" của RoomDetailScreen (TÁCH RELAY, đi qua
+    // assignEndpointsToRoom -> _endpointRoom) trước đây KHÔNG được lọc filter này nhìn thấy,
+    // nên tab phòng trên Dashboard "quên" mất thiết bị vừa thêm dù RoomManagementScreen/
+    // RoomDetailScreen đã đếm/hiển thị đúng (2 màn đó gộp CẢ HAI nguồn từ lâu). Gộp thêm tập
+    // MAC có ít nhất 1 kênh thuộc đúng phòng đang chọn để 2 nguồn khớp nhau.
+    final Set<String> selRoomEndpointMacs =
+        selRoom == null ? const {} : {for (final e in roomProv.endpointsInRoom(selRoom)) e.mac};
+
     // QUY TẮC ĐẶT TÊN TỰ ĐỘNG (khớp từng ký tự với bộ dịch ở Backend Go, dùng khi
     // thiết bị chưa được đặt tên trong database):
     //   1 cổng: "sw-{4 cuối MAC}" | đa kênh: "sw-{4 cuối}-N" | nút tổng ảo: "sw-tog-{4 cuối}"
@@ -4981,9 +5044,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // ==========================================================================
     for (var device in _currentHomeDevices) {
       String mac = (device['mac_address'] ?? device['mac'] ?? 'UNKNOWN').toString().replaceAll(':', '').toUpperCase();
-      // [PHÒNG] Đang xem 1 phòng cụ thể -> chỉ giữ thiết bị thuộc phòng đó.
-      if (selRoom != null && roomProv.roomOf(mac) != selRoom) continue;
+      // [PHÒNG] Đang xem 1 phòng cụ thể -> chỉ giữ thiết bị thuộc phòng đó (nguyên khối HOẶC
+      // có ít nhất 1 kênh đã tách gán riêng vào phòng này).
+      if (selRoom != null && roomProv.roomOf(mac) != selRoom && !selRoomEndpointMacs.contains(mac)) continue;
       String deviceName = device['name'] ?? device['home_name'] ?? 'Thiết bị $mac';
+
+      // [FIX GOM CHÙM — LỌC TỪNG KÊNH] Điều kiện ở trên chỉ xác định "thiết bị CÓ mặt trong
+      // phòng" (nguyên khối HOẶC có ít nhất 1 kênh) — KHÔNG có nghĩa MỌI kênh cùng MAC đều thuộc
+      // phòng đang xem. "Phòng hiệu lực" của một kênh = phòng đã tách gán riêng cho ĐÚNG kênh đó
+      // (endpointRoomOf) nếu có, rơi về phòng nguyên khối của cả thiết bị (roomOf) nếu kênh đó
+      // chưa từng tách riêng — cùng quy tắc "effectiveRoom" mà RoomDetailScreen._pickChannels đã
+      // dùng. Trước đây Dashboard không lọc theo kênh nên gán 1 kênh vào phòng kéo theo hiển thị
+      // TẤT CẢ kênh còn lại của công tắc đa nút trong đúng tab phòng đó.
+      bool channelInSelectedRoom(String ep) =>
+          selRoom == null || (roomProv.endpointRoomOf(mac, ep) ?? roomProv.roomOf(mac)) == selRoom;
 
       // ---------- LỚP 1: ẢNH TRẠNG THÁI BAN ĐẦU TỪ REST ----------
       var rawState = device['state'] ?? device['state_data'] ?? device['properties'];
@@ -5118,6 +5192,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // Mỗi endpoint dạng quạt -> đúng MỘT thẻ SmartFanCard tích hợp (icon cánh quạt
         // quay theo tốc độ thật); speed/swing đã được đè lớp sống từ dps ở trên.
         for (final f in fanEndpoints) {
+          // [FIX GOM CHÙM] Hub nhiều kênh quạt (F1/F2...) — mỗi kênh tự kiểm tra phòng hiệu lực
+          // riêng, không "ăn theo" kênh khác cùng MAC.
+          if (!channelInSelectedRoom(f)) continue;
           allFans.add({
             'mac': mac,
             'endpoint': f,
@@ -5312,7 +5389,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
           debugPrint('🧹 [DIỆT MA] mac=$mac | controllable=$controllable -> childKeys=$childKeys (giữ ${childKeys.length} kênh)');
         }
 
-        for (final key in childKeys) {
+        // [FIX GOM CHÙM] Đang xem 1 phòng cụ thể -> mỗi kênh của công tắc đa nút (SSW04...) chỉ
+        // hiện trong đúng tab phòng nó thật sự được gán riêng (hoặc phòng nguyên khối nếu kênh đó
+        // chưa từng tách riêng) — KHÔNG còn cảnh gán 1 kênh vào phòng kéo theo cả cụm hiện ra.
+        final List<String> roomChildKeys = childKeys.where(channelInSelectedRoom).toList();
+
+        for (final key in roomChildKeys) {
           allSwitches.add({
             'mac': mac,
             'endpoint': key,
@@ -5328,13 +5410,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // "all" — firmware SSW04 đã xử lý sẵn (bật/tắt cả 4 relay cùng lúc). Trạng thái hiển
         // thị = "sáng nếu CÓ kênh nào đang bật" (khớp cách Hass hiển thị nhóm); bấm khi đang
         // sáng -> tắt tất cả, bấm khi tắt hết -> bật tất cả.
-        if (childKeys.length > 1) {
-          final bool anyOn = childKeys.any((k) => endpointStates[k] == 'ON');
+        // [LƯU Ý GIỚI HẠN FIRMWARE] Nút này vẫn gửi lệnh "all" xuống CẢ thiết bị vật lý (không
+        // chỉ các kênh đang hiển thị trong phòng) — nếu 1 thiết bị bị chia kênh cho nhiều phòng
+        // khác nhau, bấm "Tất cả" ở phòng này vẫn bật/tắt luôn kênh thuộc phòng khác. Đây là giới
+        // hạn của lệnh "all" phía firmware, không phải phạm vi sửa của bug hiển thị lần này.
+        if (roomChildKeys.length > 1) {
+          final bool anyOn = roomChildKeys.any((k) => endpointStates[k] == 'ON');
           allSwitches.add({
             'mac': mac,
             'endpoint': 'all',
             'state': anyOn ? 'ON' : 'OFF',
-            'name': 'Tất cả (${childKeys.length} kênh)',
+            'name': 'Tất cả (${roomChildKeys.length} kênh)',
             'online': deviceOnline,
             'rawDevice': device,
             'isMaster': true,
